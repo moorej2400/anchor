@@ -1,0 +1,55 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  color: rgba(255, 255, 255, 0.9);
+  font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  background:
+    radial-gradient(1200px 620px at 12% -12%, rgba(138, 63, 208, 0.2), transparent 58%),
+    radial-gradient(1050px 720px at 112% 18%, rgba(214, 65, 122, 0.16), transparent 55%),
+    #0b0b11;
+}
+
+.scaffold {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.scaffold-mark {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #8a3fd0, #d6417a);
+  box-shadow: 0 8px 30px rgba(214, 65, 122, 0.35);
+  margin-bottom: 8px;
+}
+
+.scaffold h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.scaffold p {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.scaffold-status {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
+}

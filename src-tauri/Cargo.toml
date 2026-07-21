@@ -1,0 +1,34 @@
+[package]
+name = "anchor"
+version = "0.1.0"
+description = "Anchor — managed terminal sessions for AI CLIs with persist & resume"
+authors = ["Anchor contributors"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "anchor_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+# Incremental compilation needs file locking, which network/shared volumes
+# (a supported checkout location for this repo) don't provide. Disabling it
+# only slows warm rebuilds slightly on local filesystems.
+[profile.dev]
+incremental = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+portable-pty = "0.9"
+uuid = { version = "1", features = ["v4", "serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+dirs = "6"
+notify = "8"
