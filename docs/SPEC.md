@@ -270,6 +270,25 @@ Errors: commands reject with a string error code + message, e.g. `"CLI_NOT_FOUND
 - **Sorting (spec addition):** `waiting` sessions sort first within their folder.
 
 Frontend architecture requirements:
+- **Custom, extensible component library:** all UI is built from an in-repo
+  component library at `src/components/lib/` — no external UI kit (no MUI,
+  shadcn, Radix, etc.). Requirements:
+  - Primitives derived from the mock's recurring patterns — at minimum:
+    `GlassPanel`, `Button` (incl. gradient variant), `IconButton`, `Badge`
+    (tool badge), `StatusDot`, `Toggle`, `RadioGroup`, `Slider`, `TextInput`,
+    `Menu`/`MenuItem` (the `⋯`/`+` popovers), `Modal`, `ConfirmPopover`,
+    `Toast`, `Tab`, `SidebarRow`, `Tooltip`.
+  - Styled exclusively via design tokens (`src/components/lib/tokens.ts` +
+    CSS variables) extracted from the mock — accent/gradient, glass blur,
+    surface alphas, radii, typography, status colors — so theme/accent/density
+    settings flow through tokens, not per-component overrides.
+  - Extensible by construction: variants via props, `className`/style
+    pass-through, composition over configuration; components are app-agnostic
+    (no IPC imports, no session/folder domain types) so new screens and future
+    features can reuse them.
+  - Each component documented with a short usage comment; a simple gallery
+    route/page (dev-only) rendering every component in all variants for visual
+    review.
 - Typed IPC layer (`src/ipc/`) is the *only* place `invoke`/`listen` appear.
 - **`src/ipc/mock.ts`:** a browser-only mock implementation of the same interface (seeded with data resembling the mock's sample state, simulated status changes) selected via `VITE_IPC=mock` env — so the frontend agent can build & demo the entire UI in a plain browser without the Rust side, and the real backend drops in without UI changes.
 - One xterm.js `Terminal` instance per ON session, kept alive while its tab exists (switching tabs must not lose buffer); `fit` addon on resize → `resize_pty`.
@@ -311,8 +330,8 @@ Acceptance: `cargo test` green; manual smoke: `launch_session`(claude) → regis
 **Do not touch `src/` (frontend) except `src/ipc/types.ts` — and only with a matching spec update.**
 
 ### Phase 3 — Frontend
-Implement §8 to the mock, wired to the §6 contract (real backend by default, `VITE_IPC=mock` for browser dev). All views/interactions/shortcuts/settings; xterm integration; waiting-first sorting; toasts; palette.
-Acceptance: visual parity with the mock at 1440×900; all interactions in §8 work against the real backend; `npm run build` + vitest green.
+Implement §8 to the mock, wired to the §6 contract (real backend by default, `VITE_IPC=mock` for browser dev). **Build the custom extensible component library first** (§8 "Frontend architecture requirements" — tokens, primitives, gallery page), then compose all views/interactions/shortcuts/settings from it; xterm integration; waiting-first sorting; toasts; palette.
+Acceptance: visual parity with the mock at 1440×900; every screen composed from the `src/components/lib/` library (no one-off styled elements where a primitive exists); gallery page renders all components; all interactions in §8 work against the real backend; `npm run build` + vitest green.
 **Do not touch `src-tauri/` except to register nothing — backend is done; report contract gaps instead of hacking around them.**
 
 ### Cross-phase rules
