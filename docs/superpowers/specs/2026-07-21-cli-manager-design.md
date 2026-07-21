@@ -18,7 +18,7 @@ persisted the moment it launches**, so after an app restart or OS reboot each
 session resumes with one click.
 
 **Must-have:** click-to-resume after restart/reboot.
-**v1 extras:** launch presets.
+**v1 extras:** launch presets; finished-response alerts with sidebar priority.
 **Supported CLIs:** claude, codex, copilot, opencode.
 
 ## Architecture
@@ -114,7 +114,34 @@ nothing is lost.
 - **Main pane:** one full-size xterm terminal for the active session.
 - **New session dialog:** pick a preset, or choose CLI + directory + optional
   args manually; option to save the combo as a preset.
-- **Settings:** lifecycle toggle, theme basics.
+- **Settings:** lifecycle toggle, theme basics, alert behavior (badge only /
+  badge + OS notification).
+
+## Finished-response alerts
+
+When a background (non-focused) session's agent finishes responding, the user
+should see it at a glance and find it first.
+
+**Detection** (Rust core, per PTY):
+- **Activity heuristic:** track output volume per session. A burst of output
+  followed by ≥ N seconds of silence (default 3s, tunable) while the session
+  is not focused → mark `needs_attention`. This is CLI-agnostic and catches
+  "response finished" as well as "waiting at a prompt".
+- **Bell/OSC signals:** additionally listen for BEL (0x07) and OSC 9 /
+  OSC 777 notification sequences in the PTY stream — Claude Code and other
+  TUIs emit a terminal bell when a turn completes or input is needed. A bell
+  from an unfocused session marks `needs_attention` immediately.
+
+**Presentation:**
+- Sidebar row gets an alert dot/badge; sessions with `needs_attention` sort
+  to the top of their group (priority), with a subtle highlight.
+- Tab strip shows the same badge on the session's tab.
+- App icon shows a count badge (dock/taskbar) of sessions needing attention;
+  optional OS notification per settings.
+- Focusing the session clears its `needs_attention` flag.
+
+`needs_attention` is runtime-only state — not persisted; after an app restart
+all sessions are simply "resumable".
 
 ## Error handling
 
@@ -139,6 +166,6 @@ nothing is lost.
 
 ## Out of scope (v1)
 
-Needs-attention alerts, resume-all button, split/grid terminal view,
+Resume-all button, split/grid terminal view,
 remote/SSH sessions, session search, non-AI arbitrary shells (may work
 incidentally, not a target).
