@@ -5,8 +5,9 @@
 //! prepends saved scrollback with a "── restored session · scrollback
 //! recovered (N lines) ──" divider (see mock).
 
-use super::{Adapter, IdCapture, SpawnSpec};
-use crate::models::{Session, Tool};
+use super::{validate_extra_args, Adapter, IdCapture, SpawnSpec};
+use crate::models::{Session, Settings, Tool};
+use std::path::Path;
 
 pub struct TerminalAdapter;
 
@@ -15,13 +16,29 @@ impl Adapter for TerminalAdapter {
         Tool::Terminal
     }
 
-    fn launch(&self, session: &Session) -> Result<(SpawnSpec, IdCapture), String> {
-        let _ = session;
-        Err("NOT_IMPLEMENTED: Phase 2".into())
+    fn launch(
+        &self,
+        session: &Session,
+        cwd: &Path,
+        settings: &Settings,
+    ) -> Result<(SpawnSpec, IdCapture), String> {
+        validate_extra_args(Tool::Terminal, &session.extra_args)?;
+        Ok((
+            SpawnSpec::new(&settings.shell, session.extra_args.clone(), cwd),
+            IdCapture::None,
+        ))
     }
 
-    fn resume(&self, session: &Session) -> Result<SpawnSpec, String> {
-        let _ = session;
-        Err("NOT_IMPLEMENTED: Phase 2".into())
+    fn resume(
+        &self,
+        _session: &Session,
+        cwd: &Path,
+        settings: &Settings,
+    ) -> Result<SpawnSpec, String> {
+        Ok(SpawnSpec::new(
+            &settings.shell,
+            std::iter::empty::<String>(),
+            cwd,
+        ))
     }
 }
