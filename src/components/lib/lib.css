@@ -275,7 +275,10 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 230px;
+  /* Uniform width rather than content-sized: content-sized tabs land on
+     fractional pixels, which renders their borders and gradient edge blurry
+     and makes the strip's rhythm uneven. Titles ellipsize instead. */
+  width: 230px;
   padding: 8px 11px;
   margin-right: 5px;
   border-radius: 9px 9px 0 0;
@@ -331,8 +334,8 @@
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: var(--row-py) 10px var(--row-py) 12px;
-  margin: 0 4px;
+  padding: var(--row-py) 10px;
+  margin: 0 var(--sp-1);
   border-radius: var(--radius);
   cursor: pointer;
 }
@@ -374,6 +377,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Fixed-width trailing slot: the status dot and the hover actions occupy the
+   same footprint, so hovering a row never reflows its title. */
+.a-row__trail {
+  flex: none;
+  width: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 1px;
 }
 
 /* ---- Tooltip ---- */

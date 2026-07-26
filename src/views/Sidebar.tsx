@@ -178,16 +178,17 @@ function FolderGroup(props: {
           <span className="folder__name">{folder.name}</span>
         )}
         <span className="folder__count">{folder.sessions.length}</span>
-        {showMore && (
-          <IconButton
-            aria-label="Folder options"
-            size={20}
-            style={{ fontSize: 15 }}
-            onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, folderMore: u.folderMore === folder.id ? null : folder.id, folderMenu: null, sessionMenu: null })); }}
-          >
-            ⋯
-          </IconButton>
-        )}
+        {/* Always laid out (hidden until hover) so revealing it never shifts
+            the quick-launch button beside it. */}
+        <IconButton
+          aria-label="Folder options"
+          size={20}
+          tabIndex={showMore ? 0 : -1}
+          style={{ fontSize: 15, visibility: showMore ? "visible" : "hidden" }}
+          onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, folderMore: u.folderMore === folder.id ? null : folder.id, folderMenu: null, sessionMenu: null })); }}
+        >
+          ⋯
+        </IconButton>
         <IconButton
           bordered
           aria-label="Quick launch"
@@ -302,14 +303,16 @@ function SessionRow(props: {
         )}
       </div>
 
-      {showDot && <StatusDot status={session.status} />}
-
-      {showActions && (
-        <div style={{ display: "flex", alignItems: "center", gap: 1 }} onClick={(e) => e.stopPropagation()}>
-          <IconButton danger aria-label="Delete session" onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, confirmDelete: u.confirmDelete === session.id ? null : session.id, sessionMenu: null })); }}>✕</IconButton>
-          <IconButton aria-label="More options" style={{ fontSize: 17 }} onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, sessionMenu: u.sessionMenu === session.id ? null : session.id, confirmDelete: null })); }}>⋯</IconButton>
-        </div>
-      )}
+      <div className="a-row__trail" onClick={(e) => showActions && e.stopPropagation()}>
+        {showActions ? (
+          <>
+            <IconButton danger aria-label="Delete session" onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, confirmDelete: u.confirmDelete === session.id ? null : session.id, sessionMenu: null })); }}>✕</IconButton>
+            <IconButton aria-label="More options" style={{ fontSize: 17 }} onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, sessionMenu: u.sessionMenu === session.id ? null : session.id, confirmDelete: null })); }}>⋯</IconButton>
+          </>
+        ) : (
+          showDot && <StatusDot status={session.status} />
+        )}
+      </div>
 
       {confirming && (
         <div className="a-confirm" style={{ top: 33, right: 6 }} onClick={(e) => e.stopPropagation()}>

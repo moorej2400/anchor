@@ -51,12 +51,17 @@ body {
   backdrop-filter: blur(var(--blur));
   -webkit-backdrop-filter: blur(var(--blur));
 }
-.sidebar__filter { flex: none; padding: 12px 12px 10px; }
+/* Sidebar rails: filter box, folder groups and session rows share a left edge
+   at 12px and a right edge at 286px, so nothing steps in or out by a pixel or
+   two. Inner content then lands on a common 22px content rail. */
+.sidebar__filter { flex: none; padding: var(--sp-3) var(--sp-3) 10px; }
 .filter-box {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  /* 9px, not 10px: this box has a 1px border the session rows don't, so the
+     border + padding together put its content on the same 22px/276px rails. */
+  padding: 8px 9px;
   border-radius: 10px;
   background: var(--surface-2);
   border: 1px solid rgba(255, 255, 255, 0.07);
@@ -76,28 +81,32 @@ body {
   font-size: 10px;
   cursor: pointer;
 }
-.sidebar__list { flex: 1; overflow-y: auto; padding: 2px 4px 12px; }
+.sidebar__list { flex: 1; overflow-y: auto; padding: 2px var(--sp-2) var(--sp-3); }
 .sidebar__footer { flex: none; padding: 10px 12px; border-top: 1px solid var(--hairline-soft); }
 .legend { display: flex; gap: 12px; padding: 2px 2px 9px; font-size: 11px; color: var(--text-2); }
 .legend__item { display: flex; align-items: center; gap: 5px; }
 .legend__dot { width: 7px; height: 7px; border-radius: 50%; }
 
 /* ---- Folder group ---- */
-.folder { position: relative; margin: 2px 2px var(--group-gap); }
-.folder__head { display: flex; align-items: center; gap: 7px; padding: 6px 8px 2px; }
+.folder { position: relative; margin: 2px 0 var(--group-gap); }
+/* 14px right padding lands the quick-launch button on the same right rail as
+   the session rows' status dots. */
+.folder__head { display: flex; align-items: center; gap: 7px; padding: 6px 14px 2px var(--sp-2); }
 .folder__chevron {
   flex: none; width: 16px; height: 16px; display: grid; place-items: center;
   background: transparent; border: none; color: var(--text-3); font-size: 10px; cursor: pointer;
 }
 .folder__name { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder__count { flex: none; font-family: var(--font-mono); font-size: 10px; color: rgba(255, 255, 255, 0.34); }
-.folder__path { padding: 0 8px 4px 31px; font-family: var(--font-mono); font-size: 10px; color: rgba(255, 255, 255, 0.28); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder__path { padding: 0 14px 4px 31px; font-family: var(--font-mono); font-size: 10px; color: rgba(255, 255, 255, 0.28); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder__sessions { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; }
 
 /* ---- Main ---- */
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .term-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.tabstrip { flex: none; display: flex; align-items: stretch; padding: 8px 0 0; overflow-x: auto; }
+/* Tab strip, pane, and status-bar content all start at --gutter so they share
+   one vertical rail down the left of the main column. */
+.tabstrip { flex: none; display: flex; align-items: stretch; padding: var(--sp-2) var(--gutter) 0; overflow-x: auto; }
 .tabstrip__new {
   flex: none; align-self: center; width: 28px; height: 28px; margin-left: 2px;
   display: grid; place-items: center; border-radius: 8px;
@@ -106,7 +115,7 @@ body {
 }
 .tabstrip__new:hover { background: rgba(255, 255, 255, 0.07); }
 
-.pane-wrap { flex: 1; min-height: 0; padding: 0 0 12px; display: flex; flex-direction: column; }
+.pane-wrap { flex: 1; min-height: 0; padding: 0 var(--gutter) var(--sp-3); display: flex; flex-direction: column; }
 .pane {
   flex: 1; min-height: 0; display: flex; flex-direction: column;
   border-radius: 0 12px 12px 12px; overflow: hidden;
@@ -114,7 +123,7 @@ body {
   backdrop-filter: blur(var(--blur)); -webkit-backdrop-filter: blur(var(--blur));
   border: 1px solid var(--hairline);
 }
-.term-host { flex: 1; min-height: 0; padding: 10px 12px; position: relative; }
+.term-host { flex: 1; min-height: 0; padding: var(--sp-4) 18px; position: relative; }
 .term-host .xterm { height: 100%; }
 .term-host .xterm-viewport { background: transparent !important; }
 
@@ -138,7 +147,9 @@ body {
 .resume-card__foot { margin-top: 12px; text-align: center; font-size: 11px; color: rgba(255, 255, 255, 0.35); }
 
 /* Status bar */
-.statusbar { flex: none; display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-top: 1px solid var(--hairline-soft); background: rgba(255, 255, 255, 0.02); }
+/* Full-bleed rail like the top chrome, but its content starts on the same
+   --gutter rail as the tab strip and pane above it. */
+.statusbar { flex: none; display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) var(--gutter); border-top: 1px solid var(--hairline-soft); background: rgba(255, 255, 255, 0.02); }
 .statusbar__id, .statusbar__state { display: flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--hairline); }
 .statusbar__mono { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-mono); }
 .statusbar__spacer { flex: 1; }
@@ -146,8 +157,10 @@ body {
 
 /* Settings */
 .settings { display: flex; height: 100%; min-height: 0; }
-.settings__nav { flex: none; width: 220px; padding: 16px 10px; border-right: 1px solid var(--hairline-soft); }
-.settings__navlabel { padding: 4px 10px 14px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-3); }
+/* Padded to --gutter so the settings nav starts on the same rail as the tab
+   strip and pane — switching views must not shift content sideways. */
+.settings__nav { flex: none; width: 220px; padding: var(--sp-4) var(--gutter); border-right: 1px solid var(--hairline-soft); }
+.settings__navlabel { padding: 4px 0 14px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-3); }
 .settings__navbtn { position: relative; width: 100%; text-align: left; padding: 9px 12px; margin-bottom: 2px; border-radius: 9px; border: none; background: transparent; color: var(--text-2); font-size: 13px; cursor: pointer; }
 .settings__navbtn:hover { background: var(--surface-2); }
 .settings__navbtn[data-on="true"] { color: var(--text-1); }

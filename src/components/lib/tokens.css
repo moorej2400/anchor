@@ -36,6 +36,20 @@
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --tfs: 13px; /* terminal font size (Appearance setting) */
 
+  /* Spacing scale — every layout offset is a step on this scale so elements
+     share alignment rails instead of ad-hoc values. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+
+  /* The main column's horizontal rail. The tab strip, the terminal/settings
+     pane, and the status-bar content all align to this, and it keeps the
+     pane's rounded corners clear of the window frame. */
+  --gutter: var(--sp-4);
+
   /* Geometry */
   --sbw: 298px; /* sidebar width */
   --radius-sm: 6px;
