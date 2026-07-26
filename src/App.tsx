@@ -34,6 +34,7 @@ export default function App() {
       if (mod && key === "w") { e.preventDefault(); if (state.activeId) void actions.closeTab(state.activeId); return; }
       if (mod && key === "f") { e.preventDefault(); document.getElementById("anchor-filter")?.focus(); return; }
       if (mod && key === "t") { e.preventDefault(); const f = folderForNew(); if (f) void actions.launch("terminal", f.id); return; }
+      if (mod && key === "o") { e.preventDefault(); actions.openNewSession(); return; }
       if (mod && e.key === "Enter") { e.preventDefault(); if (active && active.status === "stopped") void actions.resume(active.id); return; }
       if (e.ctrlKey && e.key === "Tab") { e.preventDefault(); cycleTab(e.shiftKey ? -1 : 1); return; }
       if (e.key === "Escape") { setRemoveTarget(null); actions.closePalette(); actions.closeNewSession(); }

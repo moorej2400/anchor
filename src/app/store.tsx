@@ -42,6 +42,8 @@ interface State {
   filter: string;
   paletteOpen: boolean;
   newSessionOpen: boolean;
+  /** When set, the wizard skips the folder step and launches into this folder. */
+  newSessionFolderId: string | null;
   toast: string | null;
   waitingCount: number;
   fatalError: string | null;
@@ -55,6 +57,7 @@ const DEFAULT_SETTINGS: Settings = {
   stopOnClose: true,
   restoreScrollback: true,
   backupPath: "~/.anchor/sessions",
+  projectsDir: "~/Documents/Anchor/Projects",
   retentionDays: 30,
   theme: "graphite",
   density: "comfortable",
@@ -76,6 +79,7 @@ const initialState: State = {
   filter: "",
   paletteOpen: false,
   newSessionOpen: false,
+  newSessionFolderId: null,
   toast: null,
   waitingCount: 0,
   fatalError: null,
@@ -95,7 +99,7 @@ type Action =
   | { type: "SET_SETTINGS_SECTION"; section: SettingsSection }
   | { type: "SET_FILTER"; value: string }
   | { type: "SET_PALETTE"; open: boolean }
-  | { type: "SET_NEW_SESSION"; open: boolean }
+  | { type: "SET_NEW_SESSION"; open: boolean; folderId?: string | null }
   | { type: "SET_TOAST"; text: string | null }
   | { type: "SET_SETTINGS"; settings: Settings }
   | { type: "SET_WAITING"; count: number }
@@ -193,7 +197,11 @@ function reducer(state: State, action: Action): State {
     case "SET_PALETTE":
       return { ...state, paletteOpen: action.open };
     case "SET_NEW_SESSION":
-      return { ...state, newSessionOpen: action.open };
+      return {
+        ...state,
+        newSessionOpen: action.open,
+        newSessionFolderId: action.open ? action.folderId ?? null : null,
+      };
     case "SET_TOAST":
       return { ...state, toast: action.text };
     case "SET_SETTINGS":
@@ -317,13 +325,14 @@ export interface Actions {
   stop(id: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
   renameSession(id: string, title: string): Promise<void>;
-  addFolder(): Promise<void>;
+  addFolder(path: string): Promise<Folder | null>;
+  createProject(name: string): Promise<Folder | null>;
   renameFolder(id: string, name: string): Promise<void>;
   removeFolder(id: string): Promise<void>;
   setFilter(value: string): void;
   openPalette(): void;
   closePalette(): void;
-  openNewSession(): void;
+  openNewSession(folderId?: string | null): void;
   closeNewSession(): void;
   openSettings(): void;
   closeSettings(): void;
@@ -403,17 +412,24 @@ function makeActions(
         showToast(shortError(e));
       }
     },
-    async addFolder() {
-      // Directory picker lives in the shell; Phase 3 uses the Tauri dialog when
-      // present, else prompts. Kept minimal — folder creation is not in the mock's
-      // primary flow, which launches into existing folders.
-      const path = window.prompt("Folder path to add");
-      if (!path) return;
+    async addFolder(path) {
       try {
         const folder = await ipc.createFolder(path);
         dispatch({ type: "UPSERT_FOLDER", folder });
+        return folder;
       } catch (e) {
         showToast(shortError(e));
+        return null;
+      }
+    },
+    async createProject(name) {
+      try {
+        const folder = await ipc.createProject(name);
+        dispatch({ type: "UPSERT_FOLDER", folder });
+        return folder;
+      } catch (e) {
+        showToast(shortError(e));
+        return null;
       }
     },
     async renameFolder(id, name) {
@@ -443,8 +459,8 @@ function makeActions(
     closePalette() {
       dispatch({ type: "SET_PALETTE", open: false });
     },
-    openNewSession() {
-      dispatch({ type: "SET_NEW_SESSION", open: true });
+    openNewSession(folderId) {
+      dispatch({ type: "SET_NEW_SESSION", open: true, folderId });
     },
     closeNewSession() {
       dispatch({ type: "SET_NEW_SESSION", open: false });

@@ -66,12 +66,21 @@ pub struct Settings {
     pub stop_on_close: bool,
     pub restore_scrollback: bool,
     pub backup_path: String,
+    /// Where "Create a new project" makes folders (SPEC.md §7).
+    #[serde(default = "default_projects_dir")]
+    pub projects_dir: String,
     pub retention_days: u32,
     pub theme: String,   // "graphite" | "obsidian" | "nebula"
     pub density: String, // "comfortable" | "compact"
     pub font_size: u32,
     pub accent: String,
     pub notify_on_waiting: bool,
+}
+
+/// Serde default so settings.json files written before this field existed
+/// still load instead of failing validation.
+pub fn default_projects_dir() -> String {
+    "~/Documents/Anchor/Projects".into()
 }
 
 impl Default for Settings {
@@ -84,6 +93,7 @@ impl Default for Settings {
             stop_on_close: true,
             restore_scrollback: true,
             backup_path: "~/.anchor/sessions".into(),
+            projects_dir: default_projects_dir(),
             retention_days: 30,
             theme: "graphite".into(),
             density: "comfortable".into(),
@@ -119,6 +129,31 @@ pub struct CliInfo {
 pub struct AppState {
     pub folders: Vec<Folder>,
     pub sessions: Vec<Session>,
+}
+
+/// One selectable directory in the in-app folder browser (SPEC.md §6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirEntry {
+    pub name: String,
+    pub path: String,
+}
+
+/// A directory listing plus the crumbs and shortcuts the browser renders.
+/// Only directories are listed — Anchor sessions always run in a directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirListing {
+    /// Canonical absolute path that was listed.
+    pub path: String,
+    /// Parent directory, or null at the filesystem root.
+    pub parent: Option<String>,
+    /// Ancestors from root to `path`, for the breadcrumb bar.
+    pub crumbs: Vec<DirEntry>,
+    /// Immediate sub-directories, name-sorted, hidden entries excluded.
+    pub entries: Vec<DirEntry>,
+    /// Platform shortcuts (home, Documents, Desktop, …) for the sidebar.
+    pub favourites: Vec<DirEntry>,
 }
 
 /// Event names (SPEC.md §6.3).

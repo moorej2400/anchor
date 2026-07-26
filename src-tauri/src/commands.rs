@@ -22,6 +22,19 @@ pub fn create_folder(
 }
 
 #[tauri::command]
+pub fn create_project(backend: State<'_, Arc<Backend>>, name: String) -> Result<Folder, String> {
+    backend.create_project(name)
+}
+
+#[tauri::command]
+pub fn list_dir(
+    backend: State<'_, Arc<Backend>>,
+    path: Option<String>,
+) -> Result<DirListing, String> {
+    backend.list_dir(path)
+}
+
+#[tauri::command]
 pub fn rename_folder(
     backend: State<'_, Arc<Backend>>,
     folder_id: String,

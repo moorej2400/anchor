@@ -2,13 +2,83 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React + Typescript</title>
+    <title>Anchor</title>
+    <style>
+      /* Critical styles inlined so the very first paint is already the app's
+         dark surface. Without this the window flashes white before the CSS
+         bundle lands — and stays white if the bundle never lands at all. */
+      html,
+      body,
+      #root {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: #0b0b11;
+        color: rgba(255, 255, 255, 0.9);
+        font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+      }
+      #boot {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        text-align: center;
+        padding: 40px;
+      }
+      #boot .mark {
+        width: 52px;
+        height: 52px;
+        border-radius: 14px;
+        background: linear-gradient(135deg, #8a3fd0, #d6417a);
+        box-shadow: 0 8px 30px rgba(214, 65, 122, 0.35);
+      }
+      #boot .msg {
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      #boot .detail {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 11px;
+        color: #f0757f;
+        max-width: 560px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+    </style>
   </head>
 
   <body>
-    <div id="root"></div>
+    <!-- Replaced by React on mount. If the bundle fails to load or throws
+         during module evaluation, this stays on screen with the reason, so the
+         window can never be a silent white rectangle. -->
+    <div id="root">
+      <div id="boot">
+        <div class="mark"></div>
+        <div class="msg">Starting Anchor…</div>
+        <div class="detail" id="boot-error"></div>
+      </div>
+    </div>
+    <script>
+      (function () {
+        var show = function (what) {
+          var el = document.getElementById("boot-error");
+          var msg = document.querySelector("#boot .msg");
+          if (!el) return;
+          if (msg) msg.textContent = "Anchor failed to start";
+          el.textContent = String(what);
+        };
+        window.addEventListener("error", function (e) {
+          show((e && (e.message || e.error)) || "unknown script error");
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          show((e && e.reason) || "unhandled promise rejection");
+        });
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

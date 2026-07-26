@@ -143,6 +143,13 @@ input:focus{outline:none}
             </sc-if>
           </div>
         </sc-for>
+        <sc-if value="{{ noFolders }}" hint-placeholder-val="{{ false }}">
+          <div style="margin:8px 6px;padding:18px 16px;border-radius:12px;background:rgba(255,255,255,.03);border:1px dashed rgba(255,255,255,.13);text-align:center">
+            <div style="font-size:12.5px;font-weight:600;color:rgba(255,255,255,.8);margin-bottom:4px">No folders yet</div>
+            <div style="font-size:11.5px;line-height:1.5;color:rgba(255,255,255,.42);margin-bottom:12px">Sessions live inside a project folder. Point Anchor at one, or let it create a new project for you.</div>
+            <button onClick="{{ openFolderPicker }}" style="width:100%;padding:9px 0;border-radius:9px;border:none;background:var(--grad);color:#fff;font-size:12.5px;font-weight:600;cursor:pointer;box-shadow:0 6px 20px rgba(214,65,122,.3)">Add a folder</button>
+          </div>
+        </sc-if>
       </div>
 
       <div style="flex:none;padding:10px 12px;border-top:1px solid rgba(255,255,255,.06)">
@@ -151,7 +158,10 @@ input:focus{outline:none}
           <span style="display:flex;align-items:center;gap:5px"><span style="width:7px;height:7px;border-radius:50%;background:#d4a35f;box-shadow:0 0 6px rgba(212,163,95,.6)"></span>{{ waitingCount }} waiting</span>
           <span style="display:flex;align-items:center;gap:5px;color:rgba(255,255,255,.38)">{{ stoppedCount }} stopped</span>
         </div>
-        <button onClick="{{ openSettings }}" style="width:100%;display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:9px;border:1px solid rgba(255,255,255,.07);background:rgba(255,255,255,.03);color:rgba(255,255,255,.75);font-size:12.5px;cursor:pointer" style-hover="background:rgba(255,255,255,.06)"><span style="font-size:14px">⚙</span>Settings</button>
+        <div style="display:flex;gap:8px">
+          <button onClick="{{ openFolderPicker }}" style="flex:1;display:flex;align-items:center;justify-content:center;gap:7px;padding:8px 10px;border-radius:9px;border:1px solid rgba(255,255,255,.07);background:rgba(255,255,255,.03);color:rgba(255,255,255,.75);font-size:12.5px;cursor:pointer" style-hover="background:rgba(255,255,255,.06)"><span style="font-size:14px;line-height:1">+</span>Add folder</button>
+          <button onClick="{{ openSettings }}" style="flex:none;display:flex;align-items:center;gap:9px;padding:8px 12px;border-radius:9px;border:1px solid rgba(255,255,255,.07);background:rgba(255,255,255,.03);color:rgba(255,255,255,.75);font-size:12.5px;cursor:pointer" style-hover="background:rgba(255,255,255,.06)"><span style="font-size:14px">⚙</span>Settings</button>
+        </div>
       </div>
     </aside>
 
@@ -213,8 +223,12 @@ input:focus{outline:none}
                 <div style="flex:1;display:grid;place-items:center;padding:40px;text-align:center;color:rgba(255,255,255,.4)">
                   <div>
                     <div style="width:52px;height:52px;margin:0 auto 16px;border-radius:14px;background:var(--grad);opacity:.85;box-shadow:0 8px 30px rgba(214,65,122,.35)"></div>
-                    <div style="font-size:15px;font-weight:600;color:rgba(255,255,255,.7);margin-bottom:6px">No session open</div>
-                    <div style="font-size:12.5px">Press <span style="font-family:'JetBrains Mono',monospace;padding:2px 6px;border-radius:5px;background:rgba(255,255,255,.08)">⌘K</span> or use <span style="color:rgba(255,255,255,.6)">+</span> next to a folder to launch one.</div>
+                    <div style="font-size:15px;font-weight:600;color:rgba(255,255,255,.7);margin-bottom:6px">{{ emptyTitle }}</div>
+                    <div style="font-size:12.5px;max-width:340px;margin:0 auto">{{ emptyBody }}</div>
+                    <div style="display:flex;gap:9px;justify-content:center;margin-top:18px">
+                      <button onClick="{{ openNewTerm }}" style="padding:10px 16px;border-radius:10px;border:none;background:var(--grad);color:#fff;font-size:12.5px;font-weight:600;cursor:pointer;box-shadow:0 8px 24px rgba(214,65,122,.32)">New session</button>
+                      <button onClick="{{ openFolderPicker }}" style="padding:10px 16px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:rgba(255,255,255,.78);font-size:12.5px;cursor:pointer" style-hover="background:rgba(255,255,255,.08)">Add a folder</button>
+                    </div>
                   </div>
                 </div>
               </sc-if>
@@ -279,6 +293,14 @@ input:focus{outline:none}
                   <div style="margin-bottom:22px">
                     <div style="font-size:13px;font-weight:600;margin-bottom:8px">Default shell</div>
                     <input value="{{ settings.shell }}" onChange="{{ onShell }}" style="width:100%;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);color:#fff;font-family:'JetBrains Mono',monospace;font-size:12.5px" />
+                  </div>
+                  <div style="margin-bottom:22px">
+                    <div style="font-size:13px;font-weight:600;margin-bottom:4px">Projects directory</div>
+                    <div style="font-size:12px;color:rgba(255,255,255,.4);margin-bottom:8px">Where “Create a new project” puts new folders. Default: <span style="font-family:'JetBrains Mono',monospace;color:rgba(255,255,255,.6)">~/Documents/Anchor/Projects</span></div>
+                    <div style="display:flex;gap:8px">
+                      <input value="{{ settings.projectsDir }}" onChange="{{ onProjectsDir }}" style="flex:1;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);color:#fff;font-family:'JetBrains Mono',monospace;font-size:12.5px" />
+                      <button onClick="{{ browseProjectsDir }}" style="padding:0 16px;border-radius:10px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.04);color:rgba(255,255,255,.75);font-size:12.5px;cursor:pointer" style-hover="background:rgba(255,255,255,.08)">Browse…</button>
+                    </div>
                   </div>
                   <div style="margin-bottom:22px">
                     <div style="font-size:13px;font-weight:600;margin-bottom:8px">Environment variables</div>
@@ -408,12 +430,136 @@ input:focus{outline:none}
 
   <sc-if value="{{ newTermOpen }}" hint-placeholder-val="{{ false }}">
     <div onClick="{{ closeNewTerm }}" style="position:fixed;inset:0;z-index:60;display:grid;place-items:start center;padding-top:16vh;background:rgba(5,5,9,.55);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)">
-      <div onClick="{{ stop }}" style="width:440px;max-width:92vw;border-radius:15px;background:rgba(26,24,33,.94);backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);border:1px solid rgba(255,255,255,.11);box-shadow:0 30px 80px rgba(0,0,0,.6);overflow:hidden;animation:glowin .14s ease">
-        <div style="padding:16px 18px 12px;border-bottom:1px solid rgba(255,255,255,.08)">
-          <div style="font-size:15px;font-weight:600">New session</div>
-          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(255,255,255,.42);margin-top:3px">in {{ newTermFolder }}</div>
+      <div onClick="{{ stop }}" style="width:500px;max-width:92vw;border-radius:15px;background:rgba(26,24,33,.94);backdrop-filter:blur(30px);-webkit-backdrop-filter:blur(30px);border:1px solid rgba(255,255,255,.11);box-shadow:0 30px 80px rgba(0,0,0,.6);overflow:hidden;animation:glowin .14s ease">
+        <div style="display:flex;align-items:center;gap:11px;padding:15px 16px 13px;border-bottom:1px solid rgba(255,255,255,.08)">
+          <sc-if value="{{ ntShowBack }}" hint-placeholder-val="{{ false }}">
+            <button onClick="{{ ntBack }}" title="Back" style="flex:none;width:27px;height:27px;display:grid;place-items:center;border-radius:8px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.04);color:rgba(255,255,255,.72);font-size:13px;cursor:pointer" style-hover="background:rgba(255,255,255,.09)">←</button>
+          </sc-if>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:15px;font-weight:600">{{ ntTitle }}</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(255,255,255,.42);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ ntSubtitle }}</div>
+          </div>
+        </div>
+
+        <sc-if value="{{ ntStepFolder }}" hint-placeholder-val="{{ false }}">
+          <div style="max-height:58vh;overflow-y:auto;padding:8px">
+            <sc-if value="{{ ntHasFolders }}" hint-placeholder-val="{{ true }}">
+              <div style="padding:6px 9px 6px;font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:rgba(255,255,255,.36)">Folders already in Anchor</div>
+              <div style="display:flex;flex-direction:column;gap:2px">
+                <sc-for list="{{ ntFolders }}" as="ff" hint-placeholder-count="3">
+                  <button onClick="{{ ff.pick }}" style="width:100%;display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:10px;border:none;background:transparent;color:rgba(255,255,255,.9);cursor:pointer;text-align:left" style-hover="background:rgba(255,255,255,.06)">
+                    <span style="flex:none;width:9px;height:9px;border-radius:3px;background:var(--grad)"></span>
+                    <span style="flex:1;min-width:0">
+                      <span style="display:block;font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ ff.name }}</span>
+                      <span style="display:block;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(255,255,255,.4);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ ff.path }}</span>
+                    </span>
+                    <span style="flex:none;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(255,255,255,.34)">{{ ff.countLabel }}</span>
+                  </button>
+                </sc-for>
+              </div>
+              <div style="height:1px;margin:9px 7px;background:rgba(255,255,255,.08)"></div>
+            </sc-if>
+
+            <div style="padding:2px 9px 6px;font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:rgba(255,255,255,.36)">Add a folder</div>
+            <div style="display:flex;flex-direction:column;gap:2px">
+              <button onClick="{{ ntBrowse }}" style="width:100%;display:flex;align-items:center;gap:11px;padding:10px;border-radius:10px;border:none;background:transparent;color:rgba(255,255,255,.9);cursor:pointer;text-align:left" style-hover="background:rgba(255,255,255,.06)">
+                <span style="flex:none;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:12px;color:rgba(255,255,255,.75);background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.08)">⌕</span>
+                <span style="flex:1;min-width:0">
+                  <span style="display:block;font-size:13.5px;font-weight:500">Choose an existing folder…</span>
+                  <span style="display:block;font-size:11.5px;color:rgba(255,255,255,.42)">Browse your Mac and point Anchor at any directory</span>
+                </span>
+                <span style="flex:none;font-family:'JetBrains Mono',monospace;font-size:10px;color:rgba(255,255,255,.35);padding:3px 6px;border-radius:5px;border:1px solid rgba(255,255,255,.12)">⌘O</span>
+              </button>
+              <button onClick="{{ ntCreate }}" style="width:100%;display:flex;align-items:center;gap:11px;padding:10px;border-radius:10px;border:none;background:transparent;color:rgba(255,255,255,.9);cursor:pointer;text-align:left" style-hover="background:rgba(255,255,255,.06)">
+                <span style="flex:none;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:14px;color:#fff;background:var(--grad)">+</span>
+                <span style="flex:1;min-width:0">
+                  <span style="display:block;font-size:13.5px;font-weight:500">Create a new project</span>
+                  <span style="display:block;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:rgba(255,255,255,.42);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Anchor makes the folder in {{ projectsDir }}</span>
+                </span>
+              </button>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ ntStepBrowse }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;flex-direction:column;height:394px">
+            <div style="flex:none;display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:9px 14px;border-bottom:1px solid rgba(255,255,255,.07);font-family:'JetBrains Mono',monospace;font-size:11px">
+              <sc-for list="{{ browseCrumbs }}" as="cr" hint-placeholder-count="2">
+                <button onClick="{{ cr.go }}" style="display:flex;align-items:center;gap:4px;padding:2px 5px;border-radius:5px;border:none;background:transparent;color:rgba(255,255,255,.6);font-family:inherit;font-size:11px;cursor:pointer" style-hover="background:rgba(255,255,255,.07);color:#fff">{{ cr.label }}<span style="color:rgba(255,255,255,.25)">{{ cr.sep }}</span></button>
+              </sc-for>
+            </div>
+            <div style="flex:1;display:flex;min-height:0">
+              <div style="flex:none;width:142px;padding:8px 6px;border-right:1px solid rgba(255,255,255,.07);overflow-y:auto">
+                <div style="padding:4px 8px 6px;font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;color:rgba(255,255,255,.3)">Favourites</div>
+                <sc-for list="{{ browseFavs }}" as="fav" hint-placeholder-count="4">
+                  <button onClick="{{ fav.go }}" style="width:100%;display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;border:none;background:transparent;color:rgba(255,255,255,.72);font-size:12px;cursor:pointer;text-align:left" style-hover="background:rgba(255,255,255,.06);color:#fff"><span style="flex:none;width:7px;height:7px;border-radius:2px;background:rgba(255,255,255,.3)"></span><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ fav.label }}</span></button>
+                </sc-for>
+              </div>
+              <div style="flex:1;min-width:0;overflow-y:auto;padding:6px">
+                <sc-for list="{{ browseItems }}" as="it" hint-placeholder-count="5">
+                  <div onClick="{{ it.pick }}" onDoubleClick="{{ it.open }}" style="position:relative;display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:8px;cursor:default" style-hover="background:rgba(255,255,255,.04)">
+                    <sc-if value="{{ it.selected }}" hint-placeholder-val="{{ false }}">
+                      <div style="position:absolute;inset:0;border-radius:8px;background:rgba(214,65,122,.16);border:1px solid var(--acc)"></div>
+                    </sc-if>
+                    <span style="position:relative;z-index:1;flex:none;width:8px;height:8px;border-radius:2px;background:rgba(255,255,255,.35)"></span>
+                    <span style="position:relative;z-index:1;flex:1;min-width:0;font-size:12.5px;color:rgba(255,255,255,.88);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ it.name }}</span>
+                    <sc-if value="{{ it.inApp }}" hint-placeholder-val="{{ false }}">
+                      <span style="position:relative;z-index:1;flex:none;font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;color:rgba(255,255,255,.42);padding:2px 6px;border-radius:5px;background:rgba(255,255,255,.06)">in anchor</span>
+                    </sc-if>
+                    <button onClick="{{ it.open }}" title="Open folder" style="position:relative;z-index:2;flex:none;width:20px;height:20px;display:grid;place-items:center;border:none;border-radius:5px;background:transparent;color:rgba(255,255,255,.4);font-size:11px;cursor:pointer" style-hover="background:rgba(255,255,255,.1);color:#fff">▸</button>
+                  </div>
+                </sc-for>
+                <sc-if value="{{ browseEmpty }}" hint-placeholder-val="{{ false }}">
+                  <div style="padding:26px 12px;text-align:center;font-size:12px;color:rgba(255,255,255,.35)">No sub-folders here — you can still select this directory.</div>
+                </sc-if>
+              </div>
+            </div>
+            <div style="flex:none;display:flex;align-items:center;gap:10px;padding:11px 14px;border-top:1px solid rgba(255,255,255,.07);background:rgba(255,255,255,.02)">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:rgba(255,255,255,.32)">Selected</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;color:rgba(255,255,255,.82);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ browseSelectedPath }}</div>
+              </div>
+              <button onClick="{{ ntBack }}" style="flex:none;padding:8px 14px;border-radius:9px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:rgba(255,255,255,.75);font-size:12.5px;cursor:pointer" style-hover="background:rgba(255,255,255,.08)">Cancel</button>
+              <button onClick="{{ browseConfirm }}" style="flex:none;padding:8px 16px;border-radius:9px;border:none;background:var(--grad);color:#fff;font-size:12.5px;font-weight:600;cursor:pointer;box-shadow:0 6px 20px rgba(214,65,122,.32)">{{ browseConfirmLabel }}</button>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ ntStepCreate }}" hint-placeholder-val="{{ false }}">
+          <div style="padding:16px">
+            <div style="font-size:12.5px;font-weight:600;margin-bottom:8px">Project name</div>
+            <input value="{{ newProjName }}" onChange="{{ onNewProjName }}" onKeyDown="{{ onNewProjKey }}" ref="{{ projRef }}" placeholder="my-new-project" style="width:100%;padding:11px 12px;border-radius:10px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);color:#fff;font-family:'JetBrains Mono',monospace;font-size:13px" />
+            <div style="margin-top:12px;padding:11px 13px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08)">
+              <div style="font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:rgba(255,255,255,.32);margin-bottom:4px">Will be created at</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:rgba(255,255,255,.85);word-break:break-all">{{ newProjFullPath }}</div>
+            </div>
+            <div style="margin-top:10px;font-size:11.5px;line-height:1.5;color:rgba(255,255,255,.42)">No file picker needed — Anchor creates the folder inside your projects directory. Change that location in <span style="color:rgba(255,255,255,.7)">Settings → General → Projects directory</span>.</div>
+            <div style="display:flex;gap:9px;margin-top:16px">
+              <button onClick="{{ ntBack }}" style="flex:1;padding:10px 0;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:rgba(255,255,255,.78);font-size:12.5px;cursor:pointer" style-hover="background:rgba(255,255,255,.08)">Back</button>
+              <sc-if value="{{ newProjValid }}" hint-placeholder-val="{{ false }}">
+                <button onClick="{{ createProject }}" style="flex:1;padding:10px 0;border-radius:10px;border:none;background:var(--grad);color:#fff;font-size:12.5px;font-weight:600;cursor:pointer;box-shadow:0 6px 20px rgba(214,65,122,.32)">Create project</button>
+              </sc-if>
+              <sc-if value="{{ newProjInvalid }}" hint-placeholder-val="{{ true }}">
+                <div style="flex:1;padding:10px 0;border-radius:10px;border:1px solid rgba(255,255,255,.07);background:rgba(255,255,255,.02);color:rgba(255,255,255,.28);font-size:12.5px;font-weight:600;text-align:center;cursor:not-allowed">Create project</div>
+              </sc-if>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ ntStepTool }}" hint-placeholder-val="{{ true }}">
+        <div style="padding:14px 16px 12px;border-bottom:1px solid rgba(255,255,255,.07);background:rgba(255,255,255,.015)">
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:rgba(255,255,255,.36);margin-bottom:8px">Folder</div>
+          <div style="display:flex;align-items:center;gap:11px">
+            <span style="flex:none;width:10px;height:10px;border-radius:3px;background:var(--grad)"></span>
+            <span style="flex:1;min-width:0">
+              <span style="display:block;font-size:13.5px;font-weight:600">{{ ntFolderName }}</span>
+              <span style="display:block;font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(255,255,255,.42);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ ntFolderPath }}</span>
+            </span>
+            <button onClick="{{ ntChangeFolder }}" style="flex:none;padding:6px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.05);color:rgba(255,255,255,.8);font-size:11.5px;cursor:pointer" style-hover="background:rgba(255,255,255,.1);color:#fff">Change…</button>
+          </div>
         </div>
         <div style="padding:8px">
+          <div style="padding:6px 9px 7px;font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:rgba(255,255,255,.36)">Launch</div>
           <button onClick="{{ ntClaude }}" style="width:100%;display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:10px;border:none;background:transparent;color:rgba(255,255,255,.9);cursor:pointer;text-align:left" style-hover="background:rgba(255,255,255,.06)"><span style="flex:none;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:#e6a07c;background:rgba(230,140,90,.15);border:1px solid rgba(255,255,255,.06)">cc</span><span style="flex:1;font-size:13.5px;font-weight:500">Claude Code</span></button>
           <button onClick="{{ ntCodex }}" style="width:100%;display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:10px;border:none;background:transparent;color:rgba(255,255,255,.9);cursor:pointer;text-align:left" style-hover="background:rgba(255,255,255,.06)"><span style="flex:none;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:#6fd0a0;background:rgba(90,200,150,.15);border:1px solid rgba(255,255,255,.06)">cx</span><span style="flex:1;font-size:13.5px;font-weight:500">Codex</span></button>
           <button onClick="{{ ntCopilot }}" style="width:100%;display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:10px;border:none;background:transparent;color:rgba(255,255,255,.9);cursor:pointer;text-align:left" style-hover="background:rgba(255,255,255,.06)"><span style="flex:none;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:#8fb3f0;background:rgba(110,150,240,.15);border:1px solid rgba(255,255,255,.06)">co</span><span style="flex:1;font-size:13.5px;font-weight:500">Copilot</span></button>
@@ -421,6 +567,7 @@ input:focus{outline:none}
           <div style="height:1px;margin:6px 7px;background:rgba(255,255,255,.08)"></div>
           <button onClick="{{ ntTerminal }}" style="width:100%;display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:10px;border:none;background:transparent;color:rgba(255,255,255,.9);cursor:pointer;text-align:left" style-hover="background:rgba(255,255,255,.06)"><span style="flex:none;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:rgba(255,255,255,.7);background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.06)">›_</span><span style="flex:1;font-size:13.5px;font-weight:500">Generic terminal</span></button>
         </div>
+        </sc-if>
       </div>
     </div>
   </sc-if>
@@ -501,11 +648,45 @@ class Component extends DCLogic {
     stopped:{c:null,label:'stopped'},             // NO DOT - not running (resumable)
   };
   MODEL = {claude:'claude-sonnet-4.6',codex:'gpt-5-codex',copilot:'gpt-5',opencode:'anthropic/claude-4.6',terminal:'/bin/zsh'};
+  /* ======================================================================
+   *  FOLDERS / PROJECTS
+   * ----------------------------------------------------------------------
+   *  Every session runs inside a folder, so "New session" can never dead-end.
+   *  Three ways to get a folder, all reachable from the + menu:
+   *    1. pick a folder already registered in Anchor  -> ntPickFolder()
+   *    2. browse the filesystem and point at any dir  -> browse step
+   *       (in the real app this is the native NSOpenPanel /
+   *        dialog.showOpenDialog with properties:['openDirectory'];
+   *        the FS map below only exists to fake it in this prototype)
+   *    3. create a new project                        -> createProject()
+   *       Anchor mkdir's <projectsDir>/<slug>, so the user never has to
+   *       choose a location.
+   *
+   *  DEFAULT PROJECTS DIRECTORY: ~/Documents/Anchor/Projects
+   *  Overridable in Settings -> General -> Projects directory
+   *  (persisted as settings.projectsDir; ship the default as a constant so
+   *   a first run with no prefs file still resolves.)
+   * ==================================================================== */
+  PROJECTS_DIR_DEFAULT = '~/Documents/Anchor/Projects';
+  // Fake directory tree — stands in for the native folder picker.
+  FS = {
+    '~':['Desktop','Documents','Downloads','dev','work'],
+    '~/Desktop':['screenshots'],
+    '~/Documents':['Anchor','Notes','Invoices'],
+    '~/Documents/Anchor':['Projects','backups'],
+    '~/Documents/Anchor/Projects':['scratch-pad'],
+    '~/Downloads':[],
+    '~/dev':['acme-web','payments-api','mobile-app','design-tokens','sandbox'],
+    '~/dev/acme-web':['src','tests'],
+    '~/dev/sandbox':[],
+    '~/work':['infra','analytics','vendor-portal'],
+  };
   TC = {dim:'rgba(255,255,255,.42)',txt:'rgba(255,255,255,.86)',g:'#4fd598',p:'#e07aa0',v:'#b98be6',b:'#77b6f2',a:'#f0b455',r:'#f0757f'};
   seq = 100;
   paletteRef = React.createRef();
   renameRef = React.createRef();
   folderRenameRef = React.createRef();
+  projRef = React.createRef();
   state = {
     activeId:'w-claude',
     openTabs:['w-claude','api-codex','w-copilot'],
@@ -513,6 +694,12 @@ class Component extends DCLogic {
     filter:'',
     launchMenuFor:null,
     newTermOpen:false,
+    ntStep:'tool',        // tool | folder | browse | create
+    ntFolderId:null,      // folder the new session will launch in
+    browseMode:'folder',  // folder | projectsDir (what the picker is choosing)
+    browsePath:'~/dev',
+    browseSel:null,
+    newProjName:'',
     paletteOpen:false,
     paletteQuery:'',
     settingsSection:'general',
@@ -530,7 +717,7 @@ class Component extends DCLogic {
     removeAck:false,
     copiedToast:false,
     toastText:'',
-    settings:{shell:'/bin/zsh',autoRestore:true,confirmClose:true,stopOnClose:true,restoreScrollback:true,backupPath:'~/.anchor/sessions',retention:30,theme:'graphite',density:'comfortable',fontSize:13},
+    settings:{shell:'/bin/zsh',projectsDir:'~/Documents/Anchor/Projects',autoRestore:true,confirmClose:true,stopOnClose:true,restoreScrollback:true,backupPath:'~/.anchor/sessions',retention:30,theme:'graphite',density:'comfortable',fontSize:13},
     folders:[
       {id:'f1',name:'acme-web',path:'~/dev/acme-web',sessions:[
         {id:'w-claude',tool:'claude',title:'refactor auth middleware',status:'running',sessionId:'a3f9-7c21-e004',last:'now'},
@@ -560,18 +747,20 @@ class Component extends DCLogic {
       const m = e.metaKey || e.ctrlKey;
       if(m && e.key.toLowerCase()==='k'){ e.preventDefault(); this.setState(s=>({paletteOpen:!s.paletteOpen,paletteQuery:''})); }
       else if(m && e.key===','){ e.preventDefault(); this.setState({view:'settings'}); }
-      else if(e.key==='Escape'){ this.setState({paletteOpen:false,newTermOpen:false,launchMenuFor:null,sessionMenu:null,renamingId:null,confirmDeleteId:null,folderMenu:null,folderRenamingId:null,removeFolderId:null}); }
+      else if(m && e.key.toLowerCase()==='o'){ e.preventDefault(); this.setState({newTermOpen:true,ntStep:'browse',browseMode:'folder',browsePath:'~/dev',browseSel:null}); }
+      else if(e.key==='Escape'){ this.setState({paletteOpen:false,newTermOpen:false,ntStep:'tool',launchMenuFor:null,sessionMenu:null,renamingId:null,confirmDeleteId:null,folderMenu:null,folderRenamingId:null,removeFolderId:null}); }
     };
     window.addEventListener('keydown', this._key);
     this._docClick = ()=>{ this.setState(st=> (st.launchMenuFor||st.sessionMenu||st.confirmDeleteId||st.folderMenu)?{launchMenuFor:null,sessionMenu:null,confirmDeleteId:null,folderMenu:null}:{}); };
     document.addEventListener('click', this._docClick);
   }
   componentWillUnmount(){ window.removeEventListener('keydown', this._key); document.removeEventListener('click', this._docClick); clearTimeout(this._ct); }
-  componentDidUpdate(prev){
+  componentDidUpdate(prev, prevState){
     this.applyVars();
     if(this.state.paletteOpen && this.paletteRef.current) this.paletteRef.current.focus();
     if(this.state.renamingId && this.renameRef.current && document.activeElement!==this.renameRef.current) this.renameRef.current.focus();
     if(this.state.folderRenamingId && this.folderRenameRef.current && document.activeElement!==this.folderRenameRef.current) this.folderRenameRef.current.focus();
+    if(this.state.newTermOpen && this.state.ntStep==='create' && this.projRef.current && (!prevState || prevState.ntStep!=='create')) this.projRef.current.focus();
   }
   applyVars(){
     const r = document.documentElement.style;
@@ -639,7 +828,57 @@ class Component extends DCLogic {
     const sess={id,tool,title:titles[tool],status:'running',sessionId:tool==='terminal'?('tty-0'+this.seq):this.genId(),last:'just now'};
     this.setState(st=>({folders:st.folders.map(f=>f.id===folderId?{...f,sessions:[...f.sessions,sess]}:f),openTabs:[...st.openTabs,id],activeId:id,view:'terminal',launchMenuFor:null}));
   }
-  launchInActive(tool){ const st=this.state; const rec=this.flat()[st.activeId]; const f=rec?rec.f:st.folders[0]; if(!f) return; this.launch(tool,f.id); this.setState({newTermOpen:false}); }
+  launchInActive(tool){
+    const st=this.state;
+    let fid=st.ntFolderId;
+    if(!fid){ const rec=this.flat()[st.activeId]; fid=rec?rec.f.id:(st.folders[0]||{}).id; }
+    if(!fid){ this.setState({ntStep:'folder'}); return; }   // no folder anywhere -> route to the chooser, never dead-end
+    this.launch(tool,fid);
+    this.setState({newTermOpen:false,ntStep:'tool'});
+  }
+
+  /* ---- new-session / folder-picker flow ------------------------------ */
+  defaultFolderId(){ const rec=this.flat()[this.state.activeId]; return rec?rec.f.id:((this.state.folders[0]||{}).id||null); }
+  openNewTerm(){ const fid=this.defaultFolderId(); this.setState({newTermOpen:true, ntStep: fid?'tool':'folder', ntFolderId:fid, browseMode:'folder', browseSel:null, newProjName:''}); }
+  openFolderPicker(){ this.setState({newTermOpen:true, ntStep:'folder', ntFolderId:this.defaultFolderId(), browseMode:'folder', browseSel:null, newProjName:''}); }
+  closeNewTerm(){ this.setState({newTermOpen:false, ntStep:'tool'}); }
+  ntPickFolder(id){ this.setState({ntFolderId:id, ntStep:'tool'}); }
+  ntGoBrowse(){ this.setState({ntStep:'browse', browseMode:'folder', browsePath:'~/dev', browseSel:null}); }
+  ntGoCreate(){ this.setState({ntStep:'create', newProjName:''}); }
+  ntBack(){
+    const st=this.state;
+    if(st.ntStep==='browse' && st.browseMode==='projectsDir') return this.setState({newTermOpen:false,ntStep:'tool',browseMode:'folder'});
+    if(st.ntStep==='browse'||st.ntStep==='create') return this.setState({ntStep:'folder'});
+    if(st.ntStep==='folder' && st.ntFolderId) return this.setState({ntStep:'tool'});
+    this.setState({newTermOpen:false});
+  }
+  browseInto(path){ this.setState({browsePath:path, browseSel:null}); }
+  browsePick(path){ this.setState({browseSel:path}); }
+  browseConfirm(){
+    const st=this.state, path=st.browseSel||st.browsePath;
+    // projectsDir mode: the same picker also sets the Settings location.
+    if(st.browseMode==='projectsDir'){ this.setSetting('projectsDir',path); this.setState({newTermOpen:false,ntStep:'tool',browseMode:'folder'}); this.showToast('Projects directory set'); return; }
+    this.addFolder(path);
+  }
+  browseProjectsDir(){ this.setState({newTermOpen:true, ntStep:'browse', browseMode:'projectsDir', browsePath:'~/Documents/Anchor', browseSel:null}); }
+  addFolder(path){
+    const ex=this.state.folders.find(f=>f.path===path);
+    if(ex){ this.setState({ntFolderId:ex.id, ntStep:'tool'}); this.showToast('Already in Anchor — reusing “'+ex.name+'”'); return ex.id; }
+    const id='fd'+(++this.seq), name=path.split('/').filter(Boolean).pop()||path;
+    this.setState(st=>({folders:[...st.folders,{id,name,path,sessions:[]}], ntFolderId:id, ntStep:'tool'}));
+    this.showToast('Added '+name);
+    return id;
+  }
+  slug(v){ return (v||'').trim().toLowerCase().replace(/[^a-z0-9._-]+/g,'-').replace(/^[-.]+|[-.]+$/g,''); }
+  projectsDir(){ return (this.state.settings.projectsDir||this.PROJECTS_DIR_DEFAULT).replace(/\/+$/,''); }
+  createProject(){
+    const s=this.slug(this.state.newProjName);
+    if(!s) return;
+    // Real app: fs.mkdir(<projectsDir>/<slug>, {recursive:true}) then register it.
+    this.addFolder(this.projectsDir()+'/'+s);
+  }
+  onNewProjName(e){ this.setState({newProjName:e.target.value}); }
+  onNewProjKey(e){ if(e.key==='Enter'){ e.preventDefault(); this.createProject(); } }
   openSettings(){ this.setState({view:'settings'}); }
   closeSettings(){ this.setState({view:'terminal'}); }
   setSetting(k,v){ this.setState(st=>({settings:{...st.settings,[k]:v}})); }
@@ -744,6 +983,39 @@ class Component extends DCLogic {
     return wrap(rows);
   }
 
+  ntVals(){
+    const st=this.state, cur=st.folders.find(f=>f.id===st.ntFolderId)||null, pdir=this.projectsDir();
+    const titles={tool:'New session',folder:'Choose a folder',browse:st.browseMode==='projectsDir'?'Choose projects directory':'Select a folder',create:'New project'};
+    const subs={tool:'Choose a folder, then a tool',folder:'Every session runs inside a project folder',browse:st.browsePath,create:pdir+'/'+(this.slug(st.newProjName)||'…')};
+    const segs=st.browsePath.split('/');
+    const kids=this.FS[st.browsePath]||[];
+    const slug=this.slug(st.newProjName);
+    return {
+      newTermOpen:st.newTermOpen,
+      ntStepTool:st.ntStep==='tool', ntStepFolder:st.ntStep==='folder', ntStepBrowse:st.ntStep==='browse', ntStepCreate:st.ntStep==='create',
+      ntTitle:titles[st.ntStep]||'New session', ntSubtitle:subs[st.ntStep]||'',
+      ntShowBack: st.ntStep!=='tool' && !(st.ntStep==='folder' && !st.ntFolderId),
+      ntBack:()=>this.ntBack(),
+      ntFolderName:cur?cur.name:'No folder', ntFolderPath:cur?cur.path:'pick a folder to continue',
+      ntChangeFolder:()=>this.setState({ntStep:'folder'}),
+      ntHasFolders:st.folders.length>0,
+      ntFolders:st.folders.map(f=>({id:f.id,name:f.name,path:f.path,countLabel:f.sessions.length+(f.sessions.length===1?' session':' sessions'),pick:()=>this.ntPickFolder(f.id)})),
+      ntBrowse:()=>this.ntGoBrowse(), ntCreate:()=>this.ntGoCreate(),
+      browseCrumbs:segs.map((label,i)=>{ const p=segs.slice(0,i+1).join('/'); return {label,sep:i<segs.length-1?'/':'',go:()=>this.browseInto(p)}; }),
+      browseFavs:[{label:'Home',path:'~'},{label:'Documents',path:'~/Documents'},{label:'dev',path:'~/dev'},{label:'work',path:'~/work'},{label:'Anchor Projects',path:pdir}].map(f=>({label:f.label,go:()=>this.browseInto(f.path)})),
+      browseItems:kids.map(n=>{ const p=st.browsePath+'/'+n; return {name:n,path:p,selected:st.browseSel===p,inApp:st.folders.some(f=>f.path===p),pick:()=>this.browsePick(p),open:()=>this.browseInto(p)}; }),
+      browseEmpty:kids.length===0, browseSelectedPath:st.browseSel||st.browsePath, browseConfirm:()=>this.browseConfirm(),
+      browseConfirmLabel: st.browseMode==='projectsDir'?'Use this directory':'Add folder',
+      newProjName:st.newProjName, onNewProjName:(e)=>this.onNewProjName(e), onNewProjKey:(e)=>this.onNewProjKey(e),
+      newProjFullPath:pdir+'/'+(slug||'<name>'), newProjValid:!!slug, newProjInvalid:!slug, projRef:this.projRef, createProject:()=>this.createProject(),
+      projectsDir:pdir, onProjectsDir:(e)=>this.setSetting('projectsDir',e.target.value), browseProjectsDir:()=>this.browseProjectsDir(),
+      openNewTerm:()=>this.openNewTerm(), closeNewTerm:()=>this.closeNewTerm(), openFolderPicker:()=>this.openFolderPicker(),
+      noFolders:st.folders.length===0,
+      emptyTitle: st.folders.length? 'No session open' : 'Nothing anchored yet',
+      emptyBody: st.folders.length? 'Press ⌘K, or hit + to start a session in any folder.' : 'Add a project folder to start your first session — choose one from your Mac, or let Anchor create a new project for you.',
+    };
+  }
+
   renderVals(){
     const st=this.state, q=st.filter.trim().toLowerCase();
     const match=(s,f)=> !q || (s.title+' '+f.name+' '+this.BADGE[s.tool].name+' '+s.sessionId).toLowerCase().includes(q);
@@ -797,14 +1069,12 @@ class Component extends DCLogic {
       themeRadios:this.radioGroupEl('theme',[{v:'graphite',l:'Graphite'},{v:'obsidian',l:'Obsidian'},{v:'nebula',l:'Nebula'}]),
       densityRadios:this.radioGroupEl('density',[{v:'comfortable',l:'Comfortable'},{v:'compact',l:'Compact'}]),
       swatches:this.swatchesEl(),
-      shortcuts:[{d:'Command palette',k:'\u2318 K'},{d:'Open settings',k:'\u2318 ,'},{d:'Close current tab',k:'\u2318 W'},{d:'Next / previous tab',k:'\u2303 \u21e5'},{d:'Resume session under cursor',k:'\u2318 \u21a9'},{d:'New generic terminal',k:'\u2318 T'},{d:'Focus session filter',k:'\u2318 F'}],
+      shortcuts:[{d:'Command palette',k:'\u2318 K'},{d:'Open settings',k:'\u2318 ,'},{d:'Close current tab',k:'\u2318 W'},{d:'Next / previous tab',k:'\u2303 \u21e5'},{d:'Resume session under cursor',k:'\u2318 \u21a9'},{d:'Add a folder (browse\u2026)',k:'\u2318 O'},{d:'New generic terminal',k:'\u2318 T'},{d:'Focus session filter',k:'\u2318 F'}],
       renameRef:this.renameRef, folderRenameRef:this.folderRenameRef, copiedToast:st.copiedToast, toastText:st.toastText,
       removeFolder: (function(rf){ return rf?{name:rf.name,path:rf.path,count:rf.sessions.length,ack:st.removeAck,notAck:!st.removeAck,toggleAck:()=>this.setState(s=>({removeAck:!s.removeAck})),cancel:()=>this.setState({removeFolderId:null,removeAck:false}),confirm:()=>this.removeFolder(rf.id),stopEv:(e)=>e.stopPropagation()}:null; }).call(this, st.removeFolderId?st.folders.find(x=>x.id===st.removeFolderId):null),
       paletteOpen:st.paletteOpen, paletteQuery:st.paletteQuery, paletteItems:pitems,
       openPalette:()=>this.setState({paletteOpen:true,paletteQuery:''}), closePalette:()=>this.setState({paletteOpen:false}),
-      newTermOpen:st.newTermOpen,
-      newTermFolder: ((activeRec?activeRec.f:st.folders[0])||{}).name || '',
-      openNewTerm:()=>this.setState({newTermOpen:true}), closeNewTerm:()=>this.setState({newTermOpen:false}),
+      ...this.ntVals(),
       ntClaude:()=>this.launchInActive('claude'), ntCodex:()=>this.launchInActive('codex'), ntCopilot:()=>this.launchInActive('copilot'), ntOpencode:()=>this.launchInActive('opencode'), ntTerminal:()=>this.launchInActive('terminal'),
       onPaletteQuery:(e)=>this.setState({paletteQuery:e.target.value}),
       stop:(e)=>e.stopPropagation(),

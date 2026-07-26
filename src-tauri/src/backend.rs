@@ -20,7 +20,9 @@ use std::time::{Duration, SystemTime};
 use chrono::Utc;
 
 use crate::adapters::{adapter_for, IdCapture, SpawnSpec};
-use crate::models::{AppState, CliInfo, Folder, Session, Settings, Status, Tool};
+use crate::models::{
+    AppState, CliInfo, DirEntry, DirListing, Folder, Session, Settings, Status, Tool,
+};
 use crate::pty::{PtyEvent, PtyManager};
 use crate::registry::Registry;
 use crate::scrollback::{format_restored_scrollback, ScrollbackStore};
@@ -219,6 +221,107 @@ impl Backend {
             return Err(error);
         }
         Ok(folder)
+    }
+
+    /// Create a new project directory inside `settings.projects_dir` and
+    /// register it as a folder. The name is a single path segment: rejecting
+    /// separators and traversal keeps "create a project" from writing outside
+    /// the configured projects directory.
+    pub fn create_project(&self, name: String) -> Result<Folder, String> {
+        let name = nonempty_name(&name, "project")?;
+        if name.contains('/')
+            || name.contains('\\')
+            || name == "."
+            || name == ".."
+            || name.starts_with('.')
+        {
+            return Err(
+                "PROJECT_NAME_INVALID: use a plain folder name without path separators".into(),
+            );
+        }
+
+        let projects_dir = {
+            let settings = self.settings.lock().map_err(lock_error)?;
+            settings.projects_dir.clone()
+        };
+        let root = expand_tilde(&projects_dir)?;
+        fs::create_dir_all(&root)
+            .map_err(|_| "PROJECT_DIR_FAILED: could not create the projects directory".to_string())?;
+
+        let target = root.join(&name);
+        if target.exists() {
+            return Err("PROJECT_EXISTS: a folder with that name already exists".into());
+        }
+        fs::create_dir(&target)
+            .map_err(|_| "PROJECT_DIR_FAILED: could not create the project folder".to_string())?;
+
+        let path = target
+            .to_str()
+            .ok_or_else(|| "DIR_PATH_INVALID: project path is not valid UTF-8".to_string())?
+            .to_owned();
+        self.create_folder(path, Some(name))
+    }
+
+    /// List sub-directories for the in-app folder browser. `path` defaults to
+    /// the user's home directory.
+    pub fn list_dir(&self, path: Option<String>) -> Result<DirListing, String> {
+        let requested = match path.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+            Some(raw) => expand_tilde(raw)?,
+            None => dirs::home_dir()
+                .ok_or_else(|| "DIR_NOT_FOUND: home directory is unavailable".to_string())?,
+        };
+        let canonical = fs::canonicalize(&requested)
+            .map_err(|_| "DIR_NOT_FOUND: folder path could not be resolved".to_string())?;
+        if !canonical.is_dir() {
+            return Err("DIR_NOT_FOUND: path is not a directory".into());
+        }
+
+        let mut entries: Vec<DirEntry> = fs::read_dir(&canonical)
+            .map_err(|_| "DIR_READ_FAILED: could not read that directory".to_string())?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .filter_map(|entry| {
+                let name = entry.file_name().to_str()?.to_owned();
+                // Hidden directories are noise for project selection.
+                if name.starts_with('.') {
+                    return None;
+                }
+                Some(DirEntry {
+                    name,
+                    path: entry.path().to_str()?.to_owned(),
+                })
+            })
+            .collect();
+        entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+        let mut crumbs = Vec::new();
+        for ancestor in canonical.ancestors().collect::<Vec<_>>().into_iter().rev() {
+            if let Some(path) = ancestor.to_str() {
+                let name = ancestor
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("/")
+                    .to_owned();
+                crumbs.push(DirEntry {
+                    name,
+                    path: path.to_owned(),
+                });
+            }
+        }
+
+        Ok(DirListing {
+            path: canonical
+                .to_str()
+                .ok_or_else(|| "DIR_PATH_INVALID: path is not valid UTF-8".to_string())?
+                .to_owned(),
+            parent: canonical
+                .parent()
+                .and_then(|p| p.to_str())
+                .map(str::to_owned),
+            crumbs,
+            entries,
+            favourites: favourite_dirs(),
+        })
     }
 
     pub fn rename_folder(&self, folder_id: &str, name: String) -> Result<Folder, String> {
@@ -871,6 +974,28 @@ fn session_index(registry: &Registry, id: &str) -> Result<usize, String> {
         .ok_or_else(|| "SESSION_NOT_FOUND: session does not exist".into())
 }
 
+/// Sidebar shortcuts for the folder browser. Entries that don't exist on this
+/// machine are omitted rather than shown as dead links.
+fn favourite_dirs() -> Vec<DirEntry> {
+    let mut favourites = Vec::new();
+    let mut push = |name: &str, path: Option<PathBuf>| {
+        if let Some(path) = path.filter(|p| p.is_dir()) {
+            if let Some(path) = path.to_str() {
+                favourites.push(DirEntry {
+                    name: name.to_owned(),
+                    path: path.to_owned(),
+                });
+            }
+        }
+    };
+    push("Home", dirs::home_dir());
+    push("Documents", dirs::document_dir());
+    push("Desktop", dirs::desktop_dir());
+    push("Downloads", dirs::download_dir());
+    push("Developer", dirs::home_dir().map(|h| h.join("Developer")));
+    favourites
+}
+
 fn nonempty_name(value: &str, kind: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
@@ -1223,6 +1348,63 @@ mod tests {
         backend.remove_folder(&folder.id).unwrap();
         assert!(backend.get_state().unwrap().folders.is_empty());
         assert!(backend.rename_folder(&folder.id, "x".into()).is_err());
+    }
+
+    #[test]
+    fn create_project_rejects_names_that_would_escape_the_projects_directory() {
+        let (root, backend, _) = harness();
+        let projects = root.path().join("projects");
+        {
+            let mut settings = backend.settings.lock().unwrap();
+            settings.projects_dir = projects.to_str().unwrap().to_owned();
+        }
+
+        // Anything that is not a single plain segment must be refused, so a
+        // project can never be created outside the configured directory.
+        for name in ["../escape", "nested/child", "..", ".", ".hidden", "  "] {
+            assert!(
+                backend.create_project(name.into()).is_err(),
+                "expected {name:?} to be rejected"
+            );
+        }
+        assert!(backend.get_state().unwrap().folders.is_empty());
+    }
+
+    #[test]
+    fn create_project_creates_the_directory_and_registers_it() {
+        let (root, backend, _) = harness();
+        let projects = root.path().join("projects");
+        {
+            let mut settings = backend.settings.lock().unwrap();
+            settings.projects_dir = projects.to_str().unwrap().to_owned();
+        }
+
+        let folder = backend.create_project("demo-project".into()).unwrap();
+
+        assert!(projects.join("demo-project").is_dir());
+        assert_eq!(folder.name, "demo-project");
+        assert_eq!(backend.get_state().unwrap().folders.len(), 1);
+        // A second project with the same name must not clobber the first.
+        assert!(backend.create_project("demo-project".into()).is_err());
+    }
+
+    #[test]
+    fn list_dir_returns_only_visible_subdirectories() {
+        let (root, backend, _) = harness();
+        let base = root.path().join("listing");
+        fs::create_dir_all(base.join("beta")).unwrap();
+        fs::create_dir_all(base.join("alpha")).unwrap();
+        fs::create_dir_all(base.join(".hidden")).unwrap();
+        fs::write(base.join("file.txt"), b"x").unwrap();
+
+        let listing = backend
+            .list_dir(Some(base.to_str().unwrap().to_owned()))
+            .unwrap();
+
+        let names: Vec<_> = listing.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "beta"], "sorted, no files or dotfiles");
+        assert!(listing.parent.is_some());
+        assert!(listing.crumbs.iter().any(|c| c.name == "listing"));
     }
 
     #[test]

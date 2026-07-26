@@ -185,6 +185,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_state,
             commands::create_folder,
+            commands::create_project,
+            commands::list_dir,
             commands::rename_folder,
             commands::remove_folder,
             commands::launch_session,

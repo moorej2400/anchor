@@ -73,6 +73,19 @@ export function Settings() {
         </div>
 
         <div className="settings__field">
+          <div className="settings__fieldlabel" style={{ marginBottom: 4 }}>Projects directory</div>
+          <div style={{ fontSize: 12, color: "var(--text-3)", marginBottom: 8 }}>
+            Where “Create a new project” puts new folders. Default:{" "}
+            <span style={{ fontFamily: "var(--font-mono)", color: "var(--text-2)" }}>~/Documents/Anchor/Projects</span>
+          </div>
+          <TextInput
+            variant="mono"
+            value={settings.projectsDir}
+            onChange={(e) => void actions.updateSettings({ projectsDir: e.target.value })}
+          />
+        </div>
+
+        <div className="settings__field">
           <div className="settings__fieldlabel">Environment variables</div>
           <div className="env-table">
             {settings.envVars.length === 0 && (

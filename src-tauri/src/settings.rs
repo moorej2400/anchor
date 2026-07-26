@@ -81,6 +81,12 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
                 .into(),
         );
     }
+    if !is_supported_backup_path(&settings.projects_dir) {
+        return Err(
+            "SETTINGS_INVALID: projectsDir must be absolute or start with a supported tilde root"
+                .into(),
+        );
+    }
     if !(1..=90).contains(&settings.retention_days) {
         return Err("SETTINGS_INVALID: retentionDays must be between 1 and 90".into());
     }

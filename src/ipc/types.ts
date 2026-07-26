@@ -40,6 +40,8 @@ export interface Settings {
   stopOnClose: boolean;
   restoreScrollback: boolean;
   backupPath: string;
+  /** Where "Create a new project" makes folders. */
+  projectsDir: string;
   retentionDays: number;
   theme: "graphite" | "obsidian" | "nebula";
   density: "comfortable" | "compact";
@@ -58,6 +60,21 @@ export interface CliInfo {
 export interface AppState {
   folders: Folder[];
   sessions: Session[];
+}
+
+/** One selectable directory in the in-app folder browser. */
+export interface DirEntry {
+  name: string;
+  path: string;
+}
+
+/** A directory listing plus the crumbs and shortcuts the browser renders. */
+export interface DirListing {
+  path: string;
+  parent: string | null;
+  crumbs: DirEntry[];
+  entries: DirEntry[];
+  favourites: DirEntry[];
 }
 
 /** Event payloads (Rust → frontend). */
