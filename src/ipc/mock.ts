@@ -213,31 +213,10 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
       folders.push(folder);
       return Promise.resolve({ ...folder } as T);
     }
-    case "list_dir": {
-      // Synthetic tree — this is a public repo, so no real filesystem paths.
-      const path = (a.path as string) || "~";
-      const kids: Record<string, string[]> = {
-        "~": ["Documents", "Developer", "Desktop"],
-        "~/Documents": ["Anchor", "notes"],
-        "~/Documents/Anchor": ["Projects"],
-        "~/Documents/Anchor/Projects": ["demo-project"],
-        "~/Developer": ["acme-web", "payments-api", "mobile-app"],
-        "~/Desktop": [],
-      };
-      const names = kids[path] ?? [];
-      const segments = path.split("/").filter(Boolean);
-      return Promise.resolve({
-        path,
-        parent: segments.length > 1 ? segments.slice(0, -1).join("/") : path === "~" ? null : "~",
-        crumbs: segments.map((name, i) => ({ name, path: segments.slice(0, i + 1).join("/") })),
-        entries: names.map((name) => ({ name, path: `${path}/${name}` })),
-        favourites: [
-          { name: "Home", path: "~" },
-          { name: "Documents", path: "~/Documents" },
-          { name: "Desktop", path: "~/Desktop" },
-          { name: "Developer", path: "~/Developer" },
-        ],
-      } as T);
+    case "pick_folder": {
+      // Browser mock: the native picker cannot run here, so return a synthetic
+      // path. This is a public repo — never a real filesystem path.
+      return Promise.resolve("~/Developer/picked-folder" as T);
     }
     case "create_folder": {
       const path = a.path as string;

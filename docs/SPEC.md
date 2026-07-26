@@ -210,15 +210,6 @@ export interface Settings {
 
 export interface CliInfo { tool: Tool; found: boolean; version: string | null; path: string | null; }
 
-export interface DirEntry { name: string; path: string; }
-
-export interface DirListing {
-  path: string;              // canonical absolute path listed
-  parent: string | null;     // null at the filesystem root
-  crumbs: DirEntry[];        // root → path, for the breadcrumb bar
-  entries: DirEntry[];       // immediate sub-directories
-  favourites: DirEntry[];    // Home, Documents, Desktop, … (existing ones only)
-}
 ```
 
 ### 6.2 Commands (frontend → Rust, via `invoke`)
@@ -228,7 +219,7 @@ export interface DirListing {
 | `get_state` | — | `{ folders: Folder[]; sessions: Session[] }` | Full registry snapshot; called on boot. |
 | `create_folder` | `{ path: string; name?: string }` | `Folder` | Name defaults to basename. Validates dir exists. |
 | `create_project` | `{ name: string }` | `Folder` | Creates `<projectsDir>/<name>` then registers it. `name` must be a single path segment — separators, `.`/`..` and dotfiles are rejected so the write stays inside `projectsDir`. Errors: `PROJECT_NAME_INVALID`, `PROJECT_EXISTS`, `PROJECT_DIR_FAILED`. |
-| `list_dir` | `{ path?: string }` | `DirListing` | Powers the in-app folder browser. Defaults to the user's home. Lists **directories only**, name-sorted, hidden entries excluded. Errors: `DIR_NOT_FOUND`, `DIR_READ_FAILED`. |
+| `pick_folder` | — | `string \| null` | Opens the **OS folder picker** (Finder on macOS) via `tauri-plugin-dialog`; resolves to the chosen absolute path, or `null` if cancelled. Async + `spawn_blocking`: sync commands run on the main thread and the native dialog must be driven from there, so blocking on the main thread would deadlock. Errors: `DIALOG_FAILED`, `DIR_PATH_INVALID`. |
 | `rename_folder` | `{ folderId: string; name: string }` | `Folder` | |
 | `remove_folder` | `{ folderId: string }` | `void` | Stops + deletes all its sessions (UI shows the ack modal first). |
 | `launch_session` | `{ folderId: string; tool: Tool; title?: string; extraArgs?: string[] }` | `Session` | Creates record (persisted before spawn), spawns PTY, starts discovery. Status `running`. |
@@ -275,19 +266,21 @@ Errors: commands reject with a string error code + message, e.g. `"CLI_NOT_FOUND
 - **Window chrome bar** (38 px): app mark + "Anchor", centered active folder path (JetBrains Mono), traffic-light placeholders (use native window controls per-platform; overlay/hidden-title-bar style).
 - **Sidebar** (298 px): filter input with ⌘K chip; folder groups — chevron collapse, name (renamable inline), session count, hover `⋯` menu (Rename group / Copy folder path / Remove group → ack-checkbox modal), `+` quick-launch menu (the 4 AI CLIs + Generic terminal, "Launch in <folder>"); session rows — tool badge, title (renamable inline), status dot, hover actions (✕ delete with confirm popover: "Delete this session? Its saved session ID will be removed.", `⋯` menu: Rename session / Copy session ID); footer — running/waiting/stopped counts + Settings button.
 - **Tab strip:** open sessions, badge + title + dot + ×, `+` opens the New-session wizard.
-- **New-session wizard** (four steps, per the mock). Opening from a folder's
-  quick-launch `+` jumps straight to `tool`; opening from the tab strip or ⌘O
-  starts at `folder`, so a cold start with no folders is recoverable:
+- **New-session wizard** (three steps). Opening from a folder's quick-launch `+`
+  jumps straight to `tool`; opening from the tab strip or ⌘O starts at `folder`,
+  so a cold start with no folders is recoverable:
   1. **folder** — "Folders already in Anchor" (name, path, session count) plus
      "Add a folder": *Choose an existing folder…* (⌘O) and *Create a new project*.
-  2. **browse** — in-app directory browser via `list_dir`: breadcrumbs,
-     favourites sidebar, directory rows badged "in anchor" when already
-     registered, single click selects / double click (or `›`) descends, footer
-     shows the selected path with Cancel / Use this folder. Selecting a
-     directory already registered reuses that folder instead of duplicating it.
-  3. **create** — project name input, live "will be created at
+  2. **create** — project name input, live "will be created at
      `<projectsDir>/<name>`" preview, Create disabled until non-empty.
-  4. **tool** — the chosen folder with a Change button, then the five CLIs.
+  3. **tool** — the chosen folder with a Change button, then the five CLIs.
+
+  *Choose an existing folder…* calls `pick_folder`, which opens the **native OS
+  folder picker** rather than an in-app browser. Cancelling leaves the wizard on
+  the folder step. If the returned path is already registered, that folder is
+  reused instead of being added twice.
+  (The mock draws an in-app browser for this step; the native picker was chosen
+  deliberately over it — less code and the dialog users already know.)
 - **Main pane:** live terminal (xterm.js, JetBrains Mono, `fontSize` setting) for ON sessions; **Resume card** for stopped ones — badge, title, folder path, "Saved session — ready to resume" panel (session id / model / last active), gradient "↻ Resume session" button, "Restored from <backupPath>" footnote; empty state when no tabs ("No session open · Press ⌘K …").
 - **Status bar:** active session badge/title/tool·model, session-id chip with copy, status chip, Stop button (only when `stopOnClose` is off and session is ON), right side: counts + shortcut hints.
 - **Command palette (⌘K):** fuzzy filter over sessions (title, folder, tool); Enter jumps/opens tab.

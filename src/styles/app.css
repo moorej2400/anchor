@@ -225,30 +225,7 @@ body {
 .nt__icon--grad { background: var(--grad); border: none; color: #fff; font-size: 14px; }
 .nt__kbd { flex: none; font-family: var(--font-mono); font-size: 10px; color: var(--text-3); padding: 3px 6px; border-radius: 5px; border: 1px solid rgba(255, 255, 255, 0.12); }
 
-.nt__browse { display: flex; flex-direction: column; height: 394px; }
-.nt__crumbs { flex: none; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 9px 14px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
-.nt__crumb { padding: 2px 5px; border-radius: 5px; border: none; background: transparent; color: var(--text-2); font-family: var(--font-mono); font-size: 11px; cursor: pointer; }
-.nt__crumb:hover { background: rgba(255, 255, 255, 0.07); color: #fff; }
-.nt__browseBody { flex: 1; display: flex; min-height: 0; }
-.nt__favs { flex: none; width: 142px; padding: 8px 6px; border-right: 1px solid rgba(255, 255, 255, 0.07); overflow-y: auto; }
-.nt__favsLabel { padding: 4px 8px 6px; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.09em; color: rgba(255, 255, 255, 0.3); }
-.nt__fav { width: 100%; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; border: none; background: transparent; color: rgba(255, 255, 255, 0.72); font-size: 12px; cursor: pointer; text-align: left; font-family: var(--font-ui); }
-.nt__fav:hover { background: var(--surface-hover); color: #fff; }
-.nt__items { flex: 1; min-width: 0; overflow-y: auto; padding: 6px; }
-.nt__item { position: relative; display: flex; align-items: center; gap: 10px; padding: 7px 9px; border-radius: 8px; cursor: default; }
-.nt__item:hover { background: var(--surface-2); }
-.nt__itemSel { position: absolute; inset: 0; border-radius: 8px; background: rgba(214, 65, 122, 0.16); border: 1px solid var(--acc); }
-.nt__item > :not(.nt__itemSel) { position: relative; z-index: 1; }
-.nt__itemDot { flex: none; width: 8px; height: 8px; border-radius: 2px; background: rgba(255, 255, 255, 0.35); }
-.nt__itemName { flex: 1; min-width: 0; font-size: 12.5px; color: rgba(255, 255, 255, 0.88); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nt__inApp { flex: none; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; color: rgba(255, 255, 255, 0.42); padding: 2px 6px; border-radius: 5px; background: var(--surface-3); }
-.nt__open { flex: none; width: 20px; height: 20px; display: grid; place-items: center; border: none; border-radius: 5px; background: transparent; color: var(--text-3); font-size: 11px; cursor: pointer; z-index: 2; }
-.nt__open:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
-.nt__empty { padding: 26px 12px; text-align: center; font-size: 12px; color: rgba(255, 255, 255, 0.35); }
-.nt__browseFoot { flex: none; display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-top: 1px solid rgba(255, 255, 255, 0.07); background: rgba(255, 255, 255, 0.02); }
 .nt__footLabel { font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; color: rgba(255, 255, 255, 0.32); }
-.nt__footPath { font-family: var(--font-mono); font-size: 11.5px; color: rgba(255, 255, 255, 0.82); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
 .nt__willCreate { margin-top: 12px; padding: 11px 13px; border-radius: 10px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--hairline); }
 .nt__createPath { font-family: var(--font-mono); font-size: 12px; color: rgba(255, 255, 255, 0.85); word-break: break-all; }
 .nt__createNote { margin-top: 10px; font-size: 11.5px; line-height: 1.5; color: rgba(255, 255, 255, 0.42); }

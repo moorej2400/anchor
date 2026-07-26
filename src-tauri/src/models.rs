@@ -131,31 +131,6 @@ pub struct AppState {
     pub sessions: Vec<Session>,
 }
 
-/// One selectable directory in the in-app folder browser (SPEC.md §6).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DirEntry {
-    pub name: String,
-    pub path: String,
-}
-
-/// A directory listing plus the crumbs and shortcuts the browser renders.
-/// Only directories are listed — Anchor sessions always run in a directory.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DirListing {
-    /// Canonical absolute path that was listed.
-    pub path: String,
-    /// Parent directory, or null at the filesystem root.
-    pub parent: Option<String>,
-    /// Ancestors from root to `path`, for the breadcrumb bar.
-    pub crumbs: Vec<DirEntry>,
-    /// Immediate sub-directories, name-sorted, hidden entries excluded.
-    pub entries: Vec<DirEntry>,
-    /// Platform shortcuts (home, Documents, Desktop, …) for the sidebar.
-    pub favourites: Vec<DirEntry>,
-}
-
 /// Event names (SPEC.md §6.3).
 pub mod events {
     pub const PTY_OUTPUT: &str = "pty:output";

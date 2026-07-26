@@ -1,24 +1,26 @@
 /**
  * New-session wizard, built to docs/Anchor.dc.html.
  *
- * Four steps:
- *   folder  — pick a folder Anchor already knows, or add one
- *   browse  — in-app directory browser (crumbs, favourites, "in anchor" badges)
- *   create  — name a project; Anchor makes the folder in settings.projectsDir
- *   tool    — pick the CLI to launch
+ * Three steps:
+ *   folder — pick a folder Anchor already knows, or add one
+ *   create — name a project; Anchor makes the folder in settings.projectsDir
+ *   tool   — pick the CLI to launch
+ *
+ * "Choose an existing folder…" opens the OS folder picker (Finder on macOS)
+ * rather than an in-app browser, then registers whatever comes back.
  *
  * Opening from a folder's quick-launch `+` skips straight to `tool`; opening
- * from the tab strip starts at `folder`, which is what makes a cold start with
- * no folders recoverable.
+ * from the tab strip or ⌘O starts at `folder`, which is what makes a cold start
+ * with no folders recoverable.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Badge, Modal } from "../components/lib";
 import { ipc } from "../ipc/commands";
-import type { DirListing, Folder, Tool } from "../ipc/types";
+import type { Folder, Tool } from "../ipc/types";
 import { useAnchor } from "../app/store";
 import { LAUNCHABLE, toolName } from "../app/display";
 
-type Step = "folder" | "browse" | "create" | "tool";
+type Step = "folder" | "create" | "tool";
 
 export function NewSessionDialog() {
   const { state, actions } = useAnchor();
@@ -26,13 +28,11 @@ export function NewSessionDialog() {
 
   const [step, setStep] = useState<Step>("folder");
   const [folder, setFolder] = useState<Folder | null>(null);
-  const [listing, setListing] = useState<DirListing | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("");
   const [busy, setBusy] = useState(false);
   const projectRef = useRef<HTMLInputElement>(null);
 
-  // Each open starts fresh: preselected folder goes straight to the tool step.
+  // Each open starts fresh: a preselected folder goes straight to the tool step.
   useEffect(() => {
     if (!newSessionOpen) return;
     const preselected = state.newSessionFolderId
@@ -40,70 +40,52 @@ export function NewSessionDialog() {
       : null;
     setFolder(preselected);
     setStep(preselected ? "tool" : "folder");
-    setListing(null);
-    setSelected(null);
     setProjectName("");
     setBusy(false);
     // Only re-init on open, not on every folder-list change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [newSessionOpen, state.newSessionFolderId]);
 
-  const loadDir = useCallback(async (path?: string) => {
-    try {
-      const next = await ipc.listDir(path);
-      setListing(next);
-      setSelected(next.path);
-    } catch (e) {
-      actions.toast(String(e).replace(/^[A-Z_]+: /, ""));
-    }
-    // actions is stable for the provider's lifetime.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const goBrowse = () => {
-    setStep("browse");
-    void loadDir(undefined);
-  };
-
-  const goCreate = () => {
-    setStep("create");
-    window.setTimeout(() => projectRef.current?.focus(), 0);
-  };
-
   if (!newSessionOpen) return null;
 
   const close = () => actions.closeNewSession();
-
-  const back = () => {
-    if (step === "browse" || step === "create") setStep("folder");
-    else if (step === "tool" && !state.newSessionFolderId) setStep("folder");
-  };
-  const showBack = step === "browse" || step === "create" || (step === "tool" && !state.newSessionFolderId);
-
-  const title =
-    step === "folder" ? "Choose a folder"
-    : step === "browse" ? "Choose an existing folder"
-    : step === "create" ? "Create a new project"
-    : "New session";
-  const subtitle =
-    step === "folder" ? "Where should this session run?"
-    : step === "browse" ? (listing?.path ?? "…")
-    : step === "create" ? settings.projectsDir
-    : (folder?.path ?? "");
-
   const useFolder = (f: Folder) => {
     setFolder(f);
     setStep("tool");
   };
 
-  const confirmBrowse = async () => {
-    if (!selected || busy) return;
+  const back = () => setStep("folder");
+  const showBack = step === "create" || (step === "tool" && !state.newSessionFolderId);
+
+  const title =
+    step === "folder" ? "Choose a folder"
+    : step === "create" ? "Create a new project"
+    : "New session";
+  const subtitle =
+    step === "folder" ? "Where should this session run?"
+    : step === "create" ? settings.projectsDir
+    : (folder?.path ?? "");
+
+  /** Native folder picker → register (or reuse) → tool step. */
+  const browse = async () => {
+    if (busy) return;
     setBusy(true);
-    // Re-use the folder if this directory is already registered.
-    const existing = folders.find((f) => f.path === selected);
-    const next = existing ?? (await actions.addFolder(selected));
-    setBusy(false);
-    if (next) useFolder(next);
+    try {
+      const path = await ipc.pickFolder();
+      if (!path) return; // cancelled — stay on the folder step
+      const existing = folders.find((f) => f.path === path);
+      const next = existing ?? (await actions.addFolder(path));
+      if (next) useFolder(next);
+    } catch (e) {
+      actions.toast(String(e).replace(/^[A-Z_]+: /, ""));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const goCreate = () => {
+    setStep("create");
+    window.setTimeout(() => projectRef.current?.focus(), 0);
   };
 
   const submitProject = async () => {
@@ -124,9 +106,7 @@ export function NewSessionDialog() {
   return (
     <Modal onClose={close} align="top" width={500}>
       <div className="nt__head">
-        {showBack && (
-          <button className="nt__back" title="Back" onClick={back}>←</button>
-        )}
+        {showBack && <button className="nt__back" title="Back" onClick={back}>←</button>}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="dialog__title">{title}</div>
           <div className="dialog__sub">{subtitle}</div>
@@ -161,7 +141,7 @@ export function NewSessionDialog() {
 
           <div className="nt__label">Add a folder</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            <button className="nt__row" onClick={goBrowse}>
+            <button className="nt__row" onClick={() => void browse()} disabled={busy}>
               <span className="nt__icon">⌕</span>
               <span style={{ flex: 1, minWidth: 0 }}>
                 <span className="nt__rowTitle" style={{ fontSize: 13.5 }}>Choose an existing folder…</span>
@@ -175,71 +155,6 @@ export function NewSessionDialog() {
                 <span className="nt__rowTitle" style={{ fontSize: 13.5 }}>Create a new project</span>
                 <span className="nt__rowPath">Anchor makes the folder in {settings.projectsDir}</span>
               </span>
-            </button>
-          </div>
-        </div>
-      )}
-
-      {step === "browse" && (
-        <div className="nt__browse">
-          <div className="nt__crumbs">
-            {(listing?.crumbs ?? []).map((c) => (
-              <button key={c.path} className="nt__crumb" onClick={() => void loadDir(c.path)}>
-                {c.name}
-              </button>
-            ))}
-          </div>
-          <div className="nt__browseBody">
-            <div className="nt__favs">
-              <div className="nt__favsLabel">Favourites</div>
-              {(listing?.favourites ?? []).map((f) => (
-                <button key={f.path} className="nt__fav" onClick={() => void loadDir(f.path)}>
-                  {f.name}
-                </button>
-              ))}
-            </div>
-            <div className="nt__items">
-              {(listing?.entries ?? []).map((entry) => {
-                const inApp = folders.some((f) => f.path === entry.path);
-                const isSel = selected === entry.path;
-                return (
-                  <div
-                    key={entry.path}
-                    className="nt__item"
-                    onClick={() => setSelected(entry.path)}
-                    onDoubleClick={() => void loadDir(entry.path)}
-                  >
-                    {isSel && <div className="nt__itemSel" />}
-                    <span className="nt__itemDot" />
-                    <span className="nt__itemName">{entry.name}</span>
-                    {inApp && <span className="nt__inApp">in anchor</span>}
-                    <button
-                      className="nt__open"
-                      title="Open folder"
-                      onClick={(e) => { e.stopPropagation(); void loadDir(entry.path); }}
-                    >
-                      ›
-                    </button>
-                  </div>
-                );
-              })}
-              {listing && listing.entries.length === 0 && (
-                <div className="nt__empty">No sub-folders here — you can still select this directory.</div>
-              )}
-            </div>
-          </div>
-          <div className="nt__browseFoot">
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="nt__footLabel">Selected</div>
-              <div className="nt__footPath">{selected ?? "—"}</div>
-            </div>
-            <button className="a-btn a-btn--subtle" onClick={back}>Cancel</button>
-            <button
-              className="a-btn a-btn--primary"
-              onClick={() => void confirmBrowse()}
-              disabled={!selected || busy}
-            >
-              Use this folder
             </button>
           </div>
         </div>

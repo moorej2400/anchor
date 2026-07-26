@@ -168,6 +168,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .on_page_load(move |webview, payload| {
             if webview.label() == "main" && payload.event() == PageLoadEvent::Finished {
                 page_load_callback.finish();
@@ -186,7 +187,7 @@ pub fn run() {
             commands::get_state,
             commands::create_folder,
             commands::create_project,
-            commands::list_dir,
+            commands::pick_folder,
             commands::rename_folder,
             commands::remove_folder,
             commands::launch_session,

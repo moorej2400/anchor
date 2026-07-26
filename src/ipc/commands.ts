@@ -4,7 +4,7 @@
  * Set VITE_IPC=mock to run against src/ipc/mock.ts in a plain browser.
  */
 import { invoke } from "@tauri-apps/api/core";
-import type { AppState, CliInfo, DirListing, Folder, Session, Settings, Tool } from "./types";
+import type { AppState, CliInfo, Folder, Session, Settings, Tool } from "./types";
 import { mockInvoke } from "./mock";
 
 const useMock = import.meta.env.VITE_IPC === "mock";
@@ -19,7 +19,8 @@ export const ipc = {
   createFolder: (path: string, name?: string) =>
     call<Folder>("create_folder", { path, name }),
   createProject: (name: string) => call<Folder>("create_project", { name }),
-  listDir: (path?: string) => call<DirListing>("list_dir", { path }),
+  /** Opens the OS folder picker. Resolves to null when the user cancels. */
+  pickFolder: () => call<string | null>("pick_folder"),
   renameFolder: (folderId: string, name: string) =>
     call<Folder>("rename_folder", { folderId, name }),
   removeFolder: (folderId: string) => call<void>("remove_folder", { folderId }),

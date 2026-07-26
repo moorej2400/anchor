@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use tauri::State;
+use tauri_plugin_dialog::DialogExt;
 
 use crate::backend::Backend;
 use crate::models::*;
@@ -26,12 +27,32 @@ pub fn create_project(backend: State<'_, Arc<Backend>>, name: String) -> Result<
     backend.create_project(name)
 }
 
+/// Open the OS folder picker (Finder on macOS) and return the chosen path, or
+/// `None` if the user cancelled.
+///
+/// Async + `spawn_blocking`: sync Tauri commands run on the main thread, and
+/// the native dialog must be driven from the main thread, so blocking there
+/// would deadlock. Running the blocking call on a worker lets the plugin
+/// dispatch to the main thread as designed.
 #[tauri::command]
-pub fn list_dir(
-    backend: State<'_, Arc<Backend>>,
-    path: Option<String>,
-) -> Result<DirListing, String> {
-    backend.list_dir(path)
+pub async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog().file().blocking_pick_folder()
+    })
+    .await
+    .map_err(|_| "DIALOG_FAILED: the folder picker did not return".to_string())?;
+
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    let path = picked
+        .into_path()
+        .map_err(|_| "DIALOG_FAILED: the selected folder has no usable path".to_string())?;
+    let path = path
+        .to_str()
+        .ok_or_else(|| "DIR_PATH_INVALID: folder path is not valid UTF-8".to_string())?
+        .to_owned();
+    Ok(Some(path))
 }
 
 #[tauri::command]
