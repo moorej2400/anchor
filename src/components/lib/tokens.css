@@ -1,0 +1,81 @@
+/*
+ * Design tokens as CSS variables — the single source of visual truth,
+ * extracted from docs/Anchor.dc.html. Theme, accent, density, and terminal
+ * font-size settings are applied by overriding these variables on :root
+ * (see src/app/theme.ts), so no component hard-codes a themed value.
+ */
+
+:root {
+  /* Accent + gradient */
+  --acc: #d6417a;
+  --acc2: #8a3fd0;
+  --grad: linear-gradient(135deg, var(--acc2), var(--acc));
+
+  /* Glass / surfaces */
+  --blur: 18px;
+  --surface-1: rgba(255, 255, 255, 0.028);
+  --surface-2: rgba(255, 255, 255, 0.04);
+  --surface-3: rgba(255, 255, 255, 0.06);
+  --surface-hover: rgba(255, 255, 255, 0.06);
+  --hairline: rgba(255, 255, 255, 0.08);
+  --hairline-soft: rgba(255, 255, 255, 0.06);
+
+  /* Text */
+  --text-1: rgba(255, 255, 255, 0.9);
+  --text-2: rgba(255, 255, 255, 0.6);
+  --text-3: rgba(255, 255, 255, 0.4);
+  --text-mono: rgba(255, 255, 255, 0.72);
+
+  /* Status */
+  --running: #5fb891;
+  --waiting: #d4a35f;
+  --danger: #f0757f;
+
+  /* Typography */
+  --font-ui: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --tfs: 13px; /* terminal font size (Appearance setting) */
+
+  /* Geometry */
+  --sbw: 298px; /* sidebar width */
+  --radius-sm: 6px;
+  --radius: 9px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* Density (Comfortable default; Compact overrides below) */
+  --row-py: 7px;
+  --group-gap: 8px;
+
+  /* Elevation */
+  --pop-shadow: 0 16px 44px rgba(0, 0, 0, 0.55);
+  --modal-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+  --pop-bg: rgba(30, 28, 38, 0.96);
+  --modal-bg: rgba(26, 24, 33, 0.94);
+
+  /* App background (theme-dependent; Graphite default) */
+  --bg:
+    radial-gradient(1200px 620px at 12% -12%, rgba(138, 63, 208, 0.2), transparent 58%),
+    radial-gradient(1050px 720px at 112% 18%, rgba(214, 65, 122, 0.16), transparent 55%),
+    #0b0b11;
+}
+
+/* Theme variants — all dark; they retint the ambient background wash. */
+:root[data-theme="obsidian"] {
+  --bg:
+    radial-gradient(1100px 600px at 0% -10%, rgba(80, 80, 110, 0.14), transparent 60%),
+    #07070a;
+}
+:root[data-theme="nebula"] {
+  --bg:
+    radial-gradient(1200px 620px at 10% -12%, rgba(138, 63, 208, 0.32), transparent 58%),
+    radial-gradient(1100px 760px at 115% 20%, rgba(214, 65, 122, 0.26), transparent 55%),
+    radial-gradient(900px 600px at 60% 120%, rgba(60, 110, 220, 0.18), transparent 60%),
+    #0a0810;
+}
+
+/* Density: Compact tightens rows and group spacing. */
+:root[data-density="compact"] {
+  --row-py: 5px;
+  --group-gap: 5px;
+}
