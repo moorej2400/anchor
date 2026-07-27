@@ -4,7 +4,7 @@
  * Ephemeral popover/hover/rename state is local; domain mutations go to the store.
  * Built to docs/Anchor.dc.html.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Badge,
   Button,
@@ -28,8 +28,13 @@ interface SidebarProps {
 
 export function Sidebar({ onRemoveFolder }: SidebarProps) {
   const { state, actions } = useAnchor();
-  const groups = foldersWithSessions(state.folders, state.sessions, state.filter);
-  const counts = statusCounts(state.sessions);
+  // Selecting a tab changes `activeId` only. Without memoizing, every selection
+  // would re-filter and re-sort every session before the terminal can paint.
+  const groups = useMemo(
+    () => foldersWithSessions(state.folders, state.sessions, state.filter),
+    [state.folders, state.sessions, state.filter],
+  );
+  const counts = useMemo(() => statusCounts(state.sessions), [state.sessions]);
 
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   // Only one menu/popover open at a time (mock behavior).
@@ -194,6 +199,7 @@ function FolderGroup(props: {
         </IconButton>
         <IconButton
           bordered
+          className="a-plus"
           aria-label="Quick launch"
           size={20}
           tabIndex={showAdd ? 0 : -1}
