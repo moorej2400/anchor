@@ -141,6 +141,9 @@ function FolderGroup(props: {
   const chevron = collapsed || folder.sessions.length === 0 ? "▸" : "▾";
   const renaming = ui.folderRename === folder.id;
   const showMore = (hover || ui.folderMore === folder.id) && !renaming;
+  // Quick-launch stays visible while its own menu is open, so moving the
+  // pointer into the menu doesn't make the button it belongs to disappear.
+  const showAdd = (hover || ui.folderMenu === folder.id) && !renaming;
 
   useEffect(() => {
     if (renaming) {
@@ -178,8 +181,8 @@ function FolderGroup(props: {
           <span className="folder__name">{folder.name}</span>
         )}
         <span className="folder__count">{folder.sessions.length}</span>
-        {/* Always laid out (hidden until hover) so revealing it never shifts
-            the quick-launch button beside it. */}
+        {/* Both stay laid out (hidden, not unmounted) so revealing them on
+            hover never reflows the header's name or count. */}
         <IconButton
           aria-label="Folder options"
           size={20}
@@ -193,7 +196,8 @@ function FolderGroup(props: {
           bordered
           aria-label="Quick launch"
           size={20}
-          style={{ fontSize: 14 }}
+          tabIndex={showAdd ? 0 : -1}
+          style={{ fontSize: 14, visibility: showAdd ? "visible" : "hidden" }}
           onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, folderMenu: u.folderMenu === folder.id ? null : folder.id, folderMore: null, sessionMenu: null })); }}
         >
           +

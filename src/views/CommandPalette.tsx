@@ -1,6 +1,6 @@
 /** ⌘K command palette — fuzzy jump to any session. */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Badge, Modal, StatusDot } from "../components/lib";
+import { Badge, Modal, StatusDot, TextInput } from "../components/lib";
 import { useAnchor } from "../app/store";
 import { folderOf, toolName } from "../app/display";
 
@@ -32,12 +32,13 @@ export function CommandPalette() {
     <Modal onClose={() => actions.closePalette()} align="top" topOffset="12vh" width={560}>
       <div className="palette__head">
         <span style={{ color: "var(--text-3)", fontSize: 16 }}>⌕</span>
-        <input
+        <TextInput
           ref={inputRef}
+          variant="seamless"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Jump to a session or type to filter…"
-          style={{ flex: 1, background: "transparent", border: "none", color: "#fff", fontSize: 15, outline: "none" }}
+          style={{ flex: 1, fontSize: 15 }}
         />
         <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-3)", padding: "3px 7px", borderRadius: 5, border: "1px solid var(--hairline)" }}>esc</span>
       </div>

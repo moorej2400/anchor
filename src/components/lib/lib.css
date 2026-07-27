@@ -3,6 +3,19 @@
  * src/components/lib/*. Values reference tokens.css variables only.
  */
 
+/* ---- Base ----
+   Buttons inherit neither font nor padding from the page: the UA gives them
+   Arial and `1px 6px`. Both are reset here so every button starts level.
+
+   The padding is what threw icon glyphs off-centre. A 20px icon button minus
+   12px of horizontal padding leaves an 8px content box, so a wider glyph —
+   `⋯` is 14.3px — no longer fits and gets clamped to the content edge instead
+   of centred, landing ~3.7px right of where it belongs. */
+button {
+  font-family: var(--font-ui);
+  padding: 0;
+}
+
 /* ---- Animations ---- */
 @keyframes anchor-glowin {
   from { opacity: 0; transform: translateY(6px); }
@@ -66,6 +79,7 @@
   place-items: center;
   width: 22px;
   height: 22px;
+  font-size: 13px;
   border-radius: var(--radius-sm);
   border: none;
   background: transparent;
@@ -326,7 +340,9 @@
   white-space: nowrap;
   color: rgba(255, 255, 255, 0.85);
 }
-.a-tab > :not(.a-tab__bg):not(.a-tab__edge) { position: relative; z-index: 1; }
+/* Zero-specificity for the same reason as .a-row above: a tab that ever hosts
+   a popover must not have it forced back into the flex flow. */
+:where(.a-tab) > :where(:not(.a-tab__bg, .a-tab__edge)) { position: relative; z-index: 1; }
 
 /* ---- SidebarRow ---- */
 .a-row {
@@ -368,7 +384,13 @@
   -webkit-mask-composite: xor;
   mask-composite: exclude;
 }
-.a-row > :not(.a-row__bg):not(.a-row__edge) { position: relative; z-index: 1; }
+/* Lift real content above the decorative bg/edge layers. Both halves are
+   wrapped in :where() so the rule carries zero specificity: a child that
+   positions itself — the `⋯` menu, the delete confirm — keeps its own
+   `position` and `z-index`. Without that, `position: relative` won here on
+   specificity and dropped those popovers back into the flex flow, where they
+   became row content and doubled the row's height. */
+:where(.a-row) > :where(:not(.a-row__bg, .a-row__edge)) { position: relative; z-index: 1; }
 .a-row__title {
   flex: 1;
   min-width: 0;
