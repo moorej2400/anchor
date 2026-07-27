@@ -106,7 +106,10 @@ body {
 .term-view { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 /* Tab strip, pane, and status-bar content all start at --gutter so they share
    one vertical rail down the left of the main column. */
-.tabstrip { flex: none; display: flex; align-items: stretch; padding: var(--sp-2) var(--gutter) 0; overflow-x: auto; }
+/* The floor keeps the strip a tab-row tall even with no tabs open, so the `+`
+   doesn't collapse onto the pane below — and doesn't jump when the first tab
+   opens. Border-box, so the top padding counts toward it. */
+.tabstrip { flex: none; display: flex; align-items: stretch; min-height: calc(var(--sp-2) + var(--tab-h)); padding: var(--sp-2) var(--gutter) 0; overflow-x: auto; }
 .tabstrip__new {
   flex: none; align-self: center; width: 28px; height: 28px; margin-left: 2px;
   display: grid; place-items: center; border-radius: 8px;
@@ -123,9 +126,16 @@ body {
   backdrop-filter: blur(var(--blur)); -webkit-backdrop-filter: blur(var(--blur));
   border: 1px solid var(--hairline);
 }
-.term-host { flex: 1; min-height: 0; padding: var(--sp-4) 18px; position: relative; }
-.term-host .xterm { height: 100%; }
-.term-host .xterm-viewport { background: transparent !important; }
+/* Terminal deck: one stable slot per open ON session (SPEC.md §8). Selection
+   toggles visibility only — slots are never reparented, so switching cannot
+   show a stale terminal. The deck itself is click-through so the Resume card
+   and empty state below it stay interactive. */
+.terminal-stage { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.terminal-deck { position: absolute; inset: 0; pointer-events: none; }
+.terminal-slot { position: absolute; inset: var(--sp-4) 18px; visibility: hidden; pointer-events: none; }
+.terminal-slot[data-terminal-active="true"] { visibility: visible; pointer-events: auto; }
+.terminal-slot .xterm { height: 100%; }
+.terminal-slot .xterm-viewport { background: transparent !important; }
 
 /* Empty state */
 .empty { flex: 1; display: grid; place-items: center; padding: 40px; text-align: center; color: var(--text-3); }
