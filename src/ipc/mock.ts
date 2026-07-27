@@ -151,6 +151,9 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
   switch (cmd) {
     case "get_state":
       return Promise.resolve({ folders: [...folders], sessions: sessions.map((s) => ({ ...s })) } as T);
+    case "frontend_ready":
+      // Browser mock: sessions are already seeded, so readiness is a no-op.
+      return Promise.resolve(undefined as T);
     case "get_settings":
       return Promise.resolve({ ...settings } as T);
     case "set_settings": {

@@ -15,6 +15,8 @@ function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
 
 export const ipc = {
   getState: () => call<AppState>("get_state"),
+  /** Sent once after event listeners are installed and state is hydrated. */
+  frontendReady: () => call<void>("frontend_ready"),
 
   createFolder: (path: string, name?: string) =>
     call<Folder>("create_folder", { path, name }),

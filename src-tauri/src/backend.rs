@@ -4,6 +4,7 @@
 //! session identity before its process can produce output--is testable without
 //! a webview or a real CLI installation.
 
+use std::ffi::{OsStr, OsString};
 use std::fs;
 #[cfg(unix)]
 use std::io::{Read, Seek, SeekFrom};
@@ -243,8 +244,9 @@ impl Backend {
             settings.projects_dir.clone()
         };
         let root = expand_tilde(&projects_dir)?;
-        fs::create_dir_all(&root)
-            .map_err(|_| "PROJECT_DIR_FAILED: could not create the projects directory".to_string())?;
+        fs::create_dir_all(&root).map_err(|_| {
+            "PROJECT_DIR_FAILED: could not create the projects directory".to_string()
+        })?;
 
         let target = root.join(&name);
         if target.exists() {
@@ -346,7 +348,7 @@ impl Backend {
         let adapter = adapter_for(tool);
         let launched_at = SystemTime::now();
         let (spec, capture) = adapter.launch(&session, &folder_path, &settings)?;
-        self.require_executable(tool, &spec.program)?;
+        let spec = self.resolve_spawn_spec(tool, spec, &settings)?;
         if let IdCapture::PreAssigned(id) = &capture {
             session.cli_session_id = Some(id.clone());
         }
@@ -390,10 +392,8 @@ impl Backend {
         let folder_path = self.folder_path(&session.folder_id)?;
         let settings = self.get_settings()?;
         let adapter = adapter_for(session.tool);
-        let discover_picker_session = should_discover_picker_resume(&session);
-        let launched_at = SystemTime::now();
         let spec = adapter.resume(&session, &folder_path, &settings)?;
-        self.require_executable(session.tool, &spec.program)?;
+        let spec = self.resolve_spawn_spec(session.tool, spec, &settings)?;
 
         if session.tool == Tool::Terminal && settings.restore_scrollback {
             let saved = self.scrollback_store()?.read(session_id)?;
@@ -407,9 +407,6 @@ impl Backend {
         if let Err(error) = self.ensure_running_after_spawn(session_id) {
             let _ = self.runtime.stop(session_id);
             return Err(error);
-        }
-        if discover_picker_session {
-            self.start_discovery(session_id.to_owned(), folder_path, launched_at, adapter);
         }
         self.session(session_id)
     }
@@ -562,7 +559,7 @@ impl Backend {
     }
 
     pub fn detect_clis(&self) -> Result<Vec<CliInfo>, String> {
-        Ok(detect_all_clis(&self.get_settings()?.shell))
+        Ok(detect_all_clis(&self.get_settings()?))
     }
 
     pub fn export_sessions(&self, to_path: &str) -> Result<(), String> {
@@ -580,14 +577,19 @@ impl Backend {
         Ok(registry.snapshot())
     }
 
-    /// Called by Tauri's deterministic `PageLoadEvent::Finished` gate. The
-    /// atomic claim makes reloads harmless and avoids timing assumptions.
-    pub fn on_page_load_finished(self: &Arc<Self>) {
+    /// Called by the frontend's explicit `frontend_ready` handshake, which is
+    /// sent only after event listeners are installed and state is hydrated, so
+    /// restored output and status cannot race listener registration. The atomic
+    /// claim makes reloads and repeated ready calls harmless.
+    ///
+    /// Returns whether this call is the one that started auto-restore.
+    pub fn on_frontend_ready(self: &Arc<Self>) -> bool {
         if self.auto_restore_started.swap(true, Ordering::AcqRel) {
-            return;
+            return false;
         }
         let backend = Arc::clone(self);
         thread::spawn(move || backend.restore_open_sessions());
+        true
     }
 
     fn restore_open_sessions(self: &Arc<Self>) {
@@ -716,16 +718,15 @@ impl Backend {
         let weak = Arc::downgrade(self);
         thread::spawn(move || {
             let mut elapsed = Duration::ZERO;
-            let mut delay = Duration::from_secs(1);
+            let mut delay = Duration::ZERO;
             loop {
-                thread::sleep(delay);
+                if !delay.is_zero() {
+                    thread::sleep(delay);
+                }
                 elapsed += delay;
                 let Some(backend) = weak.upgrade() else {
                     break;
                 };
-                if !backend.runtime.is_live(&session_id) {
-                    break;
-                }
                 if let Ok(Some(id)) = adapter.discover_session_id(&cwd, launched_at) {
                     match backend.persist_discovered_id(&session_id, id) {
                         Ok(Some(session)) => {
@@ -737,6 +738,13 @@ impl Backend {
                             "REGISTRY_WRITE_FAILED: discovered session identity could not be persisted",
                         ),
                     }
+                }
+                // Closing a tab stops its PTY, but the provider may finish
+                // writing session metadata just afterward. Keep the initial
+                // discovery window alive so that stop cannot strand the saved
+                // record without its exact resume key.
+                if elapsed >= Duration::from_secs(60) && !backend.runtime.is_live(&session_id) {
+                    break;
                 }
                 delay = next_discovery_delay(elapsed);
             }
@@ -869,29 +877,35 @@ impl Backend {
         }
     }
 
-    fn require_executable(&self, tool: Tool, program: &str) -> Result<(), String> {
-        if !self.enforce_executable_checks || find_executable(program).is_some() {
-            return Ok(());
+    fn resolve_spawn_spec(
+        &self,
+        tool: Tool,
+        spec: SpawnSpec,
+        settings: &Settings,
+    ) -> Result<SpawnSpec, String> {
+        if !self.enforce_executable_checks {
+            return Ok(spec);
         }
-        Err(format!(
-            "CLI_NOT_FOUND: {} is not installed",
-            tool_display_name(tool)
-        ))
+        let path = effective_search_path(settings);
+        resolve_spawn_spec_with_environment(
+            tool,
+            spec,
+            path.as_deref(),
+            dirs::home_dir().as_deref(),
+        )
     }
 }
 
 fn next_discovery_delay(elapsed: Duration) -> Duration {
-    if elapsed < Duration::from_secs(3) {
+    if elapsed.is_zero() {
+        Duration::from_secs(1)
+    } else if elapsed < Duration::from_secs(3) {
         Duration::from_secs(2)
     } else if elapsed < Duration::from_secs(60) {
         Duration::from_secs(5)
     } else {
         Duration::from_secs(30)
     }
-}
-
-fn should_discover_picker_resume(session: &Session) -> bool {
-    session.cli_session_id.is_none() && matches!(session.tool, Tool::Codex | Tool::Opencode)
 }
 
 fn folder_index(registry: &Registry, id: &str) -> Result<usize, String> {
@@ -944,7 +958,9 @@ fn tool_display_name(tool: Tool) -> &'static str {
     }
 }
 
-fn detect_all_clis(shell: &str) -> Vec<CliInfo> {
+fn detect_all_clis(settings: &Settings) -> Vec<CliInfo> {
+    let path = effective_search_path(settings);
+    let home = dirs::home_dir();
     [
         (Tool::Claude, "claude"),
         (Tool::Codex, "codex"),
@@ -952,13 +968,22 @@ fn detect_all_clis(shell: &str) -> Vec<CliInfo> {
         (Tool::Opencode, "opencode"),
     ]
     .into_iter()
-    .map(|(tool, program)| detect_cli(tool, program))
-    .chain(std::iter::once(detect_shell(shell)))
+    .map(|(tool, program)| detect_cli(tool, program, path.as_deref(), home.as_deref()))
+    .chain(std::iter::once(detect_shell(
+        &settings.shell,
+        path.as_deref(),
+        home.as_deref(),
+    )))
     .collect()
 }
 
-fn detect_cli(tool: Tool, program: &str) -> CliInfo {
-    let path = find_executable(program);
+fn detect_cli(
+    tool: Tool,
+    program: &str,
+    search_path: Option<&OsStr>,
+    home: Option<&Path>,
+) -> CliInfo {
+    let path = find_executable_with_environment(program, search_path, home);
     let version = path.as_deref().and_then(bounded_version);
     CliInfo {
         tool,
@@ -1045,8 +1070,8 @@ fn supports_contained_version_probe(windows: bool) -> bool {
     !windows
 }
 
-fn detect_shell(shell: &str) -> CliInfo {
-    let path = find_executable(shell).or_else(|| {
+fn detect_shell(shell: &str, search_path: Option<&OsStr>, home: Option<&Path>) -> CliInfo {
+    let path = find_executable_with_environment(shell, search_path, home).or_else(|| {
         let path = PathBuf::from(shell);
         path.is_file().then_some(path)
     });
@@ -1058,16 +1083,124 @@ fn detect_shell(shell: &str) -> CliInfo {
     }
 }
 
-fn find_executable(program: &str) -> Option<PathBuf> {
+fn effective_search_path(settings: &Settings) -> Option<OsString> {
+    settings
+        .env_vars
+        .iter()
+        .rev()
+        .find(|env| is_path_key(&env.key))
+        .map(|env| OsString::from(&env.value))
+        .or_else(|| std::env::var_os("PATH"))
+}
+
+#[cfg(windows)]
+fn is_path_key(key: &str) -> bool {
+    key.eq_ignore_ascii_case("PATH")
+}
+
+#[cfg(not(windows))]
+fn is_path_key(key: &str) -> bool {
+    key == "PATH"
+}
+
+fn resolve_spawn_spec_with_environment(
+    tool: Tool,
+    mut spec: SpawnSpec,
+    search_path: Option<&OsStr>,
+    home: Option<&Path>,
+) -> Result<SpawnSpec, String> {
+    let executable = find_executable_with_environment(&spec.program, search_path, home)
+        .ok_or_else(|| {
+            format!(
+                "CLI_NOT_FOUND: {} is not installed",
+                tool_display_name(tool)
+            )
+        })?;
+
+    // Preflight and PTY launch must use one resolved file. Passing the bare
+    // command would make portable-pty perform a second PATH lookup that can
+    // disagree with detection after a desktop-app restart.
+    spec.program = executable.to_string_lossy().into_owned();
+    Ok(spec)
+}
+
+fn find_executable_with_environment(
+    program: &str,
+    search_path: Option<&OsStr>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
     let candidate = Path::new(program);
     if candidate.components().count() > 1 {
         return is_executable(candidate).then(|| candidate.to_path_buf());
     }
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .flat_map(|directory| executable_candidates(&directory, program))
-            .find(|candidate| is_executable(candidate))
-    })
+
+    executable_search_directories(search_path, home)
+        .into_iter()
+        .flat_map(|directory| executable_candidates(&directory, program))
+        .find(|candidate| is_executable(candidate))
+}
+
+fn executable_search_directories(search_path: Option<&OsStr>, home: Option<&Path>) -> Vec<PathBuf> {
+    let mut directories = search_path
+        .map(std::env::split_paths)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+    let mut add = |directory: PathBuf| {
+        if !directories.contains(&directory) {
+            directories.push(directory);
+        }
+    };
+
+    if let Some(home) = home {
+        // Desktop launchers often omit user-level package-manager bins from
+        // PATH. These locations cover the supported CLIs without invoking a
+        // login shell or executing user startup files during detection.
+        for relative in [
+            ".local/bin",
+            ".opencode/bin",
+            ".bun/bin",
+            ".cargo/bin",
+            ".volta/bin",
+            ".npm-global/bin",
+        ] {
+            add(home.join(relative));
+        }
+
+        let nvm_nodes = home.join(".nvm/versions/node");
+        if let Ok(entries) = fs::read_dir(nvm_nodes) {
+            let mut version_bins = entries
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    entry
+                        .file_type()
+                        .ok()
+                        .filter(|kind| kind.is_dir())
+                        .map(|_| entry.path().join("bin"))
+                })
+                .collect::<Vec<_>>();
+            version_bins.sort_by(|left, right| right.cmp(left));
+            for directory in version_bins {
+                add(directory);
+            }
+        }
+
+        #[cfg(windows)]
+        for relative in [
+            "AppData/Roaming/npm",
+            "AppData/Local/Microsoft/WinGet/Links",
+        ] {
+            add(home.join(relative));
+        }
+    }
+
+    #[cfg(unix)]
+    for directory in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        add(PathBuf::from(directory));
+    }
+
+    directories
 }
 
 #[cfg(unix)]
@@ -1179,6 +1312,40 @@ mod tests {
             self.is_live(id)
                 .then_some(())
                 .ok_or_else(|| "PTY_NOT_FOUND: no live PTY for session".into())
+        }
+    }
+
+    struct AlwaysDiscovers(&'static str);
+
+    impl crate::adapters::Adapter for AlwaysDiscovers {
+        fn tool(&self) -> Tool {
+            Tool::Codex
+        }
+
+        fn launch(
+            &self,
+            _session: &Session,
+            _cwd: &Path,
+            _settings: &Settings,
+        ) -> Result<(SpawnSpec, IdCapture), String> {
+            unreachable!("discovery test adapter never launches")
+        }
+
+        fn resume(
+            &self,
+            _session: &Session,
+            _cwd: &Path,
+            _settings: &Settings,
+        ) -> Result<SpawnSpec, String> {
+            unreachable!("discovery test adapter never resumes")
+        }
+
+        fn discover_session_id(
+            &self,
+            _cwd: &Path,
+            _launched_at: SystemTime,
+        ) -> Result<Option<String>, String> {
+            Ok(Some(self.0.to_owned()))
         }
     }
 
@@ -1317,7 +1484,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_persists_preassigned_identity_before_spawn_and_resume_reuses_it() {
+    fn launch_persists_preassigned_identity_before_spawn_and_reopens_empty_identity() {
         let (root, backend, runtime) = harness();
         let project = root.path().join("project");
         fs::create_dir(&project).unwrap();
@@ -1334,7 +1501,7 @@ mod tests {
         let spawns = runtime.spawns.lock().unwrap();
         assert_eq!(
             spawns[1].1.args,
-            vec!["--resume", launched.cli_session_id.as_ref().unwrap()]
+            vec!["--session-id", launched.cli_session_id.as_ref().unwrap()]
         );
     }
 
@@ -1504,6 +1671,64 @@ mod tests {
             rows.iter().filter(|row| row.tool == Tool::Terminal).count(),
             1
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_resolution_recovers_common_user_installs_missing_from_process_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir().unwrap();
+        let home = root.path().join("home");
+        let installs = [
+            ("claude", home.join(".local/bin/claude")),
+            ("copilot", home.join(".local/bin/copilot")),
+            ("opencode", home.join(".opencode/bin/opencode")),
+            ("codex", home.join(".nvm/versions/node/v24.0.0/bin/codex")),
+        ];
+        for (_, executable) in &installs {
+            fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            fs::write(executable, b"#!/bin/sh\nexit 0\n").unwrap();
+            let mut permissions = fs::metadata(executable).unwrap().permissions();
+            permissions.set_mode(0o700);
+            fs::set_permissions(executable, permissions).unwrap();
+        }
+        let restricted_path = std::ffi::OsStr::new("/usr/bin:/bin");
+
+        for (program, expected) in installs {
+            assert_eq!(
+                find_executable_with_environment(program, Some(restricted_path), Some(&home)),
+                Some(expected),
+                "{program} should be found outside the inherited GUI PATH"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolved_spawn_spec_uses_the_exact_executable_found_by_preflight() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir().unwrap();
+        let home = root.path().join("home");
+        let executable = home.join(".nvm/versions/node/v24.0.0/bin/codex");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
+        let mut permissions = fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&executable, permissions).unwrap();
+        let original = SpawnSpec::new("codex", ["resume", "synthetic-session-id"], root.path());
+
+        let resolved = resolve_spawn_spec_with_environment(
+            Tool::Codex,
+            original,
+            Some(std::ffi::OsStr::new("/usr/bin:/bin")),
+            Some(&home),
+        )
+        .unwrap();
+
+        assert_eq!(Path::new(&resolved.program), executable);
+        assert_eq!(resolved.args, vec!["resume", "synthetic-session-id"]);
     }
 
     #[test]
@@ -1701,7 +1926,55 @@ mod tests {
     }
 
     #[test]
-    fn picker_fallback_resumes_start_discovery_for_discoverable_tools() {
+    fn discovery_persists_identity_after_the_tab_stops_its_pty() {
+        let (root, backend, _) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let session = backend
+            .launch_session(&folder.id, Tool::Terminal, None, None)
+            .unwrap();
+
+        backend.start_discovery(
+            session.id.clone(),
+            project,
+            SystemTime::now(),
+            Box::new(AlwaysDiscovers("synthetic-cli-id")),
+        );
+        backend.stop_session(&session.id).unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while backend
+            .session(&session.id)
+            .unwrap()
+            .cli_session_id
+            .is_none()
+            && std::time::Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(
+            backend
+                .session(&session.id)
+                .unwrap()
+                .cli_session_id
+                .as_deref(),
+            Some("synthetic-cli-id")
+        );
+        let settings = backend.get_settings().unwrap();
+        let persisted =
+            Registry::load_from_backup_path(expand_tilde(&settings.backup_path).unwrap()).unwrap();
+        assert_eq!(
+            persisted.sessions[0].cli_session_id.as_deref(),
+            Some("synthetic-cli-id")
+        );
+    }
+
+    #[test]
+    fn missing_discovered_identity_never_spawns_a_provider_picker() {
         let (root, backend, runtime) = harness();
         let project = root.path().join("project");
         fs::create_dir(&project).unwrap();
@@ -1713,25 +1986,20 @@ mod tests {
             let session = backend
                 .launch_session(&folder.id, tool, None, None)
                 .unwrap();
-            assert!(should_discover_picker_resume(&session));
             backend.stop_session(&session.id).unwrap();
-            let resumed = backend.resume_session(&session.id).unwrap();
-            assert!(resumed.cli_session_id.is_none());
-            assert!(backend.runtime.is_live(&session.id));
-            backend.stop_session(&session.id).unwrap();
+            let spawn_count = runtime.spawns.lock().unwrap().len();
+
+            assert!(backend
+                .resume_session(&session.id)
+                .unwrap_err()
+                .starts_with("SESSION_ID_UNAVAILABLE:"));
+            assert_eq!(runtime.spawns.lock().unwrap().len(), spawn_count);
+            assert!(!backend.runtime.is_live(&session.id));
         }
 
         let spawns = runtime.spawns.lock().unwrap();
-        assert_eq!(spawns[1].1.args, vec!["resume"]);
-        assert!(spawns[3].1.args.is_empty());
-        assert_eq!(backend.discovery_starts.load(Ordering::Acquire), 4);
-
-        let mut saved = backend.session(&spawns[0].0).unwrap();
-        saved.cli_session_id = Some("known-id".into());
-        assert!(!should_discover_picker_resume(&saved));
-        saved.cli_session_id = None;
-        saved.tool = Tool::Claude;
-        assert!(!should_discover_picker_resume(&saved));
+        assert_eq!(spawns.len(), 2);
+        assert_eq!(backend.discovery_starts.load(Ordering::Acquire), 2);
     }
 
     #[test]
@@ -1778,7 +2046,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_restore_runs_after_ready_once_and_surfaces_restore_errors() {
+    fn auto_restore_runs_after_frontend_ready_once_and_surfaces_restore_errors() {
         let (root, original, runtime) = harness();
         let project = root.path().join("project");
         fs::create_dir(&project).unwrap();
@@ -1826,8 +2094,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|error| error.starts_with("AUTO_RESTORE_FAILED:")));
-        backend.on_page_load_finished();
-        backend.on_page_load_finished();
+        // Only the first ready call claims the guard, so a reload or a repeated
+        // handshake cannot restore the same sessions twice.
+        assert!(backend.on_frontend_ready());
+        assert!(!backend.on_frontend_ready());
         assert!(backend.auto_restore_started.load(Ordering::Acquire));
     }
 

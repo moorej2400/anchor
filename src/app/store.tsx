@@ -244,13 +244,28 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
     toastTimer.current = window.setTimeout(() => dispatch({ type: "SET_TOAST", text: null }), 1600);
   }).current;
 
-  // Boot: load state/settings/clis, restore tabs, subscribe to events.
+  // Boot: subscribe to events, load state/settings/clis, restore tabs, then
+  // tell the backend the frontend is ready. Listeners come first so PTY output
+  // and status emitted by auto-restore cannot be lost (SPEC.md §8), and
+  // `frontend_ready` comes last so restore never races hydration.
   useEffect(() => {
     let unlisten: Array<() => void> = [];
     let cancelled = false;
 
     (async () => {
       try {
+        const subs = await Promise.all([
+          onPtyOutput((p) => terminals.write(p.sessionId, p.data)),
+          onSessionStatus((p) => dispatch({ type: "SET_STATUS", id: p.sessionId, status: p.status })),
+          onSessionUpdated((s) => dispatch({ type: "UPSERT_SESSION", session: s })),
+          onAttentionCount((p) => dispatch({ type: "SET_WAITING", count: p.waiting })),
+        ]);
+        if (cancelled) {
+          subs.forEach((u) => u());
+          return;
+        }
+        unlisten = subs;
+
         const [snapshot, settings, clis] = await Promise.all([
           ipc.getState(),
           ipc.getSettings(),
@@ -274,17 +289,9 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
           activeId: restoredTabs[0] ?? null,
         });
 
-        const subs = await Promise.all([
-          onPtyOutput((p) => terminals.write(p.sessionId, p.data)),
-          onSessionStatus((p) => dispatch({ type: "SET_STATUS", id: p.sessionId, status: p.status })),
-          onSessionUpdated((s) => dispatch({ type: "UPSERT_SESSION", session: s })),
-          onAttentionCount((p) => dispatch({ type: "SET_WAITING", count: p.waiting })),
-        ]);
-        if (cancelled) {
-          subs.forEach((u) => u());
-          return;
-        }
-        unlisten = subs;
+        // HYDRATE is queued before any status event auto-restore can produce,
+        // so restored `running` sessions are not overwritten by this snapshot.
+        await ipc.frontendReady();
       } catch (e) {
         if (!cancelled) dispatch({ type: "FATAL", message: String(e) });
       }

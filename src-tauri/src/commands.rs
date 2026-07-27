@@ -13,6 +13,15 @@ pub fn get_state(backend: State<'_, Arc<Backend>>) -> Result<AppState, String> {
     backend.get_state()
 }
 
+/// Frontend readiness handshake: sent once after the frontend has installed its
+/// event listeners and hydrated, and the sole trigger for auto-restore.
+#[tauri::command]
+pub fn frontend_ready(backend: State<'_, Arc<Backend>>) {
+    // The guard's return value only reports which call won the race; the
+    // frontend has nothing to do with it either way.
+    let _started = backend.inner().on_frontend_ready();
+}
+
 #[tauri::command]
 pub fn create_folder(
     backend: State<'_, Arc<Backend>>,
@@ -36,11 +45,10 @@ pub fn create_project(backend: State<'_, Arc<Backend>>, name: String) -> Result<
 /// dispatch to the main thread as designed.
 #[tauri::command]
 pub async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let picked = tauri::async_runtime::spawn_blocking(move || {
-        app.dialog().file().blocking_pick_folder()
-    })
-    .await
-    .map_err(|_| "DIALOG_FAILED: the folder picker did not return".to_string())?;
+    let picked =
+        tauri::async_runtime::spawn_blocking(move || app.dialog().file().blocking_pick_folder())
+            .await
+            .map_err(|_| "DIALOG_FAILED: the folder picker did not return".to_string())?;
 
     let Some(picked) = picked else {
         return Ok(None);

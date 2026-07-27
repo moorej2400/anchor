@@ -10,15 +10,12 @@ mod scrollback;
 mod settings;
 mod status;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use backend::{Backend, BackendEvents};
 use models::{
     events, AttentionCountPayload, PtyOutputPayload, Session, SessionStatusPayload, Status,
 };
-use tauri::webview::PageLoadEvent;
 use tauri::{Emitter, Manager, UserAttentionType};
 use tauri_plugin_notification::NotificationExt;
 
@@ -125,66 +122,26 @@ fn blocking_alert_script(message: &str) -> String {
     format!("window.alert({encoded});")
 }
 
-#[derive(Default)]
-struct PageLoadGate {
-    finished: AtomicBool,
-    action: Mutex<Option<Box<dyn FnOnce() + Send>>>,
-}
-
-impl PageLoadGate {
-    fn install(&self, action: impl FnOnce() + Send + 'static) {
-        let mut slot = self
-            .action
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        if self.finished.load(Ordering::Acquire) {
-            drop(slot);
-            action();
-        } else {
-            *slot = Some(Box::new(action));
-        }
-    }
-
-    fn finish(&self) {
-        if self.finished.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let action = self
-            .action
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .take();
-        if let Some(action) = action {
-            action();
-        }
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let page_load_gate = Arc::new(PageLoadGate::default());
-    let page_load_callback = Arc::clone(&page_load_gate);
-    let setup_gate = page_load_gate;
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
-        .on_page_load(move |webview, payload| {
-            if webview.label() == "main" && payload.event() == PageLoadEvent::Finished {
-                page_load_callback.finish();
-            }
-        })
+        // Auto-restore is not started here: page load says nothing about
+        // whether the frontend has installed its event listeners. The frontend
+        // calls `frontend_ready` once it has (SPEC.md §8).
         .setup(move |app| {
             let events: Arc<dyn BackendEvents> = Arc::new(TauriEvents(app.handle().clone()));
             let backend = Backend::platform(events).map_err(|error| {
                 std::io::Error::other(format!("backend initialization failed: {error}"))
             })?;
-            app.manage(backend.clone());
-            setup_gate.install(move || backend.on_page_load_finished());
+            app.manage(backend);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_state,
+            commands::frontend_ready,
             commands::create_folder,
             commands::create_project,
             commands::pick_folder,
@@ -211,9 +168,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{attention_surface, blocking_alert_script, AttentionSurface, PageLoadGate};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use super::{attention_surface, blocking_alert_script, AttentionSurface};
 
     #[test]
     fn background_alert_script_json_escapes_untrusted_text() {
@@ -223,26 +178,6 @@ mod tests {
         assert!(script.contains("\\\""));
         assert!(script.contains("\\n"));
         assert!(!script.contains("; window.evil());"));
-    }
-
-    #[test]
-    fn page_load_gate_runs_once_in_either_install_order() {
-        for finish_first in [false, true] {
-            let gate = PageLoadGate::default();
-            let calls = Arc::new(AtomicUsize::new(0));
-            if finish_first {
-                gate.finish();
-            }
-            let captured = Arc::clone(&calls);
-            gate.install(move || {
-                captured.fetch_add(1, Ordering::AcqRel);
-            });
-            if !finish_first {
-                gate.finish();
-            }
-            gate.finish();
-            assert_eq!(calls.load(Ordering::Acquire), 1);
-        }
     }
 
     #[test]
