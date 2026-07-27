@@ -12,7 +12,7 @@
 
 Developers run many AI coding CLIs at once — Claude Code, Codex, GitHub Copilot CLI, opencode — across many project directories. When the machine reboots or the terminal app closes, all of those sessions are lost, and manually restoring 10 sessions (which CLI? which directory? which conversation?) is slow and error-prone.
 
-**Anchor** is a cross-platform (macOS / Windows / Linux) desktop app that hosts managed terminal sessions for AI CLIs. Its **core promise**: every session's identity — CLI tool, working directory, and the CLI's own session ID — is persisted to disk *the moment the session launches*, so after an app restart or OS reboot every session can be resumed with one click, restored to its original directory and conversation.
+**Anchor** is a cross-platform (macOS / Windows / Linux) desktop app that hosts managed terminal sessions for AI CLIs. Its **core promise**: every session's identity — CLI tool, working directory, and the CLI's own session ID — is persisted to disk *the moment the session launches*, so after an app restart or OS reboot every session can be resumed with one click, restored to its original directory and conversation. Resume always targets that persisted ID; Anchor never opens a provider's interactive session picker.
 
 ### Supported session types (5)
 
@@ -143,23 +143,26 @@ Any subsequent PTY output or user keystroke flips `waiting → running`. Process
 
 ## 5. CLI adapters (the core feature)
 
-Each adapter answers: how to **launch**, how to **capture the CLI's session ID**, how to **resume**. All spawns happen inside a PTY (`portable-pty`) with `cwd` = the session's folder path, size = current terminal cols/rows, and env = process env + user env vars from settings.
+Each adapter answers: how to **launch**, how to **capture the CLI's session ID**, how to **resume**. All spawns happen inside a PTY (`portable-pty`) with `cwd` = the session's folder path, size = current terminal cols/rows, and env = process env + user env vars from settings. If the effective `TERM` is absent or `dumb`, Anchor sets `TERM=xterm-256color`; the PTY is rendered by xterm.js and interactive CLI TUIs must not fall back to non-interactive mode.
+
+**Executable resolution invariant:** detection, launch, and resume use the same resolver for every supported CLI and the configured terminal shell. It checks the effective configured `PATH` plus common per-user package-manager locations (including NVM installations), then passes the resolved absolute executable path to the PTY. The PTY prepends that executable's directory to the child `PATH`, so script launchers can find their matching sibling runtime (for example, NVM's `codex` finding NVM's `node`). Desktop-launch environment differences must not produce a false “CLI not installed” result or cause the PTY to perform a second, inconsistent lookup.
 
 | tool | Launch command | Session-ID capture | Resume command |
 |---|---|---|---|
-| `claude` | `claude --session-id <uuid>` (Anchor generates the UUID) | **Pre-assigned** — known before spawn | `claude --resume <uuid>` |
+| `claude` | `claude --session-id <uuid>` (Anchor generates the UUID) | **Pre-assigned** — known before spawn | `claude --resume <uuid>` once a Claude transcript exists; otherwise `claude --session-id <uuid>` reopens the same saved empty identity, never the picker |
 | `copilot` | `copilot --resume <uuid>` (with a fresh UUID this *starts a new* session having that ID) | **Pre-assigned** | `copilot --resume <uuid>` |
 | `codex` | `codex` | **Discovered:** watch `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; a new file whose first-line JSON metadata has `cwd` == session folder and mtime ≥ launch time → extract its session UUID (in the filename and metadata) | `codex resume <uuid>` |
 | `opencode` | `opencode` (run in cwd) | **Discovered:** read `~/.local/share/opencode/opencode.db` (SQLite, **read-only**, open with `immutable`/read-only flags to avoid locking): newest session row whose directory == folder path and created ≥ launch time. (macOS/Linux path shown; resolve per-platform data dir.) | `opencode --session <id>` run in cwd |
 | `terminal` | user's default shell (settings `shell`, default `$SHELL` / platform default) | n/a — persistence = scrollback file | respawn shell in cwd; if `restoreScrollback` on, prepend saved scrollback to the xterm buffer with a `── restored session · scrollback recovered (N lines) ──` divider line (see mock) |
 
 Discovery rules (codex/opencode):
-- Background task starts at spawn; poll with backoff (e.g. 1s → 2s → 5s) for up to 60 s, then keep retrying lazily every 30 s while the session is ON, until found.
+- Background task starts at spawn and attempts discovery immediately, then polls with backoff (1s → 2s → 5s) for up to 60 s.
+- The initial 60-second discovery window continues if the tab closes and stops the PTY, because the provider may finish writing session metadata after process shutdown. After that window, retry lazily every 30 s only while the session is ON.
 - On success: write `cliSessionId` to registry immediately, emit `session:updated`.
 - Extra args: `extraArgs` from the session record are appended to launch (not resume) commands.
 - Model detection is best-effort (e.g. parse from output or store config); `model` may stay null.
 
-**Fallback:** if `cliSessionId` is null at resume time (discovery never landed), launch the CLI's own interactive picker in the session's cwd — `codex resume` (no args) or `claude --resume` (no args) etc. — so the user can pick the conversation from the CLI's own list. Degraded, but nothing is lost.
+**Resume identity invariant:** every AI resume command must include the record's exact persisted `cliSessionId`. If an imported, corrupt, or undiscovered record has no ID, return `SESSION_ID_UNAVAILABLE` without spawning a process. Never launch a provider's interactive picker: manual selection can attach the Anchor record to the wrong conversation and defeats one-click resume.
 
 **Version fragility:** store layouts and flags above were verified 2026-07 against current CLI versions. Adapters must treat parsing failures as "discovery pending", never crash, and are covered by fixture tests (§9). A `detect_clis` command reports which CLIs are installed (`which`/`where` + `--version`).
 
@@ -217,17 +220,18 @@ export interface CliInfo { tool: Tool; found: boolean; version: string | null; p
 | Command | Args | Returns | Notes |
 |---|---|---|---|
 | `get_state` | — | `{ folders: Folder[]; sessions: Session[] }` | Full registry snapshot; called on boot. |
+| `frontend_ready` | — | `void` | Called after event subscriptions and HYDRATE; starts guarded one-time auto-restore. |
 | `create_folder` | `{ path: string; name?: string }` | `Folder` | Name defaults to basename. Validates dir exists. |
 | `create_project` | `{ name: string }` | `Folder` | Creates `<projectsDir>/<name>` then registers it. `name` must be a single path segment — separators, `.`/`..` and dotfiles are rejected so the write stays inside `projectsDir`. Errors: `PROJECT_NAME_INVALID`, `PROJECT_EXISTS`, `PROJECT_DIR_FAILED`. |
 | `pick_folder` | — | `string \| null` | Opens the **OS folder picker** (Finder on macOS) via `tauri-plugin-dialog`; resolves to the chosen absolute path, or `null` if cancelled. Async + `spawn_blocking`: sync commands run on the main thread and the native dialog must be driven from there, so blocking on the main thread would deadlock. Errors: `DIALOG_FAILED`, `DIR_PATH_INVALID`. |
 | `rename_folder` | `{ folderId: string; name: string }` | `Folder` | |
-| `remove_folder` | `{ folderId: string }` | `void` | Stops + deletes all its sessions (UI shows the ack modal first). |
+| `remove_folder` | `{ folderId: string }` | `void` | Stops + deletes all its sessions (UI shows the ack modal first). Async + `spawn_blocking`: it can wait on several PTY shutdowns. |
 | `launch_session` | `{ folderId: string; tool: Tool; title?: string; extraArgs?: string[] }` | `Session` | Creates record (persisted before spawn), spawns PTY, starts discovery. Status `running`. |
-| `resume_session` | `{ sessionId: string }` | `Session` | Spawns resume command (or picker fallback / shell+scrollback for `terminal`). |
-| `stop_session` | `{ sessionId: string }` | `void` | Graceful kill (SIGTERM → SIGKILL after 5 s; ConPTY close on Windows). |
-| `delete_session` | `{ sessionId: string }` | `void` | Stops if ON; removes record + scrollback file. |
+| `resume_session` | `{ sessionId: string }` | `Session` | Spawns the exact saved AI session by `cliSessionId`, or shell+scrollback for `terminal`. Missing AI IDs return `SESSION_ID_UNAVAILABLE`; provider pickers are never opened. |
+| `stop_session` | `{ sessionId: string }` | `void` | Graceful kill (SIGTERM → SIGKILL after 5 s; ConPTY close on Windows). Async + `spawn_blocking` so the graceful wait never blocks the native UI thread. |
+| `delete_session` | `{ sessionId: string }` | `void` | Stops if ON; removes record + scrollback file. Async + `spawn_blocking`. |
 | `rename_session` | `{ sessionId: string; title: string }` | `Session` | |
-| `set_tab_open` | `{ sessionId: string; open: boolean }` | `void` | Frontend reports tab open/close so `wasOpenInTab` persists for auto-restore. |
+| `set_tab_open` | `{ sessionId: string; open: boolean }` | `void` | Frontend reports tab open/close so `wasOpenInTab` persists for auto-restore. The sole close lifecycle command: with `stopOnClose` it also stops the PTY, so the frontend must not additionally call `stop_session`. Async + `spawn_blocking`. |
 | `write_pty` | `{ sessionId: string; data: string }` | `void` | Keystrokes (UTF-8). |
 | `resize_pty` | `{ sessionId: string; cols: number; rows: number }` | `void` | |
 | `get_scrollback` | `{ sessionId: string }` | `string` | Saved scrollback (empty string if none). |
@@ -310,7 +314,30 @@ Frontend architecture requirements:
     review.
 - Typed IPC layer (`src/ipc/`) is the *only* place `invoke`/`listen` appear.
 - **`src/ipc/mock.ts`:** a browser-only mock implementation of the same interface (seeded with data resembling the mock's sample state, simulated status changes) selected via `VITE_IPC=mock` env — so the frontend agent can build & demo the entire UI in a plain browser without the Rust side, and the real backend drops in without UI changes.
-- One xterm.js `Terminal` instance per ON session, kept alive while its tab exists (switching tabs must not lose buffer); `fit` addon on resize → `resize_pty`.
+- One xterm.js `Terminal` instance per ON session, kept alive while its tab
+  exists (switching tabs must not lose buffer).
+
+  Each open ON session owns one stable xterm DOM slot for the tab's lifetime.
+  Changing `activeId` changes visibility only; it never reparents another
+  session's xterm root. Exactly one slot is visible, and PTY output received
+  before first display is buffered in that session's xterm instance.
+
+  `fit` addon on resize → `resize_pty`. Fitting forces layout, so activation and
+  every `ResizeObserver` callback are coalesced into one animation frame, and
+  only changed dimensions reach `resize_pty`.
+
+- Frontend event listeners are installed before the initial `get_state` request.
+  After hydration, the frontend sends `frontend_ready`, which triggers one-time
+  auto-restore. Restored PTY output and status therefore cannot race listener
+  registration or be overwritten by the pre-restore snapshot.
+
+- `set_tab_open(false)` is the sole close lifecycle command. When `stopOnClose`
+  is enabled, the backend stops the PTY and persists the closed-tab state; the
+  frontend must not also call `stop_session`. PTY waiting occurs on a blocking
+  worker and never on the native UI thread. The tab is removed and its neighbour
+  selected immediately; the terminal handle is released only once the close
+  request succeeds, and not at all if the tab was reopened while it was in
+  flight.
 
 ---
 
@@ -319,7 +346,7 @@ Frontend architecture requirements:
 **Errors (all surfaced in-UI, never silent):**
 - CLI not installed → inline message in the terminal pane with install hint (`detect_clis`).
 - Resume rejected / CLI errors on resume → keep record, show error state, offer "Start fresh session in this folder" (clears `cliSessionId`).
-- Discovery timeout → session works normally; resume later uses picker fallback.
+- Discovery timeout → session works normally, but resume is blocked with `SESSION_ID_UNAVAILABLE` rather than opening a provider picker.
 - PTY unexpected exit → `session:status` with exitCode; UI shows it on the Resume card.
 - Registry write failure → blocking toast (persistence is the core promise).
 
