@@ -1,7 +1,10 @@
 /**
- * Imperative xterm.js manager. Owns one Terminal per ON session and keeps it
- * alive across React re-renders and tab switches (SPEC.md §8). React views
- * only attach/detach the terminal's DOM node; the buffer lives here.
+ * Imperative xterm.js manager. Owns one Terminal per session and keeps it alive
+ * across React re-renders and tab switches (SPEC.md §8). Each session's terminal
+ * lives in its own stable slot for the lifetime of its tab; selection only
+ * changes which slot is visible, so terminals are never reparented into a shared
+ * host. Output is buffered from the first byte, even before the session has ever
+ * been displayed.
  */
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -11,9 +14,12 @@ import { TERMINAL_THEME } from "../components/lib/tokens";
 export interface TermHandle {
   term: Terminal;
   fit: FitAddon;
-  /** Stable wrapper node the view moves between the pane and an offscreen park. */
+  /** Stable wrapper node that lives inside this session's own slot. */
   el: HTMLDivElement;
   opened: boolean;
+  /** Last dimensions reported by `fit`, so unchanged sizes skip `resize_pty`. */
+  lastCols: number | null;
+  lastRows: number | null;
 }
 
 function readFontSize(): number {
@@ -58,55 +64,76 @@ export class TerminalManager {
     el.style.width = "100%";
     el.style.height = "100%";
 
-    h = { term, fit, el, opened: false };
+    h = { term, fit, el, opened: false, lastCols: null, lastRows: null };
     this.handles.set(id, h);
     return h;
   }
 
   /**
-   * Attach a session's terminal into `parent`; opens it on first attach.
-   * Returns true only on the attach that first opened the terminal, so the
-   * caller can prime restored scrollback exactly once.
+   * Mount a session's terminal into its own stable slot, opening it on first
+   * mount. Returns true only on the mount that first opened the terminal, so
+   * the caller can prime restored scrollback exactly once.
+   *
+   * `parent` belongs to this session alone; it is never shared with another
+   * session, so mounting can never displace a different terminal.
    */
-  attach(id: string, parent: HTMLElement): boolean {
-    const h = this.ensure(id);
-    if (h.el.parentElement !== parent) parent.appendChild(h.el);
-    let justOpened = false;
-    if (!h.opened) {
-      h.term.open(h.el);
-      h.opened = true;
-      justOpened = true;
-      // WebGL is a progressive enhancement; fall back silently to canvas/DOM.
-      try {
-        h.term.loadAddon(new WebglAddon());
-      } catch {
-        /* no webgl in this environment */
-      }
+  mount(id: string, parent: HTMLElement): boolean {
+    const handle = this.ensure(id);
+    if (handle.el.parentElement !== parent) {
+      parent.replaceChildren(handle.el);
     }
-    this.fit(id);
-    return justOpened;
-  }
+    if (handle.opened) return false;
 
-  write(id: string, data: string): void {
-    this.handles.get(id)?.term.write(data);
-  }
-
-  /** Fit to the current container; returns the new dimensions if known. */
-  fit(id: string): { cols: number; rows: number } | null {
-    const h = this.handles.get(id);
-    if (!h || !h.opened) return null;
+    handle.term.open(handle.el);
+    handle.opened = true;
+    // WebGL is a progressive enhancement; fall back silently to canvas/DOM.
     try {
-      h.fit.fit();
+      handle.term.loadAddon(new WebglAddon());
+    } catch {
+      /* no webgl in this environment */
+    }
+    return true;
+  }
+
+  /** Detach a terminal when React unmounts the slot that currently holds it. */
+  unmount(id: string, parent: HTMLElement): void {
+    const handle = this.handles.get(id);
+    if (handle?.el.parentElement === parent) handle.el.remove();
+  }
+
+  /** Buffers into the session's terminal, creating it if it has never shown. */
+  write(id: string, data: string): void {
+    this.ensure(id).term.write(data);
+  }
+
+  /**
+   * Fit to the current container. Returns the new dimensions only when they
+   * differ from the last reported ones, so a repeated activation or an
+   * unchanged ResizeObserver callback issues no `resize_pty`.
+   */
+  fit(id: string): { cols: number; rows: number } | null {
+    const handle = this.handles.get(id);
+    if (!handle?.opened) return null;
+    try {
+      handle.fit.fit();
     } catch {
       return null;
     }
-    const { cols, rows } = h.term;
+
+    const { cols, rows } = handle.term;
+    if (handle.lastCols === cols && handle.lastRows === rows) return null;
+    handle.lastCols = cols;
+    handle.lastRows = rows;
     return { cols, rows };
   }
 
   setFontSize(px: number): void {
     for (const h of this.handles.values()) {
       h.term.options.fontSize = px;
+      // A font change resizes the grid, so the cached dimensions no longer
+      // describe the PTY and the next fit must be allowed to report.
+      h.lastCols = null;
+      h.lastRows = null;
       if (h.opened) {
         try {
           h.fit.fit();
