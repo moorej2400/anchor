@@ -8,6 +8,21 @@ use tauri_plugin_dialog::DialogExt;
 use crate::backend::Backend;
 use crate::models::*;
 
+/// Run a lifecycle operation that can wait on a PTY off the native UI thread.
+///
+/// Synchronous Tauri commands run on the main thread, and stopping a PTY
+/// deliberately waits out the graceful-termination window. Blocking there
+/// freezes the window; the wait itself is correct and stays unchanged.
+async fn run_blocking<T, F>(operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(|_| "BACKGROUND_TASK_FAILED: lifecycle operation did not complete".to_string())?
+}
+
 #[tauri::command]
 pub fn get_state(backend: State<'_, Arc<Backend>>) -> Result<AppState, String> {
     backend.get_state()
@@ -73,8 +88,12 @@ pub fn rename_folder(
 }
 
 #[tauri::command]
-pub fn remove_folder(backend: State<'_, Arc<Backend>>, folder_id: String) -> Result<(), String> {
-    backend.remove_folder(&folder_id)
+pub async fn remove_folder(
+    backend: State<'_, Arc<Backend>>,
+    folder_id: String,
+) -> Result<(), String> {
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || backend.remove_folder(&folder_id)).await
 }
 
 #[tauri::command]
@@ -99,13 +118,21 @@ pub fn resume_session(
 }
 
 #[tauri::command]
-pub fn stop_session(backend: State<'_, Arc<Backend>>, session_id: String) -> Result<(), String> {
-    backend.stop_session(&session_id)
+pub async fn stop_session(
+    backend: State<'_, Arc<Backend>>,
+    session_id: String,
+) -> Result<(), String> {
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || backend.stop_session(&session_id)).await
 }
 
 #[tauri::command]
-pub fn delete_session(backend: State<'_, Arc<Backend>>, session_id: String) -> Result<(), String> {
-    backend.delete_session(&session_id)
+pub async fn delete_session(
+    backend: State<'_, Arc<Backend>>,
+    session_id: String,
+) -> Result<(), String> {
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || backend.delete_session(&session_id)).await
 }
 
 #[tauri::command]
@@ -118,12 +145,13 @@ pub fn rename_session(
 }
 
 #[tauri::command]
-pub fn set_tab_open(
+pub async fn set_tab_open(
     backend: State<'_, Arc<Backend>>,
     session_id: String,
     open: bool,
 ) -> Result<(), String> {
-    backend.set_tab_open(&session_id, open)
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || backend.set_tab_open(&session_id, open)).await
 }
 
 #[tauri::command]

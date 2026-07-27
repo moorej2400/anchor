@@ -94,6 +94,7 @@ type Action =
   | { type: "REMOVE_FOLDER"; id: string }
   | { type: "OPEN_TAB"; id: string }
   | { type: "CLOSE_TAB"; id: string }
+  | { type: "RESTORE_TAB"; id: string }
   | { type: "SET_ACTIVE"; id: string | null }
   | { type: "SET_VIEW"; view: View }
   | { type: "SET_SETTINGS_SECTION"; section: SettingsSection }
@@ -185,6 +186,14 @@ function reducer(state: State, action: Action): State {
       const active =
         state.activeId === action.id ? pickAdjacent(state.openTabs, action.id) : state.activeId;
       return { ...state, openTabs: state.openTabs.filter((t) => t !== action.id), activeId: active };
+    }
+    case "RESTORE_TAB": {
+      // Undo of an optimistic close: the tab comes back, but the selection the
+      // user has since made is theirs to keep.
+      const openTabs = state.openTabs.includes(action.id)
+        ? state.openTabs
+        : [...state.openTabs, action.id];
+      return { ...state, openTabs, activeId: state.activeId ?? action.id };
     }
     case "SET_ACTIVE":
       return { ...state, activeId: action.id, view: "terminal" };
@@ -359,8 +368,14 @@ function makeActions(
     void ipc.setTabOpen(id, open).catch(() => {});
   };
 
+  // Tabs with a close request still in flight, keyed to the token of the
+  // request that owns them. Reopening a tab clears its token, so a close that
+  // settles afterwards neither disposes the terminal nor undoes the reopen.
+  const closingTabs = new Map<string, symbol>();
+
   return {
     selectSession(id) {
+      closingTabs.delete(id);
       const already = stateRef.current.openTabs.includes(id);
       dispatch({ type: "OPEN_TAB", id });
       if (!already) persistTabOpen(id, true);
@@ -383,16 +398,30 @@ function makeActions(
         showToast(shortError(e));
       }
     },
+    // `set_tab_open(false)` is the sole close lifecycle command: with
+    // stopOnClose the backend stops the PTY itself, so a second stop_session
+    // here would only queue behind work already done (SPEC.md §8). The tab
+    // disappears immediately; shutdown finishes in the background.
     async closeTab(id) {
-      const s = stateRef.current.sessions.find((x) => x.id === id);
+      const session = stateRef.current.sessions.find((candidate) => candidate.id === id);
+      const stopOnClose = stateRef.current.settings.stopOnClose;
+      const closeToken = Symbol(id);
+      closingTabs.set(id, closeToken);
       dispatch({ type: "CLOSE_TAB", id });
-      persistTabOpen(id, false);
-      if (s && isOn(s.status) && stateRef.current.settings.stopOnClose) {
-        try {
-          await ipc.stopSession(id);
-        } catch {
-          /* backend still emits status on real exit */
+
+      try {
+        await ipc.setTabOpen(id, false);
+        if (closingTabs.get(id) !== closeToken) return;
+        closingTabs.delete(id);
+        if (session && (!isOn(session.status) || stopOnClose)) {
+          terminals.dispose(id);
         }
+      } catch (e) {
+        if (closingTabs.get(id) === closeToken) {
+          closingTabs.delete(id);
+          dispatch({ type: "RESTORE_TAB", id });
+        }
+        showToast(shortError(e));
       }
     },
     async stop(id) {

@@ -1257,6 +1257,7 @@ mod tests {
         exit_immediately: AtomicBool,
         fail_stop: AtomicBool,
         fail_spawn: AtomicBool,
+        stop_calls: AtomicUsize,
     }
 
     impl PtyRuntime for FakeRuntime {
@@ -1296,6 +1297,7 @@ mod tests {
             self.live(session_id)
         }
         fn stop(&self, session_id: &str) -> Result<(), String> {
+            self.stop_calls.fetch_add(1, Ordering::AcqRel);
             if self.fail_stop.load(Ordering::Acquire) {
                 return Err("PTY_STOP_FAILED: synthetic stop failure".into());
             }
@@ -1594,8 +1596,13 @@ mod tests {
                 .title,
             "shell"
         );
+        // Closing a running tab is one lifecycle command that stops the PTY
+        // exactly once and persists the closed state; the frontend must not
+        // also send stop_session.
         backend.set_tab_open(&session.id, false).unwrap();
         assert!(!runtime.is_live(&session.id));
+        assert_eq!(runtime.stop_calls.load(Ordering::Acquire), 1);
+        assert!(!backend.session(&session.id).unwrap().was_open_in_tab);
         backend.delete_session(&session.id).unwrap();
         assert!(backend.stop_session(&session.id).is_err());
         assert!(backend.delete_session(&session.id).is_err());
