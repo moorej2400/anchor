@@ -31,8 +31,8 @@ export function Sidebar({ onRemoveFolder }: SidebarProps) {
   // Selecting a tab changes `activeId` only. Without memoizing, every selection
   // would re-filter and re-sort every session before the terminal can paint.
   const groups = useMemo(
-    () => foldersWithSessions(state.folders, state.sessions, state.filter),
-    [state.folders, state.sessions, state.filter],
+    () => foldersWithSessions(state.folders, state.sessions, state.filter, state.typedOrder),
+    [state.folders, state.sessions, state.filter, state.typedOrder],
   );
   const counts = useMemo(() => statusCounts(state.sessions), [state.sessions]);
 

@@ -6,10 +6,11 @@ export interface FolderWithSessions extends Folder {
   sessions: Session[];
 }
 
-/** Rank for waiting-first sorting: waiting (needs attention) sorts to the top. */
-function attentionRank(status: Status): number {
-  return status === "waiting" ? 0 : 1;
-}
+/**
+ * Monotonic "last typed into" sequence per session id. Higher is more recent;
+ * a missing id means the user has never typed into that session.
+ */
+export type TypedOrder = Record<string, number>;
 
 /** Does a session match the filter query (title, folder, tool name, session id)? */
 export function sessionMatches(session: Session, folder: Folder, query: string): boolean {
@@ -20,13 +21,21 @@ export function sessionMatches(session: Session, folder: Folder, query: string):
 }
 
 /**
- * Folders with their sessions filtered by `query` and sorted waiting-first
- * (stable within rank). When filtering, empty folders are dropped.
+ * Folders with their sessions filtered by `query` and ordered by *user
+ * activity*: the session the user most recently typed into sits at the top of
+ * its folder, then the next most recent, and so on; sessions never typed into
+ * keep registry order below them. When filtering, empty folders are dropped.
+ *
+ * Deliberately independent of `status`. The idle detector flips ON sessions
+ * between running and waiting every few seconds (SPEC §4), so ranking by
+ * status made rows jump on their own. Selecting a session does not reorder it
+ * either — only typing does.
  */
 export function foldersWithSessions(
   folders: Folder[],
   sessions: Session[],
   query: string,
+  typedOrder: TypedOrder = {},
 ): FolderWithSessions[] {
   const byFolder = new Map<string, Session[]>();
   for (const s of sessions) {
@@ -39,11 +48,12 @@ export function foldersWithSessions(
   }
   const result: FolderWithSessions[] = folders.map((f) => {
     const list = (byFolder.get(f.id) ?? []).slice();
-    // Stable sort: decorate with original index so equal ranks keep order.
+    // Typed-in sessions first, most recent at the top. Decorating with the
+    // original index keeps never-typed sessions in registry order.
     list
-      .map((s, i) => [s, i] as const)
-      .sort((a, b) => attentionRank(a[0].status) - attentionRank(b[0].status) || a[1] - b[1])
-      .forEach((pair, i) => (list[i] = pair[0]));
+      .map((s, i) => [s, i, typedOrder[s.id] ?? 0] as const)
+      .sort((a, b) => b[2] - a[2] || a[1] - b[1])
+      .forEach((entry, i) => (list[i] = entry[0]));
     return { ...f, sessions: list };
   });
   return query.trim() ? result.filter((f) => f.sessions.length > 0) : result;

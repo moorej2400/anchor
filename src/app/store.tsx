@@ -37,6 +37,10 @@ interface State {
   clis: CliInfo[];
   openTabs: string[];
   activeId: string | null;
+  /** Sidebar ordering: session id → sequence of the last keystroke sent to it. */
+  typedOrder: Record<string, number>;
+  /** Monotonic counter backing `typedOrder`. */
+  typeSeq: number;
   view: View;
   settingsSection: SettingsSection;
   filter: string;
@@ -74,6 +78,8 @@ const initialState: State = {
   clis: [],
   openTabs: [],
   activeId: null,
+  typedOrder: {},
+  typeSeq: 0,
   view: "terminal",
   settingsSection: "general",
   filter: "",
@@ -96,6 +102,7 @@ type Action =
   | { type: "CLOSE_TAB"; id: string }
   | { type: "RESTORE_TAB"; id: string }
   | { type: "SET_ACTIVE"; id: string | null }
+  | { type: "SESSION_TYPED"; id: string }
   | { type: "SET_VIEW"; view: View }
   | { type: "SET_SETTINGS_SECTION"; section: SettingsSection }
   | { type: "SET_FILTER"; value: string }
@@ -105,6 +112,17 @@ type Action =
   | { type: "SET_SETTINGS"; settings: Settings }
   | { type: "SET_WAITING"; count: number }
   | { type: "FATAL"; message: string };
+
+/** Drop deleted sessions from the typed-order map so it can't grow unbounded. */
+function withoutIds(
+  typedOrder: Record<string, number>,
+  ids: string[],
+): Record<string, number> {
+  if (!ids.some((id) => id in typedOrder)) return typedOrder;
+  const next = { ...typedOrder };
+  for (const id of ids) delete next[id];
+  return next;
+}
 
 function pickAdjacent(openTabs: string[], closingId: string): string | null {
   const i = openTabs.indexOf(closingId);
@@ -143,6 +161,7 @@ function reducer(state: State, action: Action): State {
         sessions: state.sessions.filter((s) => s.id !== action.id),
         openTabs: state.openTabs.filter((t) => t !== action.id),
         activeId: active,
+        typedOrder: withoutIds(state.typedOrder, [action.id]),
       };
     }
     case "SET_STATUS":
@@ -174,6 +193,7 @@ function reducer(state: State, action: Action): State {
         sessions: state.sessions.filter((s) => s.folderId !== action.id),
         openTabs,
         activeId: active,
+        typedOrder: withoutIds(state.typedOrder, [...ids]),
       };
     }
     case "OPEN_TAB": {
@@ -197,6 +217,14 @@ function reducer(state: State, action: Action): State {
     }
     case "SET_ACTIVE":
       return { ...state, activeId: action.id, view: "terminal" };
+    case "SESSION_TYPED": {
+      // Fires on every keystroke. Once a session already holds the newest
+      // sequence it is at the top of its folder and cannot move further, so
+      // return the same state and let React bail out of the re-render.
+      if (state.typedOrder[action.id] === state.typeSeq) return state;
+      const typeSeq = state.typeSeq + 1;
+      return { ...state, typeSeq, typedOrder: { ...state.typedOrder, [action.id]: typeSeq } };
+    }
     case "SET_VIEW":
       return { ...state, view: action.view };
     case "SET_SETTINGS_SECTION":
@@ -239,7 +267,10 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
 
   const terminals = useMemo(
     () =>
+      // This callback is xterm's onData — real user keystrokes only, never PTY
+      // output — so it is the right signal for activity-based sidebar order.
       new TerminalManager((sessionId, data) => {
+        dispatch({ type: "SESSION_TYPED", id: sessionId });
         void ipc.writePty(sessionId, data).catch(() => {});
       }),
     [],

@@ -24,24 +24,74 @@ function s(id: string, folderId: string, tool: Tool, title: string, status: Stat
 }
 
 describe("foldersWithSessions", () => {
-  it("sorts waiting sessions to the top of their folder (attention priority)", () => {
+  it("keeps registry order when the user has typed in nothing", () => {
     const sessions = [
       s("a", "f1", "claude", "running one", "running"),
       s("b", "f1", "codex", "stopped one", "stopped"),
       s("c", "f1", "copilot", "waiting one", "waiting"),
     ];
     const [g] = foldersWithSessions(folders, sessions, "");
+    expect(g.sessions.map((x) => x.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("does not reorder when a session's status changes", () => {
+    const before = [
+      s("a", "f1", "claude", "one", "running"),
+      s("b", "f1", "codex", "two", "running"),
+      s("c", "f1", "copilot", "three", "running"),
+    ];
+    const after = [
+      s("a", "f1", "claude", "one", "running"),
+      s("b", "f1", "codex", "two", "waiting"),
+      s("c", "f1", "copilot", "three", "running"),
+    ];
+    // The 3s idle detector flips sessions between running and waiting
+    // constantly; position must not follow it.
+    expect(foldersWithSessions(folders, before, "")[0].sessions.map((x) => x.id)).toEqual(
+      foldersWithSessions(folders, after, "")[0].sessions.map((x) => x.id),
+    );
+  });
+
+  it("promotes the most recently typed-in session to the top of its folder", () => {
+    const sessions = [
+      s("a", "f1", "claude", "one", "running"),
+      s("b", "f1", "codex", "two", "running"),
+      s("c", "f1", "copilot", "three", "running"),
+    ];
+    const [g] = foldersWithSessions(folders, sessions, "", { c: 1 });
     expect(g.sessions.map((x) => x.id)).toEqual(["c", "a", "b"]);
   });
 
-  it("is a stable sort within the same attention rank", () => {
+  it("orders several typed-in sessions most-recent-first", () => {
     const sessions = [
-      s("a", "f1", "claude", "first running", "running"),
-      s("b", "f1", "codex", "second running", "running"),
-      s("c", "f1", "copilot", "waiting", "waiting"),
+      s("a", "f1", "claude", "one", "running"),
+      s("b", "f1", "codex", "two", "running"),
+      s("c", "f1", "copilot", "three", "running"),
     ];
-    const [g] = foldersWithSessions(folders, sessions, "");
-    expect(g.sessions.map((x) => x.id)).toEqual(["c", "a", "b"]);
+    const [g] = foldersWithSessions(folders, sessions, "", { a: 1, c: 2, b: 3 });
+    expect(g.sessions.map((x) => x.id)).toEqual(["b", "c", "a"]);
+  });
+
+  it("keeps never-typed sessions in registry order below typed ones", () => {
+    const sessions = [
+      s("a", "f1", "claude", "one", "running"),
+      s("b", "f1", "codex", "two", "running"),
+      s("c", "f1", "copilot", "three", "running"),
+    ];
+    const [g] = foldersWithSessions(folders, sessions, "", { b: 1 });
+    expect(g.sessions.map((x) => x.id)).toEqual(["b", "a", "c"]);
+  });
+
+  it("promotes only within the session's own folder", () => {
+    const sessions = [
+      s("a", "f1", "claude", "one", "running"),
+      s("b", "f1", "codex", "two", "running"),
+      s("x", "f2", "claude", "other", "running"),
+      s("y", "f2", "codex", "other two", "running"),
+    ];
+    const [first, second] = foldersWithSessions(folders, sessions, "", { y: 1 });
+    expect(first.sessions.map((v) => v.id)).toEqual(["a", "b"]);
+    expect(second.sessions.map((v) => v.id)).toEqual(["y", "x"]);
   });
 
   it("drops empty folders only when a filter is active", () => {

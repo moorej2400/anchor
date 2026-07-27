@@ -290,7 +290,17 @@ Errors: commands reject with a string error code + message, e.g. `"CLI_NOT_FOUND
 - **Command palette (⌘K):** fuzzy filter over sessions (title, folder, tool); Enter jumps/opens tab.
 - **Toasts:** "Session ID copied" / "Folder path copied" style, bottom-center.
 - **Theming:** dark-only; accent gradient `--acc2 → --acc` (defaults `#8a3fd0 → #d6417a`); glass blur; design tokens exactly as the mock's CSS vars. Badges/colors per tool as in mock (`cc` orange, `cx` green, `co` blue, `oc` purple, `›_` neutral).
-- **Sorting (spec addition):** `waiting` sessions sort first within their folder.
+- **Sorting (spec addition):** session rows are ordered by **user activity**
+  within their folder. Typing into a session's terminal moves it to the top of
+  its folder; the next most recently typed-in session follows, and so on.
+  Sessions the user has never typed into keep registry order below those.
+
+  Ordering must not depend on `status`. The idle detector flips ON sessions
+  between `running` and `waiting` every few seconds (§4), so ranking by status
+  made rows reshuffle on their own while the user was reading them. Selecting a
+  row or a tab does not reorder it either — only keystrokes do, taken from
+  xterm's `onData`, which never fires for PTY output. Attention is conveyed by
+  the status dot rather than by position.
 
 Frontend architecture requirements:
 - **Custom, extensible component library:** all UI is built from an in-repo
