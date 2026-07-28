@@ -23,10 +23,10 @@
 
 **Files:** `src-tauri/src/adapters/mod.rs`, `src-tauri/src/adapters/*.rs`, `src-tauri/tests/adapters.rs`, `src-tauri/tests/fixtures/**`, `src-tauri/tests/fake_cli.rs`
 
-- [ ] Write failing command-construction tests for all five adapters, including picker fallbacks and launch-only extra arguments.
+- [ ] Write failing command-construction tests for all five adapters, including the no-provider-picker resume invariant and launch-only extra arguments.
 - [ ] Write failing synthetic-fixture tests for Codex first-line JSON discovery and opencode read-only SQLite discovery, including malformed/missing-store pending behavior.
 - [ ] Run focused adapter tests and confirm the expected failures.
-- [ ] Implement launch/resume specs and dependency-injected discovery paths without reading real CLI stores in tests, including the exact 1 s -> 2 s -> 5 s up-to-60 s discovery schedule and 30 s lazy retries while ON.
+- [ ] Implement launch/resume specs and dependency-injected discovery paths without reading real CLI stores in tests, including immediate discovery, the 1 s -> 2 s -> 5 s initial window that survives PTY stop, and 30 s lazy retries while ON.
 - [ ] Add the §9 fake-CLI integration test: launch a synthetic CLI that writes a synthetic Codex session file, assert discovery, kill it, and assert the generated resume command.
 - [ ] Run focused adapter tests and confirm they pass.
 

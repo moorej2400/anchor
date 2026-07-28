@@ -7,7 +7,9 @@
 #![allow(dead_code)] // Command wiring is completed by a separate Phase 2 task.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -27,6 +29,13 @@ const POST_EXIT_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
 const READER_POLL_INTERVAL: Duration = Duration::from_millis(4);
 const STATUS_TICK_INTERVAL: Duration = Duration::from_millis(10);
 const GRACEFUL_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Recent output retained per live session so a reloaded webview can be resent
+/// what it missed. The frontend's xterm buffer is otherwise the only copy, and
+/// it dies with the page (SPEC.md §8).
+const RECENT_OUTPUT_MAX_BYTES: usize = 256 * 1024;
+/// Trim only once the buffer has run this far past the cap, so a busy session
+/// pays for the memmove occasionally rather than on every batch.
+const RECENT_OUTPUT_TRIM_AT: usize = RECENT_OUTPUT_MAX_BYTES + 64 * 1024;
 const NOT_FOUND: &str = "PTY_NOT_FOUND: no live PTY for session";
 
 /// Event payload consumed by the Tauri adapter or by tests without a window.
@@ -60,6 +69,11 @@ struct SessionRuntime {
     writer: Mutex<Option<Box<dyn Write + Send>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     detector: Mutex<StatusDetector>,
+    /// Everything the session has printed lately, capped. Output is emitted
+    /// while this lock is held, so a replay and the live stream can never
+    /// interleave or duplicate: a chunk is either inside the replayed snapshot
+    /// or emitted strictly after it.
+    recent: Mutex<Vec<u8>>,
     process_id: Option<u32>,
     callback: EventCallback,
 }
@@ -130,12 +144,21 @@ impl PtyManager {
             .take_writer()
             .map_err(|_| "PTY_OPEN_FAILED: could not create terminal writer".to_string())?;
 
+        let child_path = child_search_path(&spec, settings);
+        let child_terminal_type = child_terminal_type(settings);
         let mut command = CommandBuilder::new(&spec.program);
         command.args(&spec.args);
         command.cwd(&spec.cwd);
         for env in &settings.env_vars {
             command.env(&env.key, &env.value);
         }
+        if let Some(path) = child_path {
+            command.env("PATH", path);
+        }
+        // Launch Services commonly supplies TERM=dumb, but every managed
+        // process runs inside a real PTY rendered by xterm.js. Normalize only
+        // missing/dumb values so interactive CLIs enable their TUI.
+        command.env("TERM", child_terminal_type);
         let child = pair
             .slave
             .spawn_command(command)
@@ -154,6 +177,7 @@ impl PtyManager {
             writer: Mutex::new(Some(writer)),
             killer: Mutex::new(killer),
             detector: Mutex::new(StatusDetector::new()),
+            recent: Mutex::new(Vec::new()),
             process_id,
             callback: Arc::clone(&self.callback),
         });
@@ -228,6 +252,24 @@ impl PtyManager {
         }
     }
 
+    /// Re-emit what a live session has printed lately, for a webview that lost
+    /// its xterm buffer to a page reload. Unknown or finished sessions replay
+    /// nothing — there is no terminal left to repopulate.
+    pub fn replay_output(&self, session_id: &str) -> Result<(), String> {
+        let Ok(runtime) = self.live_runtime(session_id) else {
+            return Ok(());
+        };
+        let recent = runtime.recent.lock().map_err(lock_error)?;
+        if recent.is_empty() {
+            return Ok(());
+        }
+        (runtime.callback)(PtyEvent::Output {
+            session_id: session_id.to_owned(),
+            data: String::from_utf8_lossy(&recent).into_owned(),
+        });
+        Ok(())
+    }
+
     pub fn is_live(&self, session_id: &str) -> bool {
         self.sessions
             .lock()
@@ -265,6 +307,68 @@ impl Drop for PtyManager {
             let _ = self.stop(&session_id);
         }
     }
+}
+
+fn child_search_path(spec: &SpawnSpec, settings: &Settings) -> Option<OsString> {
+    let configured = settings
+        .env_vars
+        .iter()
+        .rev()
+        .find(|env| is_path_key(&env.key))
+        .map(|env| OsString::from(&env.value))
+        .or_else(|| std::env::var_os("PATH"));
+    let executable_directory = Path::new(&spec.program).parent()?;
+    let mut directories = configured
+        .as_deref()
+        .map(std::env::split_paths)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    if !directories
+        .iter()
+        .any(|directory| directory == executable_directory)
+    {
+        // Script-based CLIs commonly use `/usr/bin/env node`; keeping the
+        // resolved launcher's directory on PATH also exposes its matching
+        // interpreter when a desktop app inherited only a system PATH.
+        directories.insert(0, executable_directory.to_path_buf());
+    }
+    std::env::join_paths(directories).ok()
+}
+
+fn child_terminal_type(settings: &Settings) -> OsString {
+    settings
+        .env_vars
+        .iter()
+        .rev()
+        .find(|env| is_term_key(&env.key))
+        .map(|env| OsString::from(&env.value))
+        .or_else(|| std::env::var_os("TERM"))
+        .filter(|value| {
+            let value = value.to_string_lossy();
+            !value.trim().is_empty() && value != "dumb"
+        })
+        .unwrap_or_else(|| OsString::from("xterm-256color"))
+}
+
+#[cfg(windows)]
+fn is_path_key(key: &str) -> bool {
+    key.eq_ignore_ascii_case("PATH")
+}
+
+#[cfg(not(windows))]
+fn is_path_key(key: &str) -> bool {
+    key == "PATH"
+}
+
+#[cfg(windows)]
+fn is_term_key(key: &str) -> bool {
+    key.eq_ignore_ascii_case("TERM")
+}
+
+#[cfg(not(windows))]
+fn is_term_key(key: &str) -> bool {
+    key == "TERM"
 }
 
 enum ReaderMessage {
@@ -488,16 +592,46 @@ fn spawn_waiter(
     });
 }
 
+/// Cap the retained buffer, dropping whole lines from the front so a replay
+/// never begins inside an escape sequence or a multi-byte character.
+fn trim_recent(recent: &mut Vec<u8>) {
+    if recent.len() <= RECENT_OUTPUT_TRIM_AT {
+        return;
+    }
+    let overflow = recent.len() - RECENT_OUTPUT_MAX_BYTES;
+    // Full-screen redraws can run past the cap without a newline. Cutting mid
+    // line then costs a few garbled leading characters; dropping the whole
+    // buffer would cost the user the entire session.
+    let cut = recent[overflow..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map_or(overflow, |offset| overflow + offset + 1);
+    recent.drain(..cut);
+}
+
 fn post_exit_drain_deadline(now: Instant) -> Instant {
     now + POST_EXIT_DRAIN_TIMEOUT
 }
 
 fn emit_output(session_id: &str, runtime: &SessionRuntime, bytes: &[u8]) {
     let data = String::from_utf8_lossy(bytes).into_owned();
-    (runtime.callback)(PtyEvent::Output {
-        session_id: session_id.to_owned(),
-        data,
-    });
+    // Record and emit under one lock so `replay_output` sees a consistent
+    // snapshot: concurrent output is either already in it or emitted after it.
+    match runtime.recent.lock() {
+        Ok(mut recent) => {
+            recent.extend_from_slice(bytes);
+            trim_recent(&mut recent);
+            (runtime.callback)(PtyEvent::Output {
+                session_id: session_id.to_owned(),
+                data,
+            });
+        }
+        // A poisoned buffer must not cost the user their live output.
+        Err(_) => (runtime.callback)(PtyEvent::Output {
+            session_id: session_id.to_owned(),
+            data,
+        }),
+    }
     let transition = runtime
         .detector
         .lock()
@@ -699,6 +833,64 @@ mod tests {
         assert!(!manager.is_live("missing"));
     }
 
+    #[test]
+    fn recent_output_is_capped_without_ever_starting_mid_line() {
+        let mut recent = Vec::new();
+        while recent.len() <= RECENT_OUTPUT_TRIM_AT {
+            recent.extend_from_slice(b"0123456789abcdef\n");
+        }
+
+        trim_recent(&mut recent);
+
+        assert!(recent.len() <= RECENT_OUTPUT_MAX_BYTES);
+        assert!(recent.starts_with(b"0123456789abcdef\n"));
+    }
+
+    #[test]
+    fn recent_output_under_the_trim_threshold_is_kept_whole() {
+        let mut recent = b"one\ntwo\n".to_vec();
+
+        trim_recent(&mut recent);
+
+        assert_eq!(recent, b"one\ntwo\n");
+    }
+
+    #[test]
+    fn replaying_an_unknown_session_is_a_no_op() {
+        let (manager, receiver) = manager_with_events();
+
+        assert_eq!(manager.replay_output("missing"), Ok(()));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replay_output_resends_what_a_live_session_already_printed() {
+        let (manager, receiver) = manager_with_events();
+        let spec = SpawnSpec::new("/bin/sh", ["-c", "printf 'restored-line\\n'; sleep 30"], "/");
+
+        manager
+            .spawn("replay", spec, 80, 24, &Settings::default())
+            .unwrap();
+        wait_for_event(&receiver, Duration::from_secs(3), |event| {
+            matches!(event, PtyEvent::Output { data, .. } if data.contains("restored-line"))
+        });
+
+        // The webview reloaded: its buffer is gone but the PTY is still live.
+        manager.replay_output("replay").unwrap();
+
+        let event = wait_for_event(&receiver, Duration::from_secs(3), |event| {
+            matches!(event, PtyEvent::Output { .. })
+        });
+        let PtyEvent::Output { session_id, data } = event else {
+            unreachable!()
+        };
+        assert_eq!(session_id, "replay");
+        assert!(data.contains("restored-line"));
+
+        manager.stop("replay").unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn spawn_applies_cwd_and_environment_override_and_emits_output() {
@@ -734,6 +926,68 @@ mod tests {
             root.path().canonicalize().unwrap().display()
         )));
         assert!(data.contains("env=synthetic-value"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_replaces_dumb_term_with_interactive_terminal_type() {
+        let (manager, receiver) = manager_with_events();
+        let mut settings = Settings::default();
+        settings.env_vars = vec![EnvVar {
+            key: "TERM".into(),
+            value: "dumb".into(),
+        }];
+        let spec = SpawnSpec::new("/bin/sh", ["-c", "printf 'term=%s' \"$TERM\""], "/");
+
+        manager
+            .spawn("interactive-term", spec, 80, 24, &settings)
+            .unwrap();
+
+        wait_for_event(
+            &receiver,
+            Duration::from_secs(3),
+            |event| matches!(event, PtyEvent::Output { data, .. } if data.contains("term=xterm-256color")),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_path_includes_resolved_cli_directory_for_sibling_interpreters() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir().unwrap();
+        let bin = root.path().join("managed-runtime/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let interpreter = bin.join("synthetic-node");
+        std::fs::write(
+            &interpreter,
+            b"#!/bin/sh\nprintf SIBLING_INTERPRETER_FOUND\n",
+        )
+        .unwrap();
+        let launcher = bin.join("synthetic-codex");
+        std::fs::write(&launcher, b"#!/usr/bin/env synthetic-node\n").unwrap();
+        for executable in [&interpreter, &launcher] {
+            let mut permissions = std::fs::metadata(executable).unwrap().permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(executable, permissions).unwrap();
+        }
+        let mut settings = Settings::default();
+        settings.env_vars = vec![EnvVar {
+            key: "PATH".into(),
+            value: "/usr/bin:/bin".into(),
+        }];
+        let (manager, receiver) = manager_with_events();
+        let spec = SpawnSpec::new(launcher.to_string_lossy(), [] as [&str; 0], root.path());
+
+        manager
+            .spawn("sibling-interpreter", spec, 80, 24, &settings)
+            .unwrap();
+
+        wait_for_event(
+            &receiver,
+            Duration::from_secs(3),
+            |event| matches!(event, PtyEvent::Output { data, .. } if data.contains("SIBLING_INTERPRETER_FOUND")),
+        );
     }
 
     #[cfg(unix)]

@@ -52,6 +52,8 @@
 
   /* Geometry */
   --sbw: 298px; /* sidebar width */
+  --tab-h: 38px; /* tab height; also the tab strip's floor so the row keeps its
+                    height (and the `+` its position) when no tabs are open */
   --radius-sm: 6px;
   --radius: 9px;
   --radius-lg: 12px;

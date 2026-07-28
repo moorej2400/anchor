@@ -61,8 +61,10 @@ pub trait Adapter {
         settings: &Settings,
     ) -> Result<(SpawnSpec, IdCapture), String>;
 
-    /// Build the resume command. If `session.cli_session_id` is None, return
-    /// the CLI's interactive-picker fallback (SPEC.md §5) — never an error.
+    /// Build the resume command for the exact persisted CLI session.
+    ///
+    /// AI adapters must never emit an interactive-picker command: requiring
+    /// manual session selection would break Anchor's one-click resume promise.
     fn resume(
         &self,
         session: &Session,
@@ -85,12 +87,25 @@ pub trait Adapter {
 
 pub fn adapter_for(tool: Tool) -> Box<dyn Adapter + Send + Sync> {
     match tool {
-        Tool::Claude => Box::new(claude::ClaudeAdapter),
+        Tool::Claude => Box::new(claude::ClaudeAdapter::default()),
         Tool::Codex => Box::new(codex::CodexAdapter::default()),
         Tool::Copilot => Box::new(copilot::CopilotAdapter),
         Tool::Opencode => Box::new(opencode::OpencodeAdapter::default()),
         Tool::Terminal => Box::new(terminal::TerminalAdapter),
     }
+}
+
+pub(crate) fn session_id_for_resume(session: &Session, tool: Tool) -> Result<&str, String> {
+    session
+        .cli_session_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "SESSION_ID_UNAVAILABLE: saved {} session has no CLI session ID",
+                tool_name(tool)
+            )
+        })
 }
 
 pub(crate) fn validate_extra_args(tool: Tool, args: &[String]) -> Result<(), String> {

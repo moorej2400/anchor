@@ -248,6 +248,8 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
     }
     case "resize_pty":
       return Promise.resolve(undefined as T);
+    case "replay_output":
+      return Promise.resolve(undefined as T);
     case "get_scrollback":
       return Promise.resolve("" as T);
     case "export_sessions":

@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
@@ -24,6 +25,7 @@ const frontendReadyMock = vi.fn();
 const setTabOpenMock = vi.fn();
 const stopSessionMock = vi.fn();
 const resizePtyMock = vi.fn();
+const replayOutputMock = vi.fn();
 const getScrollbackMock = vi.fn();
 const setSettingsMock = vi.fn();
 
@@ -36,6 +38,7 @@ vi.mock("../ipc/commands", () => ({
     setTabOpen: (...a: unknown[]) => setTabOpenMock(...a),
     stopSession: (...a: unknown[]) => stopSessionMock(...a),
     resizePty: (...a: unknown[]) => resizePtyMock(...a),
+    replayOutput: (...a: unknown[]) => replayOutputMock(...a),
     getScrollback: (...a: unknown[]) => getScrollbackMock(...a),
     setSettings: (...a: unknown[]) => setSettingsMock(...a),
   },
@@ -117,6 +120,7 @@ beforeEach(() => {
   setTabOpenMock.mockResolvedValue(undefined);
   stopSessionMock.mockResolvedValue(undefined);
   resizePtyMock.mockResolvedValue(undefined);
+  replayOutputMock.mockResolvedValue(undefined);
   getScrollbackMock.mockResolvedValue("");
   setSettingsMock.mockImplementation(async (settings: Settings) => settings);
 
@@ -172,6 +176,43 @@ describe("AnchorProvider boot order", () => {
       </AnchorProvider>,
     );
     await waitFor(() => expect(frontendReadyMock).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("recovering terminals after a page reload", () => {
+  function bootWith(sessions: Session[], strict = false) {
+    getStateMock.mockImplementation(async () => ({ folders: [FOLDER], sessions }));
+    const tree = (
+      <AnchorProvider>
+        <div>ready</div>
+      </AnchorProvider>
+    );
+    return render(strict ? <StrictMode>{tree}</StrictMode> : tree);
+  }
+
+  it("asks the core to resend output for every session already live at boot", async () => {
+    // The reload wiped their xterm buffers; the PTYs kept running.
+    bootWith([runningSession("alpha"), runningSession("beta")]);
+
+    await waitFor(() => expect(replayOutputMock).toHaveBeenCalledTimes(2));
+    expect(replayOutputMock.mock.calls.map(([id]) => id).sort()).toEqual(["alpha", "beta"]);
+  });
+
+  it("does not replay sessions that are not running", async () => {
+    // A stopped session shows the Resume card and owns no terminal.
+    bootWith([{ ...runningSession("alpha"), status: "stopped" }]);
+
+    await waitFor(() => expect(frontendReadyMock).toHaveBeenCalled());
+    expect(replayOutputMock).not.toHaveBeenCalled();
+  });
+
+  it("replays a session once under StrictMode's doubled effects", async () => {
+    // Replaying twice would print the session's whole history twice over.
+    bootWith([runningSession("alpha")], true);
+
+    await waitFor(() => expect(frontendReadyMock).toHaveBeenCalled());
+    await waitFor(() => expect(replayOutputMock).toHaveBeenCalledTimes(1));
+    expect(replayOutputMock).toHaveBeenCalledTimes(1);
   });
 });
 

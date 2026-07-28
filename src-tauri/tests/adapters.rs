@@ -68,8 +68,9 @@ fn write_rollout(path: &Path, id: &str, cwd: &Path) {
 }
 
 #[test]
-fn claude_launch_preassigns_uuid_and_resume_uses_saved_or_picker_form() {
-    let adapter = ClaudeAdapter;
+fn claude_launch_preassigns_uuid_and_resume_requires_saved_identity() {
+    let root = tempdir().unwrap();
+    let adapter = ClaudeAdapter::with_projects_root(root.path());
     let mut session = session(Tool::Claude);
     let settings = Settings::default();
 
@@ -84,12 +85,25 @@ fn claude_launch_preassigns_uuid_and_resume_uses_saved_or_picker_form() {
             CWD,
         )
     );
-    assert_eq!(
-        adapter.resume(&session, Path::new(CWD), &settings).unwrap(),
-        SpawnSpec::new("claude", ["--resume"], CWD)
-    );
+    assert!(adapter
+        .resume(&session, Path::new(CWD), &settings)
+        .unwrap_err()
+        .starts_with("SESSION_ID_UNAVAILABLE:"));
 
     session.cli_session_id = Some(cli_id.clone());
+    assert_eq!(
+        adapter.resume(&session, Path::new(CWD), &settings).unwrap(),
+        SpawnSpec::new("claude", ["--session-id", &cli_id], CWD)
+    );
+
+    // Claude only creates this transcript after its first persisted turn.
+    // Until then, `--resume` rejects the otherwise valid preassigned UUID.
+    let transcript = root
+        .path()
+        .join("synthetic-project")
+        .join(format!("{cli_id}.jsonl"));
+    fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    fs::write(&transcript, "{}\n").unwrap();
     assert_eq!(
         adapter.resume(&session, Path::new(CWD), &settings).unwrap(),
         SpawnSpec::new("claude", ["--resume", &cli_id], CWD)
@@ -97,7 +111,7 @@ fn claude_launch_preassigns_uuid_and_resume_uses_saved_or_picker_form() {
 }
 
 #[test]
-fn copilot_launch_preassigns_uuid_and_resume_uses_saved_or_picker_form() {
+fn copilot_launch_preassigns_uuid_and_resume_requires_saved_identity() {
     let adapter = CopilotAdapter;
     let mut session = session(Tool::Copilot);
     let settings = Settings::default();
@@ -113,10 +127,10 @@ fn copilot_launch_preassigns_uuid_and_resume_uses_saved_or_picker_form() {
             CWD,
         )
     );
-    assert_eq!(
-        adapter.resume(&session, Path::new(CWD), &settings).unwrap(),
-        SpawnSpec::new("copilot", ["--resume"], CWD)
-    );
+    assert!(adapter
+        .resume(&session, Path::new(CWD), &settings)
+        .unwrap_err()
+        .starts_with("SESSION_ID_UNAVAILABLE:"));
 
     session.cli_session_id = Some(cli_id.clone());
     assert_eq!(
@@ -139,10 +153,10 @@ fn codex_launch_appends_extra_args_but_resume_never_does() {
         SpawnSpec::new("codex", ["--synthetic-flag", "value"], CWD)
     );
     assert_eq!(capture, IdCapture::Discover);
-    assert_eq!(
-        adapter.resume(&session, Path::new(CWD), &settings).unwrap(),
-        SpawnSpec::new("codex", ["resume"], CWD)
-    );
+    assert!(adapter
+        .resume(&session, Path::new(CWD), &settings)
+        .unwrap_err()
+        .starts_with("SESSION_ID_UNAVAILABLE:"));
 
     session.cli_session_id = Some("33333333-3333-4333-8333-333333333333".into());
     assert_eq!(
@@ -169,10 +183,10 @@ fn opencode_launch_appends_extra_args_but_resume_never_does() {
         SpawnSpec::new("opencode", ["--synthetic-flag", "value"], CWD)
     );
     assert_eq!(capture, IdCapture::Discover);
-    assert_eq!(
-        adapter.resume(&session, Path::new(CWD), &settings).unwrap(),
-        SpawnSpec::new("opencode", std::iter::empty::<&str>(), CWD)
-    );
+    assert!(adapter
+        .resume(&session, Path::new(CWD), &settings)
+        .unwrap_err()
+        .starts_with("SESSION_ID_UNAVAILABLE:"));
 
     session.cli_session_id = Some("synthetic-opencode-id".into());
     assert_eq!(
@@ -239,7 +253,7 @@ fn adapter_owned_extra_args_are_rejected_without_echoing_values() {
     let root = tempdir().unwrap();
     let cases: Vec<(Box<dyn Adapter>, Tool, Vec<&str>)> = vec![
         (
-            Box::new(ClaudeAdapter),
+            Box::new(ClaudeAdapter::default()),
             Tool::Claude,
             vec!["--session-id", "secret-claude"],
         ),
@@ -295,8 +309,12 @@ fn attached_short_identity_values_are_rejected_but_double_dash_and_other_flags_a
     let settings = Settings::default();
     let root = tempdir().unwrap();
     let rejected: Vec<(Box<dyn Adapter>, Tool, &str)> = vec![
-        (Box::new(ClaudeAdapter), Tool::Claude, "-rsecret"),
-        (Box::new(ClaudeAdapter), Tool::Claude, "-r=secret"),
+        (Box::new(ClaudeAdapter::default()), Tool::Claude, "-rsecret"),
+        (
+            Box::new(ClaudeAdapter::default()),
+            Tool::Claude,
+            "-r=secret",
+        ),
         (Box::new(CopilotAdapter), Tool::Copilot, "-rsecret"),
         (
             Box::new(OpencodeAdapter::with_database_path(
@@ -324,7 +342,11 @@ fn attached_short_identity_values_are_rejected_but_double_dash_and_other_flags_a
     }
 
     let safe_cases: Vec<(Box<dyn Adapter>, Tool, Vec<&str>)> = vec![
-        (Box::new(ClaudeAdapter), Tool::Claude, vec!["-qvalue"]),
+        (
+            Box::new(ClaudeAdapter::default()),
+            Tool::Claude,
+            vec!["-qvalue"],
+        ),
         (Box::new(CopilotAdapter), Tool::Copilot, vec!["-qvalue"]),
         (
             Box::new(OpencodeAdapter::with_database_path(
@@ -339,7 +361,7 @@ fn attached_short_identity_values_are_rejected_but_double_dash_and_other_flags_a
             vec!["--", "resume"],
         ),
         (
-            Box::new(ClaudeAdapter),
+            Box::new(ClaudeAdapter::default()),
             Tool::Claude,
             vec!["--", "--resume"],
         ),

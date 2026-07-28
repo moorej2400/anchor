@@ -234,6 +234,7 @@ export interface CliInfo { tool: Tool; found: boolean; version: string | null; p
 | `set_tab_open` | `{ sessionId: string; open: boolean }` | `void` | Frontend reports tab open/close so `wasOpenInTab` persists for auto-restore. The sole close lifecycle command: with `stopOnClose` it also stops the PTY, so the frontend must not additionally call `stop_session`. Async + `spawn_blocking`. |
 | `write_pty` | `{ sessionId: string; data: string }` | `void` | Keystrokes (UTF-8). |
 | `resize_pty` | `{ sessionId: string; cols: number; rows: number }` | `void` | |
+| `replay_output` | `{ sessionId: string }` | `void` | Re-emits a live session's retained output as `pty_output`, repopulating a terminal a webview reload emptied. No-op for sessions with no live PTY. |
 | `get_scrollback` | `{ sessionId: string }` | `string` | Saved scrollback (empty string if none). |
 | `get_settings` | — | `Settings` | |
 | `set_settings` | `{ settings: Settings }` | `Settings` | Full-object write. |
@@ -340,6 +341,15 @@ Frontend architecture requirements:
   After hydration, the frontend sends `frontend_ready`, which triggers one-time
   auto-restore. Restored PTY output and status therefore cannot race listener
   registration or be overwritten by the pre-restore snapshot.
+
+- The core, not the webview, owns live session output. Every live PTY retains
+  its recent output (capped, trimmed at line boundaries), because a webview
+  reload — dev HMR, ⌘R, window recreation — destroys every xterm buffer while
+  the processes keep running. On boot the frontend calls `replay_output` once
+  per session that is already ON, so a reload restores what the pane was
+  showing instead of leaving a live CLI behind a blank terminal. Retained
+  output is emitted while the same lock is held as live output, so a replay and
+  the live stream can neither interleave nor duplicate.
 
 - `set_tab_open(false)` is the sole close lifecycle command. When `stopOnClose`
   is enabled, the backend stops the PTY and persists the closed-tab state; the

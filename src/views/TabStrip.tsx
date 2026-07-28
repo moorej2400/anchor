@@ -26,7 +26,7 @@ export function TabStrip() {
           </button>
         </Tab>
       ))}
-      <button className="tabstrip__new" aria-label="New session" onClick={() => actions.openNewSession()}>
+      <button className="tabstrip__new a-plus" aria-label="New session" onClick={() => actions.openNewSession()}>
         +
       </button>
     </div>

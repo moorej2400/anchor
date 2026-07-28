@@ -4,9 +4,11 @@
 //! file (mtime ≥ launch) whose first-line JSON metadata `cwd` matches the
 //! session's folder; extract the session UUID. Parsing failures = pending,
 //! never a crash (store layout is version-fragile — fixture tests required).
-//! Resume: `codex resume <uuid>`; picker fallback: `codex resume` (no args).
+//! Resume: `codex resume <uuid>`; a missing persisted ID is an error.
 
-use super::{paths_match, validate_extra_args, Adapter, IdCapture, SpawnSpec};
+use super::{
+    paths_match, session_id_for_resume, validate_extra_args, Adapter, IdCapture, SpawnSpec,
+};
 use crate::models::{Session, Settings, Tool};
 use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use std::fs;
@@ -75,9 +77,8 @@ impl Adapter for CodexAdapter {
         cwd: &Path,
         _settings: &Settings,
     ) -> Result<SpawnSpec, String> {
-        let mut args = vec!["resume".into()];
-        args.extend(session.cli_session_id.iter().cloned());
-        Ok(SpawnSpec::new("codex", args, cwd))
+        let id = session_id_for_resume(session, Tool::Codex)?;
+        Ok(SpawnSpec::new("codex", ["resume", id], cwd))
     }
 
     fn discover_session_id(

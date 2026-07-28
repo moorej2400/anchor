@@ -47,6 +47,8 @@ export const ipc = {
     call<void>("write_pty", { sessionId, data }),
   resizePty: (sessionId: string, cols: number, rows: number) =>
     call<void>("resize_pty", { sessionId, cols, rows }),
+  /** Ask the core to re-emit a live session's recent output as `pty_output`. */
+  replayOutput: (sessionId: string) => call<void>("replay_output", { sessionId }),
   getScrollback: (sessionId: string) =>
     call<string>("get_scrollback", { sessionId }),
 

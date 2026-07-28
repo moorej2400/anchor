@@ -48,7 +48,12 @@ fn wait_until(timeout: Duration, predicate: impl Fn() -> bool) -> bool {
 #[ignore = "requires an installed/authenticated Claude CLI and makes one capped API request"]
 fn real_claude_launch_persists_identity_before_output_and_resumes() {
     assert!(
-        find_executable("claude").is_some(),
+        find_executable_with_environment(
+            "claude",
+            std::env::var_os("PATH").as_deref(),
+            dirs::home_dir().as_deref(),
+        )
+        .is_some(),
         "claude is not installed"
     );
     let root = tempdir().unwrap();

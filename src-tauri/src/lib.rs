@@ -155,6 +155,7 @@ pub fn run() {
             commands::set_tab_open,
             commands::write_pty,
             commands::resize_pty,
+            commands::replay_output,
             commands::get_scrollback,
             commands::get_settings,
             commands::set_settings,

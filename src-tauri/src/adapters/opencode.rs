@@ -6,7 +6,9 @@
 //! and created ≥ launch time.
 //! Resume: `opencode --session <id>` run in the folder.
 
-use super::{paths_match, validate_extra_args, Adapter, IdCapture, SpawnSpec};
+use super::{
+    paths_match, session_id_for_resume, validate_extra_args, Adapter, IdCapture, SpawnSpec,
+};
 use crate::models::{Session, Settings, Tool};
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
@@ -87,14 +89,8 @@ impl Adapter for OpencodeAdapter {
         cwd: &Path,
         _settings: &Settings,
     ) -> Result<SpawnSpec, String> {
-        // `--session` requires an ID; plain opencode is the interactive picker
-        // fallback when discovery has not populated cli_session_id.
-        let args = session
-            .cli_session_id
-            .as_ref()
-            .map(|id| vec!["--session".into(), id.clone()])
-            .unwrap_or_default();
-        Ok(SpawnSpec::new("opencode", args, cwd))
+        let id = session_id_for_resume(session, Tool::Opencode)?;
+        Ok(SpawnSpec::new("opencode", ["--session", id], cwd))
     }
 
     fn discover_session_id(

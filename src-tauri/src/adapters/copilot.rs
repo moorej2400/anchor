@@ -3,7 +3,7 @@
 //! creates a NEW session with that ID → PreAssigned.
 //! Resume: `copilot --resume <uuid>`.
 
-use super::{validate_extra_args, Adapter, IdCapture, SpawnSpec};
+use super::{session_id_for_resume, validate_extra_args, Adapter, IdCapture, SpawnSpec};
 use crate::models::{Session, Settings, Tool};
 use std::path::Path;
 
@@ -36,8 +36,7 @@ impl Adapter for CopilotAdapter {
         cwd: &Path,
         _settings: &Settings,
     ) -> Result<SpawnSpec, String> {
-        let mut args = vec!["--resume".into()];
-        args.extend(session.cli_session_id.iter().cloned());
-        Ok(SpawnSpec::new("copilot", args, cwd))
+        let id = session_id_for_resume(session, Tool::Copilot)?;
+        Ok(SpawnSpec::new("copilot", ["--resume", id], cwd))
     }
 }

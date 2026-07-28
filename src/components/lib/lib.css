@@ -89,6 +89,13 @@ button {
   transition: background 0.12s ease, color 0.12s ease;
 }
 .a-iconbtn:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
+/* The `+` glyph's ink sits low and left inside its em box, so a box that centres
+   it geometrically still reads as off-centre. Padding on the opposite two sides
+   shrinks the content box, and the centred glyph moves half that distance, so
+   0.5px of padding buys a 0.25px nudge up and right — a whole pixel overshot.
+   Shared by every `+` in the app — the folder quick-launch and the tab strip's
+   new-session button — so they stay nudged by the same amount. */
+.a-plus { padding: 0 0 0.5px 0.5px; }
 .a-iconbtn--bordered { border: 1px solid var(--hairline); background: var(--surface-2); color: var(--text-2); }
 .a-iconbtn--danger:hover { background: rgba(240, 117, 127, 0.16); color: var(--danger); }
 
@@ -293,6 +300,7 @@ button {
      fractional pixels, which renders their borders and gradient edge blurry
      and makes the strip's rhythm uneven. Titles ellipsize instead. */
   width: 230px;
+  height: var(--tab-h);
   padding: 8px 11px;
   margin-right: 5px;
   border-radius: 9px 9px 0 0;

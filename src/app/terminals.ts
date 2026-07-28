@@ -17,6 +17,8 @@ export interface TermHandle {
   /** Stable wrapper node that lives inside this session's own slot. */
   el: HTMLDivElement;
   opened: boolean;
+  /** Whether this terminal has already asked the core to replay its output. */
+  replayRequested: boolean;
   /** Last dimensions reported by `fit`, so unchanged sizes skip `resize_pty`. */
   lastCols: number | null;
   lastRows: number | null;
@@ -64,7 +66,15 @@ export class TerminalManager {
     el.style.width = "100%";
     el.style.height = "100%";
 
-    h = { term, fit, el, opened: false, lastCols: null, lastRows: null };
+    h = {
+      term,
+      fit,
+      el,
+      opened: false,
+      replayRequested: false,
+      lastCols: null,
+      lastRows: null,
+    };
     this.handles.set(id, h);
     return h;
   }
@@ -99,6 +109,18 @@ export class TerminalManager {
   unmount(id: string, parent: HTMLElement): void {
     const handle = this.handles.get(id);
     if (handle?.el.parentElement === parent) handle.el.remove();
+  }
+
+  /**
+   * Claim the one replay this terminal is allowed. A terminal starts empty, so
+   * it needs the core to resend a live session's output exactly once; asking
+   * twice — React StrictMode runs effects twice in dev — would double it.
+   */
+  claimReplay(id: string): boolean {
+    const handle = this.ensure(id);
+    if (handle.replayRequested) return false;
+    handle.replayRequested = true;
+    return true;
   }
 
   /** Buffers into the session's terminal, creating it if it has never shown. */

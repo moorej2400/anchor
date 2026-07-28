@@ -148,6 +148,18 @@ describe("TerminalManager", () => {
     expect(manager.fit("session")).toBeNull();
   });
 
+  it("grants each terminal exactly one replay, and a fresh one after disposal", () => {
+    const manager = new TerminalManager(() => {});
+
+    expect(manager.claimReplay("session")).toBe(true);
+    expect(manager.claimReplay("session")).toBe(false);
+    expect(manager.claimReplay("other")).toBe(true);
+
+    // A disposed session's next terminal starts empty and needs its own replay.
+    manager.dispose("session");
+    expect(manager.claimReplay("session")).toBe(true);
+  });
+
   it("does not fit a terminal that has never been mounted", () => {
     const manager = new TerminalManager(() => {});
 

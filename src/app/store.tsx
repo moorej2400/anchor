@@ -329,6 +329,17 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
           activeId: restoredTabs[0] ?? null,
         });
 
+        // A page reload (dev HMR, ⌘R, webview recreation) destroys every xterm
+        // buffer while the PTYs keep running, so a still-live session would
+        // come back blank. The core holds the only other copy — ask it to
+        // resend (SPEC.md §8). Sessions started by auto-restore below have
+        // printed nothing yet and need no replay.
+        for (const session of snapshot.sessions) {
+          if (isOn(session.status) && terminals.claimReplay(session.id)) {
+            void ipc.replayOutput(session.id).catch(() => {});
+          }
+        }
+
         // HYDRATE is queued before any status event auto-restore can produce,
         // so restored `running` sessions are not overwritten by this snapshot.
         await ipc.frontendReady();

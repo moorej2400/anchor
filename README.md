@@ -4,7 +4,10 @@ Managed terminal sessions for AI CLIs — run many Claude Code / Codex / GitHub
 Copilot CLI / opencode sessions across many directories, and **resume every one
 of them with a click after an app restart or OS reboot**. Each session's
 identity (tool, working directory, CLI session ID) is persisted the moment it
-launches.
+launches. Resume always targets that exact saved ID; Anchor never opens an AI
+provider's interactive session picker. CLI detection and spawning share one
+resolver, including common user-level install locations omitted by desktop app
+launch environments.
 
 > ⚠️ **Public repository — never commit personal information.**
 > See [AGENTS.md](AGENTS.md).

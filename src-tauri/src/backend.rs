@@ -42,6 +42,7 @@ pub trait PtyRuntime: Send + Sync {
     fn write(&self, session_id: &str, data: &[u8]) -> Result<(), String>;
     fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String>;
     fn stop(&self, session_id: &str) -> Result<(), String>;
+    fn replay_output(&self, session_id: &str) -> Result<(), String>;
     fn is_live(&self, session_id: &str) -> bool;
 }
 
@@ -67,6 +68,10 @@ impl PtyRuntime for PtyManager {
 
     fn stop(&self, session_id: &str) -> Result<(), String> {
         self.stop(session_id)
+    }
+
+    fn replay_output(&self, session_id: &str) -> Result<(), String> {
+        self.replay_output(session_id)
     }
 
     fn is_live(&self, session_id: &str) -> bool {
@@ -481,6 +486,14 @@ impl Backend {
     pub fn resize_pty(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
         self.session(session_id)?;
         self.runtime.resize(session_id, cols, rows)
+    }
+
+    /// Resend a live session's recent output. A webview reload destroys every
+    /// xterm buffer while the PTYs keep running, so without this the pane for a
+    /// still-running CLI comes back blank (SPEC.md §8).
+    pub fn replay_output(&self, session_id: &str) -> Result<(), String> {
+        self.session(session_id)?;
+        self.runtime.replay_output(session_id)
     }
 
     pub fn get_scrollback(&self, session_id: &str) -> Result<String, String> {
@@ -1258,6 +1271,7 @@ mod tests {
         fail_stop: AtomicBool,
         fail_spawn: AtomicBool,
         stop_calls: AtomicUsize,
+        replays: Mutex<Vec<String>>,
     }
 
     impl PtyRuntime for FakeRuntime {
@@ -1302,6 +1316,10 @@ mod tests {
                 return Err("PTY_STOP_FAILED: synthetic stop failure".into());
             }
             self.live.lock().unwrap().remove(session_id);
+            Ok(())
+        }
+        fn replay_output(&self, session_id: &str) -> Result<(), String> {
+            self.replays.lock().unwrap().push(session_id.to_owned());
             Ok(())
         }
         fn is_live(&self, session_id: &str) -> bool {
@@ -1606,6 +1624,25 @@ mod tests {
         backend.delete_session(&session.id).unwrap();
         assert!(backend.stop_session(&session.id).is_err());
         assert!(backend.delete_session(&session.id).is_err());
+    }
+
+    #[test]
+    fn replay_output_reaches_the_runtime_only_for_known_sessions() {
+        let (root, backend, runtime) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let session = backend
+            .launch_session(&folder.id, Tool::Terminal, None, None)
+            .unwrap();
+
+        backend.replay_output(&session.id).unwrap();
+
+        assert_eq!(*runtime.replays.lock().unwrap(), vec![session.id.clone()]);
+        assert!(backend.replay_output("missing").is_err());
+        assert_eq!(runtime.replays.lock().unwrap().len(), 1);
     }
 
     #[test]
