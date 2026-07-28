@@ -139,6 +139,12 @@ export function Settings() {
           on={settings.stopOnClose}
           onChange={(v) => void actions.updateSettings({ stopOnClose: v })}
         />
+        <ToggleRow
+          title="Notify when a session needs attention"
+          desc="Sends an OS notification when a session starts waiting on you. The dock badge counts waiting sessions either way."
+          on={settings.notifyOnWaiting}
+          onChange={(v) => void actions.updateSettings({ notifyOnWaiting: v })}
+        />
       </div>
     );
   }

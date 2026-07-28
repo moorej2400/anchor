@@ -315,6 +315,24 @@ describe("closeTab", () => {
   });
 });
 
+describe("settings exposure", () => {
+  it("lets the user turn on waiting notifications", async () => {
+    // The backend already gates its OS notification on notifyOnWaiting, but for
+    // a while nothing in Settings could change it, so it was stuck off forever.
+    await renderRunningSessionApp();
+    fireEvent.click(screen.getByRole("button", { name: /settings/i }));
+
+    const toggle = screen.getByRole("switch", { name: "Notify when a session needs attention" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(setSettingsMock).toHaveBeenCalled());
+    const calls = setSettingsMock.mock.calls;
+    const [patch] = calls[calls.length - 1] as [Settings];
+    expect(patch.notifyOnWaiting).toBe(true);
+  });
+});
+
 describe("confirmClose", () => {
   const confirmButton = () => screen.getByRole("button", { name: "Close session" });
 

@@ -1259,6 +1259,8 @@ mod tests {
     #![allow(clippy::field_reassign_with_default)]
     use super::*;
     use std::collections::HashSet;
+    use std::sync::atomic::AtomicU64;
+    use std::time::Instant;
     use tempfile::tempdir;
 
     #[derive(Default)]
@@ -1272,6 +1274,10 @@ mod tests {
         fail_spawn: AtomicBool,
         stop_calls: AtomicUsize,
         replays: Mutex<Vec<String>>,
+        /// Milliseconds `stop` should wait, standing in for the graceful window.
+        stop_delay_ms: AtomicU64,
+        /// Set once a delayed `stop` is actually in flight.
+        stopping: AtomicBool,
     }
 
     impl PtyRuntime for FakeRuntime {
@@ -1312,6 +1318,13 @@ mod tests {
         }
         fn stop(&self, session_id: &str) -> Result<(), String> {
             self.stop_calls.fetch_add(1, Ordering::AcqRel);
+            // Stand in for the real graceful-stop window, so a test can hold a
+            // close open and watch what else it blocks.
+            let delay = self.stop_delay_ms.load(Ordering::Acquire);
+            if delay > 0 {
+                self.stopping.store(true, Ordering::Release);
+                thread::sleep(Duration::from_millis(delay));
+            }
             if self.fail_stop.load(Ordering::Acquire) {
                 return Err("PTY_STOP_FAILED: synthetic stop failure".into());
             }
@@ -1624,6 +1637,52 @@ mod tests {
         backend.delete_session(&session.id).unwrap();
         assert!(backend.stop_session(&session.id).is_err());
         assert!(backend.delete_session(&session.id).is_err());
+    }
+
+    #[test]
+    fn a_slow_close_does_not_block_what_the_window_reads() {
+        // Closing a tab waits out the PTY's graceful-stop window — up to five
+        // seconds, deliberately. That wait is correct, but if it held anything
+        // the UI reads to stay drawn, the window would beachball for the whole
+        // timeout, which is the macOS spinner this design exists to avoid.
+        // Reads must stay off the `operations` lock (SPEC.md §8).
+        let (root, backend, runtime) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let session = backend
+            .launch_session(&folder.id, Tool::Terminal, None, None)
+            .unwrap();
+
+        runtime.stop_delay_ms.store(1_500, Ordering::Release);
+        let closing = {
+            let backend = Arc::clone(&backend);
+            let id = session.id.clone();
+            thread::spawn(move || backend.set_tab_open(&id, false))
+        };
+
+        // Wait for the stop to actually be in flight, so the reads below are
+        // genuinely racing it rather than landing before or after.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !runtime.stopping.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "stop never started");
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let started = Instant::now();
+        backend.get_state().unwrap();
+        backend.get_settings().unwrap();
+        backend.session(&session.id).unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "reads waited {elapsed:?} behind an in-flight close; the window would hang"
+        );
+        assert!(closing.join().unwrap().is_ok());
+        assert_eq!(runtime.stop_calls.load(Ordering::Acquire), 1);
     }
 
     #[test]
