@@ -104,11 +104,18 @@ function TerminalSlot({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.id, session.tool, terminals]);
 
-  // Fitting measures layout, so activation and every resize notification share
-  // a single animation frame and only changed dimensions reach the PTY.
+  // Every slot is sized, not just the visible one. A live session in a
+  // background tab keeps printing, and its CLI wraps that output to whatever
+  // width the PTY reports; leaving it at xterm's default 80x24 while the pane
+  // is far wider is what makes a tab look mangled until a window resize
+  // reflows it. Slots are laid out identically, so a hidden slot measures the
+  // same box the user will see.
+  //
+  // Fitting measures layout, so mount and every resize notification still
+  // share a single animation frame, and only changed dimensions reach the PTY.
   useEffect(() => {
     const host = hostRef.current;
-    if (!host || !active) return;
+    if (!host) return;
     let frame = 0;
     const sync = () => {
       cancelAnimationFrame(frame);
@@ -117,7 +124,6 @@ function TerminalSlot({
         if (dims) {
           void ipc.resizePty(session.id, dims.cols, dims.rows).catch(() => {});
         }
-        terminals.focus(session.id);
       });
     };
     sync();
@@ -127,6 +133,12 @@ function TerminalSlot({
       cancelAnimationFrame(frame);
       observer.disconnect();
     };
+  }, [session.id, terminals]);
+
+  // Focus follows selection, never sizing: a background slot being refitted
+  // must not pull the caret out of the terminal the user is typing into.
+  useEffect(() => {
+    if (active) terminals.focus(session.id);
   }, [active, session.id, terminals]);
 
   return (

@@ -98,7 +98,13 @@ export class TerminalManager {
     handle.opened = true;
     // WebGL is a progressive enhancement; fall back silently to canvas/DOM.
     try {
-      handle.term.loadAddon(new WebglAddon());
+      const webgl = new WebglAddon();
+      // Browsers cap live WebGL contexts and drop the oldest, and the GPU
+      // process can restart under us. A dropped context leaves the terminal
+      // frozen or blank, so hand rendering back to the DOM renderer rather
+      // than keeping a dead addon attached.
+      webgl.onContextLoss(() => webgl.dispose());
+      handle.term.loadAddon(webgl);
     } catch {
       /* no webgl in this environment */
     }

@@ -205,7 +205,18 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
     }
     case "set_tab_open": {
       const s = find(a.sessionId as string);
-      if (s) s.wasOpenInTab = Boolean(a.open);
+      if (!s) return Promise.resolve(undefined as T);
+      const open = Boolean(a.open);
+      s.wasOpenInTab = open;
+      // The sole close lifecycle command (SPEC.md §8): with `stopOnClose` the
+      // real backend stops the PTY here, which is what leaves the session
+      // resumable with its saved provider ID. Without this the mock reports a
+      // closed tab as still running and its resume path can never be exercised.
+      if (!open && settings.stopOnClose && s.status !== "stopped") {
+        s.status = "stopped";
+        mockEmit(EVENT.sessionStatus, { sessionId: s.id, status: "stopped", exitCode: 0 });
+        setWaitingCount();
+      }
       return Promise.resolve(undefined as T);
     }
     case "create_project": {

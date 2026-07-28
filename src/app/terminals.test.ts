@@ -7,7 +7,10 @@ vi.mock("@xterm/addon-fit", () => ({
 }));
 
 vi.mock("@xterm/addon-webgl", () => ({
-  WebglAddon: class {},
+  WebglAddon: class {
+    onContextLoss() {}
+    dispose() {}
+  },
 }));
 
 const terminalInstances: Array<{ writes: string[] }> = [];

@@ -333,9 +333,17 @@ Frontend architecture requirements:
   session's xterm root. Exactly one slot is visible, and PTY output received
   before first display is buffered in that session's xterm instance.
 
-  `fit` addon on resize → `resize_pty`. Fitting forces layout, so activation and
+  `fit` addon on resize → `resize_pty`. Fitting forces layout, so mount and
   every `ResizeObserver` callback are coalesced into one animation frame, and
   only changed dimensions reach `resize_pty`.
+
+  Every open ON session is fitted, not only the selected one. A background
+  session keeps printing, and its CLI wraps that output to whatever width the
+  PTY reports, so leaving an unselected terminal at xterm's default 80×24 while
+  its pane is far wider renders it mangled until a window resize reflows it.
+  Slots are laid out identically, so a hidden slot measures the box the user
+  will see. Focus follows selection only: refitting a hidden slot must never
+  move the caret out of the visible terminal.
 
 - Frontend event listeners are installed before the initial `get_state` request.
   After hydration, the frontend sends `frontend_ready`, which triggers one-time

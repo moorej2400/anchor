@@ -8,7 +8,10 @@ vi.mock("@xterm/addon-fit", () => ({
 }));
 
 vi.mock("@xterm/addon-webgl", () => ({
-  WebglAddon: class {},
+  WebglAddon: class {
+    onContextLoss() {}
+    dispose() {}
+  },
 }));
 
 vi.mock("@xterm/xterm", () => ({
@@ -26,7 +29,7 @@ vi.mock("@xterm/xterm", () => ({
   },
 }));
 
-const resizePty = vi.fn(() => Promise.resolve());
+const resizePty = vi.fn((..._args: [string, number, number] | never[]) => Promise.resolve());
 const getScrollback = vi.fn(() => Promise.resolve(""));
 
 vi.mock("../ipc/commands", () => ({
@@ -151,6 +154,37 @@ describe("TerminalDeck", () => {
     expect(slots).toHaveLength(2);
     expect(slots[0].firstElementChild).not.toBeNull();
     expect(slots[0].firstElementChild).not.toBe(slots[1].firstElementChild);
+  });
+
+  it("sizes background terminals too, so their PTY is never left at 80x24", () => {
+    // A live session in an unselected tab keeps producing output. If it is
+    // never fitted, its CLI wraps that output for xterm's default 80 columns
+    // while the pane is far wider, and the pane only looks right once a window
+    // resize reflows it.
+    const terminals = new TerminalManager(() => {});
+    const sessions = [syntheticSession("session-a"), syntheticSession("session-b")];
+    render(<TerminalDeck sessions={sessions} activeId="session-a" terminals={terminals} />);
+
+    flushFrame();
+
+    const resized = resizePty.mock.calls.map(([id]) => id).sort();
+    expect(resized).toEqual(["session-a", "session-b"]);
+  });
+
+  it("keeps focus on the active session when a background slot is resized", () => {
+    const terminals = new TerminalManager(() => {});
+    const focus = vi.spyOn(terminals, "focus");
+    const sessions = [syntheticSession("session-a"), syntheticSession("session-b")];
+    render(<TerminalDeck sessions={sessions} activeId="session-a" terminals={terminals} />);
+
+    flushFrame();
+    focus.mockClear();
+    // Every slot is observed now, so a window resize notifies the hidden one
+    // too; that must never steal the caret from the visible terminal.
+    observers.forEach((notify) => notify());
+    flushFrame();
+
+    expect(focus.mock.calls.every(([id]) => id === "session-a")).toBe(true);
   });
 
   it("issues one resize per activation frame and none when dimensions are unchanged", () => {
