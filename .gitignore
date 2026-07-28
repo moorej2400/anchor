@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# End-to-end run artefacts (screenshots, reports)
+e2e/out/
