@@ -944,7 +944,7 @@ fires, and the xterm WebGL renderer actually draws. Results:
 | 1 | 5 live sessions, 5 distinct rendered frames |
 | 2 | 50/50 alternations correct; each step asserted exactly one active slot, one non-`visibility:hidden` slot, and exactly one focusable `xterm-helper-textarea` |
 | 3 | Banner streamed while the session was hidden; on selection both its first and last line were present |
-| 4 | Tab removed 38.7 ms after the click; Settings opened in 44.8 ms straight afterwards |
+| 4 | `confirmClose` prompts first; the tab is removed 41.1 ms after the confirmation is accepted, and Settings opens straight afterwards while shutdown is still pending |
 | 5 | `set_tab_open` and `stop_session` are `spawn_blocking` (`commands.rs`), so PTY waiting never occupies the UI thread. The literal absence of a beachball is only observable in the native window |
 | 6 | Not provable in the mock — `src/ipc/mock.ts` `set_tab_open` only flips `wasOpenInTab` and never implements `stopOnClose`. Covered instead by `src-tauri/tests/adapters.rs`, which asserts resume spawns with the exact saved provider ID and fails without one |
 
@@ -967,11 +967,15 @@ frame latency and is therefore conservative):
 | Metric | Value | Budget |
 | --- | --- | --- |
 | Input to visible terminal, p50 | 26.6 ms | < 100 ms |
-| Input to visible terminal, p95 | 54.2 ms | < 100 ms |
-| Input to visible terminal, max | 68.7 ms | < 100 ms |
+| Input to visible terminal, p95 | 49.8 ms | < 100 ms |
+| Input to visible terminal, max | 83.2 ms | < 100 ms |
 | Samples over 100 ms | 0 / 50 | 0 |
-| Input to tab removal | 38.7 ms | < 100 ms |
+| Input to tab removal | 41.1 ms | < 100 ms |
 | Main-thread long tasks > 50 ms | 0 | 0 |
+
+Tab removal is timed from a capture-phase `click` listener inside the page, not
+from a timestamp taken in the driver: measuring across the driver's two CDP
+dispatch round trips inflated the same interval to 150 ms.
 
 Event Timing (`PerformanceObserver`, `type: "event"`) recorded a worst-case
 `pointerup`/`click` duration of 88 ms across 98 entries, also within budget.

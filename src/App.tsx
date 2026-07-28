@@ -18,6 +18,7 @@ import { Settings } from "./views/Settings";
 import { CommandPalette } from "./views/CommandPalette";
 import { NewSessionDialog } from "./views/NewSessionDialog";
 import { RemoveFolderModal } from "./views/RemoveFolderModal";
+import { CloseSessionModal } from "./views/CloseSessionModal";
 
 export default function App() {
   const { state, actions } = useAnchor();
@@ -37,6 +38,7 @@ export default function App() {
       if (mod && key === "o") { e.preventDefault(); actions.openNewSession(); return; }
       if (mod && e.key === "Enter") { e.preventDefault(); if (active && active.status === "stopped") void actions.resume(active.id); return; }
       if (e.ctrlKey && e.key === "Tab") { e.preventDefault(); cycleTab(e.shiftKey ? -1 : 1); return; }
+      // The close confirmation is a Modal, which owns its own Escape handling.
       if (e.key === "Escape") { setRemoveTarget(null); actions.closePalette(); actions.closeNewSession(); }
 
       function folderForNew(): Folder | undefined {
@@ -92,6 +94,7 @@ export default function App() {
       <CommandPalette />
       <NewSessionDialog />
       {removeTarget && <RemoveFolderModal folder={removeTarget} onClose={() => setRemoveTarget(null)} />}
+      {state.closeConfirmId && <CloseSessionModal />}
       {state.toast && <Toast text={state.toast} />}
     </div>
   );

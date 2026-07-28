@@ -216,7 +216,17 @@ describe("recovering terminals after a page reload", () => {
   });
 });
 
-async function renderRunningSessionApp(ids: string[] = ["synthetic-session"]) {
+async function renderRunningSessionApp(
+  ids: string[] = ["synthetic-session"],
+  settings: Partial<Settings> = {},
+) {
+  // Default the confirmation off so the close-latency tests below measure the
+  // close itself; the confirmation has its own describe block.
+  getSettingsMock.mockImplementation(async () => ({
+    ...SETTINGS,
+    confirmClose: false,
+    ...settings,
+  }));
   getStateMock.mockImplementation(async () => ({
     folders: [FOLDER],
     sessions: ids.map(runningSession),
@@ -297,5 +307,86 @@ describe("closeTab", () => {
       expect(document.querySelectorAll("[data-terminal-session-id]")).toHaveLength(1),
     );
     expect(screen.getByRole("button", { name: "Close tab" })).toBeInTheDocument();
+  });
+});
+
+describe("confirmClose", () => {
+  const confirmButton = () => screen.getByRole("button", { name: "Close session" });
+
+  it("asks before closing a running session and sends nothing until answered", async () => {
+    await renderRunningSessionApp(["synthetic-session"], { confirmClose: true });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
+
+    expect(confirmButton()).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close tab" })).toBeInTheDocument();
+    expect(setTabOpenMock).not.toHaveBeenCalled();
+    expect(stopSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("closes immediately once confirmed, still with one lifecycle request", async () => {
+    const close = deferred<void>();
+    setTabOpenMock.mockReturnValue(close.promise);
+    await renderRunningSessionApp(["synthetic-session"], { confirmClose: true });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
+    fireEvent.click(confirmButton());
+
+    // The tab goes the moment it is confirmed, not when shutdown settles.
+    expect(screen.queryByRole("button", { name: "Close tab" })).not.toBeInTheDocument();
+    expect(setTabOpenMock).toHaveBeenCalledTimes(1);
+    expect(setTabOpenMock).toHaveBeenCalledWith("synthetic-session", false);
+    expect(stopSessionMock).not.toHaveBeenCalled();
+    close.resolve();
+  });
+
+  it("keeps the tab when the confirmation is dismissed", async () => {
+    await renderRunningSessionApp(["synthetic-session"], { confirmClose: true });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByRole("button", { name: "Close session" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close tab" })).toBeInTheDocument();
+    expect(setTabOpenMock).not.toHaveBeenCalled();
+  });
+
+  it("does not ask for a session that is not running", async () => {
+    // Nothing is killed by closing a stopped session's tab, so the prompt would
+    // only be in the way.
+    getStateMock.mockImplementation(async () => ({
+      folders: [FOLDER],
+      sessions: [{ ...runningSession("synthetic-session"), status: "stopped" as const }],
+    }));
+    getSettingsMock.mockImplementation(async () => ({ ...SETTINGS, confirmClose: true }));
+    render(
+      <AnchorProvider>
+        <App />
+      </AnchorProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
+
+    expect(screen.queryByRole("button", { name: "Close session" })).not.toBeInTheDocument();
+    expect(setTabOpenMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("also guards the ⌘W shortcut, not just the tab's close button", async () => {
+    await renderRunningSessionApp(["synthetic-session"], { confirmClose: true });
+
+    fireEvent.keyDown(window, { key: "w", metaKey: true });
+
+    expect(confirmButton()).toBeInTheDocument();
+    expect(setTabOpenMock).not.toHaveBeenCalled();
+  });
+
+  it("dismisses the confirmation on Escape", async () => {
+    await renderRunningSessionApp(["synthetic-session"], { confirmClose: true });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(screen.queryByRole("button", { name: "Close session" })).not.toBeInTheDocument();
+    expect(setTabOpenMock).not.toHaveBeenCalled();
   });
 });

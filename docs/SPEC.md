@@ -359,6 +359,13 @@ Frontend architecture requirements:
   request succeeds, and not at all if the tab was reopened while it was in
   flight.
 
+- When `confirmClose` is enabled and the session is ON, closing asks first and
+  issues no lifecycle command until the user answers. The gate belongs to the
+  close action itself, not to the tab strip, so every entry point — the tab's
+  close button and ⌘W — is guarded by one decision. Confirming closes on the
+  same immediate path above; dismissing leaves the session untouched. Sessions
+  that are not ON never prompt, because closing their tab stops nothing.
+
 ---
 
 ## 9. Error handling & testing

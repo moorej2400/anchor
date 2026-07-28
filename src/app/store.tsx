@@ -48,6 +48,8 @@ interface State {
   newSessionOpen: boolean;
   /** When set, the wizard skips the folder step and launches into this folder. */
   newSessionFolderId: string | null;
+  /** Tab awaiting close confirmation, when `confirmClose` guards a live session. */
+  closeConfirmId: string | null;
   toast: string | null;
   waitingCount: number;
   fatalError: string | null;
@@ -86,6 +88,7 @@ const initialState: State = {
   paletteOpen: false,
   newSessionOpen: false,
   newSessionFolderId: null,
+  closeConfirmId: null,
   toast: null,
   waitingCount: 0,
   fatalError: null,
@@ -108,6 +111,7 @@ type Action =
   | { type: "SET_FILTER"; value: string }
   | { type: "SET_PALETTE"; open: boolean }
   | { type: "SET_NEW_SESSION"; open: boolean; folderId?: string | null }
+  | { type: "SET_CLOSE_CONFIRM"; id: string | null }
   | { type: "SET_TOAST"; text: string | null }
   | { type: "SET_SETTINGS"; settings: Settings }
   | { type: "SET_WAITING"; count: number }
@@ -162,6 +166,7 @@ function reducer(state: State, action: Action): State {
         openTabs: state.openTabs.filter((t) => t !== action.id),
         activeId: active,
         typedOrder: withoutIds(state.typedOrder, [action.id]),
+        closeConfirmId: state.closeConfirmId === action.id ? null : state.closeConfirmId,
       };
     }
     case "SET_STATUS":
@@ -205,7 +210,14 @@ function reducer(state: State, action: Action): State {
     case "CLOSE_TAB": {
       const active =
         state.activeId === action.id ? pickAdjacent(state.openTabs, action.id) : state.activeId;
-      return { ...state, openTabs: state.openTabs.filter((t) => t !== action.id), activeId: active };
+      return {
+        ...state,
+        openTabs: state.openTabs.filter((t) => t !== action.id),
+        activeId: active,
+        // The tab this prompt belonged to is gone; never leave it orphaned on
+        // a tab index some other session now occupies.
+        closeConfirmId: state.closeConfirmId === action.id ? null : state.closeConfirmId,
+      };
     }
     case "RESTORE_TAB": {
       // Undo of an optimistic close: the tab comes back, but the selection the
@@ -239,6 +251,8 @@ function reducer(state: State, action: Action): State {
         newSessionOpen: action.open,
         newSessionFolderId: action.open ? action.folderId ?? null : null,
       };
+    case "SET_CLOSE_CONFIRM":
+      return state.closeConfirmId === action.id ? state : { ...state, closeConfirmId: action.id };
     case "SET_TOAST":
       return { ...state, toast: action.text };
     case "SET_SETTINGS":
@@ -380,6 +394,8 @@ export interface Actions {
   launch(tool: Tool, folderId: string): Promise<void>;
   resume(id: string): Promise<void>;
   closeTab(id: string): Promise<void>;
+  confirmCloseTab(): Promise<void>;
+  cancelCloseTab(): void;
   stop(id: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
   renameSession(id: string, title: string): Promise<void>;
@@ -415,6 +431,33 @@ function makeActions(
   // settles afterwards neither disposes the terminal nor undoes the reopen.
   const closingTabs = new Map<string, symbol>();
 
+  // `set_tab_open(false)` is the sole close lifecycle command: with stopOnClose
+  // the backend stops the PTY itself, so a second stop_session here would only
+  // queue behind work already done (SPEC.md §8). The tab disappears
+  // immediately; shutdown finishes in the background.
+  async function performClose(id: string): Promise<void> {
+    const session = stateRef.current.sessions.find((candidate) => candidate.id === id);
+    const stopOnClose = stateRef.current.settings.stopOnClose;
+    const closeToken = Symbol(id);
+    closingTabs.set(id, closeToken);
+    dispatch({ type: "CLOSE_TAB", id });
+
+    try {
+      await ipc.setTabOpen(id, false);
+      if (closingTabs.get(id) !== closeToken) return;
+      closingTabs.delete(id);
+      if (session && (!isOn(session.status) || stopOnClose)) {
+        terminals.dispose(id);
+      }
+    } catch (e) {
+      if (closingTabs.get(id) === closeToken) {
+        closingTabs.delete(id);
+        dispatch({ type: "RESTORE_TAB", id });
+      }
+      showToast(shortError(e));
+    }
+  }
+
   return {
     selectSession(id) {
       closingTabs.delete(id);
@@ -440,31 +483,25 @@ function makeActions(
         showToast(shortError(e));
       }
     },
-    // `set_tab_open(false)` is the sole close lifecycle command: with
-    // stopOnClose the backend stops the PTY itself, so a second stop_session
-    // here would only queue behind work already done (SPEC.md §8). The tab
-    // disappears immediately; shutdown finishes in the background.
+    // Closing a live session kills a running CLI, so `confirmClose` guards it.
+    // The gate lives here rather than in the tab strip so every entry point —
+    // the tab's close button and ⌘W alike — goes through one decision.
     async closeTab(id) {
       const session = stateRef.current.sessions.find((candidate) => candidate.id === id);
-      const stopOnClose = stateRef.current.settings.stopOnClose;
-      const closeToken = Symbol(id);
-      closingTabs.set(id, closeToken);
-      dispatch({ type: "CLOSE_TAB", id });
-
-      try {
-        await ipc.setTabOpen(id, false);
-        if (closingTabs.get(id) !== closeToken) return;
-        closingTabs.delete(id);
-        if (session && (!isOn(session.status) || stopOnClose)) {
-          terminals.dispose(id);
-        }
-      } catch (e) {
-        if (closingTabs.get(id) === closeToken) {
-          closingTabs.delete(id);
-          dispatch({ type: "RESTORE_TAB", id });
-        }
-        showToast(shortError(e));
+      if (stateRef.current.settings.confirmClose && session && isOn(session.status)) {
+        dispatch({ type: "SET_CLOSE_CONFIRM", id });
+        return;
       }
+      await performClose(id);
+    },
+    async confirmCloseTab() {
+      const id = stateRef.current.closeConfirmId;
+      if (!id) return;
+      dispatch({ type: "SET_CLOSE_CONFIRM", id: null });
+      await performClose(id);
+    },
+    cancelCloseTab() {
+      dispatch({ type: "SET_CLOSE_CONFIRM", id: null });
     },
     async stop(id) {
       try {
