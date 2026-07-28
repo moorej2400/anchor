@@ -174,10 +174,7 @@ pub fn resize_pty(
 }
 
 #[tauri::command]
-pub fn replay_output(
-    backend: State<'_, Arc<Backend>>,
-    session_id: String,
-) -> Result<(), String> {
+pub fn replay_output(backend: State<'_, Arc<Backend>>, session_id: String) -> Result<(), String> {
     backend.replay_output(&session_id)
 }
 

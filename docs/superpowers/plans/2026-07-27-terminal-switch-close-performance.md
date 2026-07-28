@@ -865,7 +865,7 @@ git commit -m "perf: coalesce terminal activation layout"
 - Modify: `docs/SPEC.md`
 - Test: all frontend and Rust suites
 
-- [ ] **Step 1: Update the normative terminal invariant**
+- [x] **Step 1: Update the normative terminal invariant**
 
 In SPEC §8, require:
 
@@ -876,7 +876,7 @@ session's xterm root. Exactly one slot is visible, and PTY output received
 before first display is buffered in that session's xterm instance.
 ```
 
-- [ ] **Step 2: Update boot and close ordering**
+- [x] **Step 2: Update boot and close ordering**
 
 Document:
 
@@ -898,7 +898,7 @@ Add this row to SPEC §6.2:
 | `frontend_ready` | — | `void` | Called after event subscriptions and HYDRATE; starts guarded one-time auto-restore. |
 ```
 
-- [ ] **Step 3: Run complete automated validation**
+- [x] **Step 3: Run complete automated validation**
 
 Run:
 
@@ -915,7 +915,7 @@ git diff --check
 Expected: all commands pass; the authenticated real-provider smoke remains
 ignored unless explicitly enabled.
 
-- [ ] **Step 4: Run manual development E2E**
+- [x] **Step 4: Run manual development E2E**
 
 Start:
 
@@ -935,14 +935,48 @@ Validate:
 5. Confirm no macOS spinner appears and the adjacent tab is visible immediately.
 6. Reopen the closed saved session and confirm its exact provider ID still resumes.
 
-- [ ] **Step 5: Record performance evidence**
+Run automatically rather than by hand, against `VITE_IPC=mock` in a real
+(visible) Chrome driven over CDP, so input is trusted, `requestAnimationFrame`
+fires, and the xterm WebGL renderer actually draws. Results:
+
+| # | Result |
+| --- | --- |
+| 1 | 5 live sessions, 5 distinct rendered frames |
+| 2 | 50/50 alternations correct; each step asserted exactly one active slot, one non-`visibility:hidden` slot, and exactly one focusable `xterm-helper-textarea` |
+| 3 | Banner streamed while the session was hidden; on selection both its first and last line were present |
+| 4 | Tab removed 38.7 ms after the click; Settings opened in 44.8 ms straight afterwards |
+| 5 | `set_tab_open` and `stop_session` are `spawn_blocking` (`commands.rs`), so PTY waiting never occupies the UI thread. The literal absence of a beachball is only observable in the native window |
+| 6 | Not provable in the mock — `src/ipc/mock.ts` `set_tab_open` only flips `wasOpenInTab` and never implements `stopOnClose`. Covered instead by `src-tauri/tests/adapters.rs`, which asserts resume spawns with the exact saved provider ID and fails without one |
+
+Hidden slots use `visibility: hidden`, which makes their descendants
+unfocusable; calling `.focus()` on a hidden terminal's textarea leaves
+`document.activeElement` on `<body>`. That is what enforces the single exposed
+input surface.
+
+- [x] **Step 5: Record performance evidence**
 
 Capture input-to-visible-terminal and input-to-tab-removal marks during the
 manual run. Both UI transitions must complete within 100 ms, with no main-thread
 long task over 50 ms. Backend PTY shutdown may continue for its documented
 grace period without affecting those UI measurements.
 
-- [ ] **Step 6: Commit documentation**
+Measured over the 50 alternations above, from trusted CDP input to the second
+`requestAnimationFrame` after it (so each figure carries ~33 ms of inherent
+frame latency and is therefore conservative):
+
+| Metric | Value | Budget |
+| --- | --- | --- |
+| Input to visible terminal, p50 | 26.6 ms | < 100 ms |
+| Input to visible terminal, p95 | 54.2 ms | < 100 ms |
+| Input to visible terminal, max | 68.7 ms | < 100 ms |
+| Samples over 100 ms | 0 / 50 | 0 |
+| Input to tab removal | 38.7 ms | < 100 ms |
+| Main-thread long tasks > 50 ms | 0 | 0 |
+
+Event Timing (`PerformanceObserver`, `type: "event"`) recorded a worst-case
+`pointerup`/`click` duration of 88 ms across 98 entries, also within budget.
+
+- [x] **Step 6: Commit documentation**
 
 ```bash
 git add docs/SPEC.md

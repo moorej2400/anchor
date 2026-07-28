@@ -867,14 +867,20 @@ mod tests {
     #[test]
     fn replay_output_resends_what_a_live_session_already_printed() {
         let (manager, receiver) = manager_with_events();
-        let spec = SpawnSpec::new("/bin/sh", ["-c", "printf 'restored-line\\n'; sleep 30"], "/");
+        let spec = SpawnSpec::new(
+            "/bin/sh",
+            ["-c", "printf 'restored-line\\n'; sleep 30"],
+            "/",
+        );
 
         manager
             .spawn("replay", spec, 80, 24, &Settings::default())
             .unwrap();
-        wait_for_event(&receiver, Duration::from_secs(3), |event| {
-            matches!(event, PtyEvent::Output { data, .. } if data.contains("restored-line"))
-        });
+        wait_for_event(
+            &receiver,
+            Duration::from_secs(3),
+            |event| matches!(event, PtyEvent::Output { data, .. } if data.contains("restored-line")),
+        );
 
         // The webview reloaded: its buffer is gone but the PTY is still live.
         manager.replay_output("replay").unwrap();
