@@ -3,6 +3,7 @@
 mod adapters;
 mod backend;
 mod commands;
+mod durable_file;
 mod models;
 mod pty;
 mod registry;

@@ -78,15 +78,19 @@ Root data directory: **`~/.anchor/`** by default (the "Backup location" setting,
 
 | File | Contents |
 |---|---|
-| `~/.anchor/sessions/registry.json` | Folders + sessions (schema below). **Written synchronously on every mutation** (create/rename/status-relevant change/discovered session ID). Crash-safety is the core promise: write temp file + atomic rename. |
+| `~/.anchor/sessions/registry.json` | Canonical folders + sessions document (schema below). **Written synchronously on every mutation** (create/rename/status-relevant change/discovered session ID) by synchronized temporary file + atomic rename. |
+| `~/.anchor/sessions/registry.last-good.json` | Checksummed recovery envelope for the newest committed registry. |
+| `~/.anchor/sessions/backups/registry-v*-*.json` | Checksummed registry generations. The newest ten are retained; every schema migration preserves its exact source first. |
+| `~/.anchor/sessions/recovery/registry.corrupt-*.json` | Diagnostic copies of malformed or invalid primaries preserved before automatic recovery. |
 | `~/.anchor/sessions/scrollback/<session-uuid>.txt` | Raw terminal scrollback for `terminal`-type sessions (and optionally others). Pruned per the retention setting (days). |
-| `settings.json` | User settings (schema §7). |
+| `settings.json` | User settings (schema §7), stored in the platform configuration directory outside the installed application. |
+| `settings.last-good.json` | Checksummed recovery envelope for settings, including the path that locates the session registry. |
 
 `registry.json` schema (serde JSON, camelCase):
 
 ```jsonc
 {
-  "version": 1,
+  "version": 2,
   "folders": [
     {
       "id": "uuid",
@@ -111,6 +115,34 @@ Root data directory: **`~/.anchor/`** by default (the "Backup location" setting,
   ]
 }
 ```
+
+**Durability and update contract:**
+
+- Application installers and updates replace application files only. They must
+  never put the registry, scrollback, settings, or recovery files inside the
+  installed application bundle.
+- Version 1 is a supported migration source. The version 2 loader snapshots the
+  exact version 1 document, migrates it in memory, validates it, and atomically
+  commits version 2 without changing folder IDs, Anchor session IDs, or
+  `cliSessionId` values.
+- Each committed registry also updates a SHA-256-protected last-good file and a
+  generation. Recovery accepts a file only when its checksum and full registry
+  validation pass.
+- If a supported primary is malformed or invalid, Anchor preserves a diagnostic
+  copy and restores the newest valid last-good or generation file. A missing
+  primary also recovers when a valid recovery file exists.
+- A registry from a newer unsupported Anchor version fails closed. An older app
+  must not replace it with an older recovery generation.
+- Future schema changes must keep an explicit reader for each migrated version,
+  snapshot before migration, migrate in memory, validate, and atomically commit.
+  Migration tests must prove every provider session ID stays byte-for-byte
+  identical.
+- Settings use the same atomic primary-write pattern and recover from their
+  checksummed last-good file. Defaults apply only when neither a primary nor a
+  recovery file exists.
+- These safeguards cannot survive loss of the storage device. Users who need
+  device-loss protection must place the configured backup directory on storage
+  that is backed up independently.
 
 ---
 
@@ -386,7 +418,7 @@ Frontend architecture requirements:
 - Registry write failure → blocking toast (persistence is the core promise).
 
 **Testing:**
-- Rust unit tests: adapter command construction; codex jsonl parsing + opencode sqlite query against **fixture files** checked into `src-tauri/tests/fixtures/` (synthetic data only); registry atomic-write round-trip; status heuristic (bell, idle-after-burst).
+- Rust unit tests: adapter command construction; codex jsonl parsing + opencode sqlite query against **fixture files** checked into `src-tauri/tests/fixtures/` (synthetic data only); registry atomic-write round-trip; version 1 → 2 migration with exact `cliSessionId` preservation; corrupt/missing-primary recovery; checksum rejection; future-version refusal; ten-generation retention; settings-path recovery; status heuristic (bell, idle-after-burst).
 - Rust integration test: spawn a fake CLI script that writes a fake session file → assert discovery → kill → assert resume command.
 - Frontend: vitest component tests for sidebar/status logic against the mock IPC; type-level guarantee that `types.ts` matches command signatures.
 - Manual E2E per real CLI before release: launch → converse → quit app → relaunch → resume → verify conversation intact.

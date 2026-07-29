@@ -9,9 +9,6 @@ provider's interactive session picker. CLI detection and spawning share one
 resolver, including common user-level install locations omitted by desktop app
 launch environments.
 
-> ⚠️ **Public repository — never commit personal information.**
-> See [AGENTS.md](AGENTS.md).
-
 ## Docs
 
 - **[docs/SPEC.md](docs/SPEC.md)** — the single source of truth (product,

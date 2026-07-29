@@ -5,10 +5,24 @@
 
 #![allow(dead_code)] // Used by later Phase 2 orchestration tasks.
 
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::{fs, io::Write};
 
+use chrono::Utc;
+
+use crate::durable_file::{atomic_write, sha256_hex};
 use crate::models::Settings;
+
+const SETTINGS_RECOVERY_FORMAT_VERSION: u32 = 1;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsRecovery {
+    format_version: u32,
+    created_at: String,
+    sha256: String,
+    settings: Settings,
+}
 
 pub struct SettingsStore {
     path: PathBuf,
@@ -32,38 +46,99 @@ impl SettingsStore {
         let bytes = match fs::read(&self.path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Settings::default());
+                return match self.load_recovery() {
+                    Ok(Some(settings)) => {
+                        self.restore_primary(&settings)?;
+                        Ok(settings)
+                    }
+                    Ok(None) => Ok(Settings::default()),
+                    Err(_) => {
+                        Err("SETTINGS_INVALID: settings recovery file is not valid".to_string())
+                    }
+                };
             }
             Err(_) => return Err("SETTINGS_READ_FAILED: could not read settings.json".into()),
         };
-        let settings: Settings = serde_json::from_slice(&bytes)
-            .map_err(|_| "SETTINGS_INVALID: settings.json is not valid JSON".to_string())?;
-        validate(&settings)?;
-        Ok(settings)
+        match parse_settings(&bytes) {
+            Ok(settings) => Ok(settings),
+            Err(primary_error) => match self.load_recovery() {
+                Ok(Some(settings)) => {
+                    self.restore_primary(&settings)?;
+                    Ok(settings)
+                }
+                Ok(None) | Err(_) => Err(primary_error),
+            },
+        }
     }
 
     pub fn save(&self, settings: &Settings) -> Result<(), String> {
         validate(settings)?;
+        let bytes = serde_json::to_vec_pretty(settings)
+            .map_err(|_| "SETTINGS_WRITE_FAILED: could not serialize settings".to_string())?;
+        atomic_write(&self.path, &bytes, "SETTINGS_WRITE_FAILED")?;
+        // The primary settings are committed. Recovery maintenance is
+        // best-effort so callers never roll memory back behind durable disk.
+        let _ = self.write_recovery(settings);
+        Ok(())
+    }
+
+    fn recovery_path(&self) -> Result<PathBuf, String> {
         let parent = self
             .path
             .parent()
             .ok_or_else(|| "SETTINGS_PATH_INVALID: settings path has no parent".to_string())?;
-        fs::create_dir_all(parent)
-            .map_err(|_| "SETTINGS_WRITE_FAILED: could not create config directory".to_string())?;
+        Ok(parent.join("settings.last-good.json"))
+    }
+
+    fn write_recovery(&self, settings: &Settings) -> Result<(), String> {
+        let canonical = serde_json::to_vec(settings)
+            .map_err(|_| "SETTINGS_BACKUP_FAILED: could not serialize settings".to_string())?;
+        let envelope = SettingsRecovery {
+            format_version: SETTINGS_RECOVERY_FORMAT_VERSION,
+            created_at: Utc::now().to_rfc3339(),
+            sha256: sha256_hex(&canonical),
+            settings: settings.clone(),
+        };
+        let bytes = serde_json::to_vec_pretty(&envelope)
+            .map_err(|_| "SETTINGS_BACKUP_FAILED: could not serialize recovery file".to_string())?;
+        atomic_write(&self.recovery_path()?, &bytes, "SETTINGS_BACKUP_FAILED")
+    }
+
+    fn load_recovery(&self) -> Result<Option<Settings>, String> {
+        let path = self.recovery_path()?;
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => {
+                return Err("SETTINGS_BACKUP_INVALID: could not read recovery file".to_string())
+            }
+        };
+        let envelope: SettingsRecovery = serde_json::from_slice(&bytes)
+            .map_err(|_| "SETTINGS_BACKUP_INVALID: recovery file is not valid JSON".to_string())?;
+        if envelope.format_version != SETTINGS_RECOVERY_FORMAT_VERSION {
+            return Err("SETTINGS_BACKUP_INVALID: recovery format is not supported".into());
+        }
+        let canonical = serde_json::to_vec(&envelope.settings)
+            .map_err(|_| "SETTINGS_BACKUP_INVALID: could not verify recovery file".to_string())?;
+        if sha256_hex(&canonical) != envelope.sha256 {
+            return Err("SETTINGS_BACKUP_INVALID: recovery checksum does not match".into());
+        }
+        validate(&envelope.settings)?;
+        Ok(Some(envelope.settings))
+    }
+
+    fn restore_primary(&self, settings: &Settings) -> Result<(), String> {
         let bytes = serde_json::to_vec_pretty(settings)
             .map_err(|_| "SETTINGS_WRITE_FAILED: could not serialize settings".to_string())?;
-        let mut temporary = tempfile::NamedTempFile::new_in(parent)
-            .map_err(|_| "SETTINGS_WRITE_FAILED: could not create temporary file".to_string())?;
-        temporary
-            .write_all(&bytes)
-            .and_then(|_| temporary.flush())
-            .and_then(|_| temporary.as_file().sync_all())
-            .map_err(|_| "SETTINGS_WRITE_FAILED: could not sync temporary file".to_string())?;
-        temporary
-            .persist(&self.path)
-            .map_err(|_| "SETTINGS_WRITE_FAILED: could not replace settings.json".to_string())?;
-        Ok(())
+        atomic_write(&self.path, &bytes, "SETTINGS_WRITE_FAILED")
     }
+}
+
+fn parse_settings(bytes: &[u8]) -> Result<Settings, String> {
+    let settings: Settings = serde_json::from_slice(bytes)
+        .map_err(|_| "SETTINGS_INVALID: settings.json is not valid JSON".to_string())?;
+    validate(&settings)?;
+    Ok(settings)
 }
 
 pub fn load() -> Result<Settings, String> {
@@ -215,6 +290,72 @@ mod tests {
 
         assert_eq!(json["envVars"][0]["key"], "SYNTHETIC_TOKEN");
         assert_eq!(store.load().unwrap(), expected);
+    }
+
+    #[test]
+    fn corrupt_settings_primary_recovers_the_exact_registry_location() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("config/settings.json");
+        let store = SettingsStore::new(&path);
+        let mut expected = Settings::default();
+        expected.backup_path = if cfg!(windows) {
+            r"C:\synthetic\anchor-sessions".into()
+        } else {
+            "/synthetic/anchor-sessions".into()
+        };
+        store.save(&expected).unwrap();
+        fs::write(&path, b"{broken").unwrap();
+
+        let recovered = store.load().unwrap();
+
+        assert_eq!(recovered.backup_path, expected.backup_path);
+        assert_eq!(
+            serde_json::from_slice::<Settings>(&fs::read(path).unwrap()).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn missing_settings_primary_recovers_from_last_good() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("config/settings.json");
+        let store = SettingsStore::new(&path);
+        let mut expected = Settings::default();
+        expected.projects_dir = if cfg!(windows) {
+            r"C:\synthetic\projects".into()
+        } else {
+            "/synthetic/projects".into()
+        };
+        store.save(&expected).unwrap();
+        fs::rename(&path, root.path().join("settings.missing-source.json")).unwrap();
+
+        let recovered = store.load().unwrap();
+
+        assert_eq!(recovered, expected);
+        assert!(path.is_file());
+    }
+
+    #[test]
+    fn invalid_settings_and_invalid_recovery_fail_without_using_defaults() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("config/settings.json");
+        let store = SettingsStore::new(&path);
+        store.save(&Settings::default()).unwrap();
+        fs::write(&path, b"{broken-primary").unwrap();
+        let recovery_path = root.path().join("config/settings.last-good.json");
+        let mut recovery: serde_json::Value =
+            serde_json::from_slice(&fs::read(&recovery_path).unwrap()).unwrap();
+        recovery["sha256"] = serde_json::Value::String("0".repeat(64));
+        fs::write(
+            &recovery_path,
+            serde_json::to_vec_pretty(&recovery).unwrap(),
+        )
+        .unwrap();
+
+        let error = store.load().unwrap_err();
+
+        assert!(error.starts_with("SETTINGS_INVALID:"));
+        assert_eq!(fs::read(path).unwrap(), b"{broken-primary");
     }
 
     #[test]
