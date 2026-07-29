@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:release": "node --test build/scripts/release-tools.test.mjs",
     "test:watch": "vitest",
     "tauri": "tauri",
     "e2e": "node e2e/run.mjs"
