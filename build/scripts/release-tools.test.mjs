@@ -122,6 +122,22 @@ test('installs the xdg-open utility required by AppImage packaging', async () =>
   assert.match(dockerfile, /^\s+xdg-utils\s*$/m)
 })
 
+test('does not run Linux-target Rust tests in the Windows cross-builder', async () => {
+  const repositoryRoot = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    '..',
+    '..',
+  )
+  const buildScript = await readFile(
+    path.join(repositoryRoot, 'build', 'docker', 'windows', 'build.sh'),
+    'utf8',
+  )
+
+  assert.doesNotMatch(buildScript, /^cargo (?:test|check)\b/m)
+  assert.match(buildScript, /^npm test$/m)
+  assert.match(buildScript, /^npm run test:release$/m)
+})
+
 test('collects one artifact for every Linux package type', async () => {
   const fixture = await makeBundleFixture()
 

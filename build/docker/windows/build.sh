@@ -26,8 +26,8 @@ version="$(node build/scripts/release-tools.mjs verify-version "$RELEASE_TAG" .)
 npm ci
 npm test
 npm run test:release
-cargo test --manifest-path src-tauri/Cargo.toml --locked
-cargo check --manifest-path src-tauri/Cargo.toml --locked
+# The Linux builder owns native-target Rust tests. Running them again through
+# x86 emulation adds no Windows coverage and makes PTY timing tests unreliable.
 npm run tauri -- build \
   --runner cargo-xwin \
   --target x86_64-pc-windows-msvc \

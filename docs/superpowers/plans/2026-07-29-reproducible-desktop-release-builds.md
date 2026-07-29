@@ -258,8 +258,8 @@ Set `XWIN_CACHE_DIR=/xwin-cache` and
 
 - [ ] **Step 2: Add the Windows build entrypoint**
 
-`build.sh` must use a new container-local source copy, run the same tests and
-checks, and build:
+`build.sh` must use a new container-local source copy, run the frontend and
+release-contract tests, and build:
 
 ```bash
 npm run tauri -- build \
