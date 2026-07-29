@@ -132,7 +132,7 @@ Before the tag is pushed:
 In GitHub Actions:
 
 - Run frontend tests and the production frontend build.
-- Run Rust tests and `cargo check`.
+- Run Rust tests and `cargo check` once in the native Linux build gate.
 - Build every target bundle.
 - Verify the final artifact inventory and SHA-256 file.
 - Confirm the release is attached to the exact `v0.1.0` tag and commit.

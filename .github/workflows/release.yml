@@ -104,16 +104,12 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
 
-      - name: Verify and test
-        env:
-          TARGET: ${{ matrix.target }}
+      - name: Verify frontend and release contract
         run: |
           node build/scripts/release-tools.mjs verify-version "$RELEASE_TAG" .
           npm ci
           npm test
           npm run test:release
-          cargo test --manifest-path src-tauri/Cargo.toml --locked --target "$TARGET"
-          cargo check --manifest-path src-tauri/Cargo.toml --locked --target "$TARGET"
 
       - name: Build DMG
         env:

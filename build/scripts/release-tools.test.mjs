@@ -161,6 +161,21 @@ test('runs native Rust tests in GitHub but not by default under emulation', asyn
   assert.match(workflow, /RUN_NATIVE_RUST_TESTS: 1/)
 })
 
+test('does not repeat native PTY tests in macOS packaging jobs', async () => {
+  const repositoryRoot = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    '..',
+    '..',
+  )
+  const workflow = await readFile(
+    path.join(repositoryRoot, '.github', 'workflows', 'release.yml'),
+    'utf8',
+  )
+
+  assert.doesNotMatch(workflow, /cargo test --manifest-path/)
+  assert.doesNotMatch(workflow, /cargo check --manifest-path/)
+})
+
 test('collects one artifact for every Linux package type', async () => {
   const fixture = await makeBundleFixture()
 

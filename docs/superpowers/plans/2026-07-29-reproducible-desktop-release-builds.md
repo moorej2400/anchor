@@ -373,8 +373,8 @@ Each job must:
 
 1. Verify the version contract.
 2. Use Node 22 and Rust stable with the matrix target.
-3. Run `npm ci`, all frontend tests, release-tool tests, locked Rust tests, and
-   locked `cargo check`.
+3. Run `npm ci`, all frontend tests, and release-tool tests. The native Linux
+   job owns the locked Rust tests and `cargo check`.
 4. Set `APPLE_SIGNING_IDENTITY: "-"`.
 5. Build `--target <target> --bundles dmg`.
 6. Normalize the DMG name with `release-tools.mjs collect`.
