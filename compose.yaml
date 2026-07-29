@@ -26,7 +26,39 @@ services:
         source: anchor-linux-cargo-git
         target: /usr/local/cargo/git
 
+  windows-x86_64:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: build/docker/windows/Dockerfile
+    environment:
+      RELEASE_TAG: ${RELEASE_TAG:-v0.1.0}
+    volumes:
+      - type: bind
+        source: .
+        target: /workspace
+        read_only: true
+      - type: bind
+        source: ./artifacts/windows-x86_64
+        target: /artifacts
+      - type: volume
+        source: anchor-windows-npm-cache
+        target: /root/.npm
+      - type: volume
+        source: anchor-windows-cargo-registry
+        target: /usr/local/cargo/registry
+      - type: volume
+        source: anchor-windows-cargo-git
+        target: /usr/local/cargo/git
+      - type: volume
+        source: anchor-windows-xwin-cache
+        target: /xwin-cache
+
 volumes:
   anchor-linux-npm-cache:
   anchor-linux-cargo-registry:
   anchor-linux-cargo-git:
+  anchor-windows-npm-cache:
+  anchor-windows-cargo-registry:
+  anchor-windows-cargo-git:
+  anchor-windows-xwin-cache:
