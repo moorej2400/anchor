@@ -1,0 +1,235 @@
+name: Release desktop builds
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v-prefixed tag to release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22.17.1"
+  RUST_VERSION: "1.88.0"
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  linux:
+    name: Linux x86_64 in Docker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Build Linux packages
+        run: |
+          mkdir -p artifacts/linux-x86_64
+          docker compose run --rm --build linux-x86_64
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-linux-x86_64
+          path: artifacts/linux-x86_64/*
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Windows x86_64 NSIS in Docker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Build Windows installer
+        run: |
+          mkdir -p artifacts/windows-x86_64
+          docker compose run --rm --build windows-x86_64
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-windows-x86_64
+          path: artifacts/windows-x86_64/*
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: macOS ${{ matrix.platform }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            platform: macos-aarch64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos-x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: Verify and test
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          node build/scripts/release-tools.mjs verify-version "$RELEASE_TAG" .
+          npm ci
+          npm test
+          npm run test:release
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --target "$TARGET"
+          cargo check --manifest-path src-tauri/Cargo.toml --locked --target "$TARGET"
+
+      - name: Build DMG
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+          PLATFORM: ${{ matrix.platform }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          npm run tauri -- build --target "$TARGET" --bundles dmg
+          mkdir -p "artifacts/$PLATFORM"
+          node build/scripts/release-tools.mjs collect \
+            "$PLATFORM" \
+            "src-tauri/target/$TARGET/release/bundle" \
+            "artifacts/$PLATFORM" \
+            "${RELEASE_TAG#v}"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-${{ matrix.platform }}
+          path: artifacts/${{ matrix.platform }}/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Verify and publish release
+    needs:
+      - linux
+      - windows
+      - macos
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download all release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify inventory and generate checksums
+        id: contract
+        run: |
+          version="$(node build/scripts/release-tools.mjs verify-version "$RELEASE_TAG" .)"
+          node build/scripts/release-tools.mjs checksums release-assets "$version"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          find release-assets -maxdepth 1 -type f -print | sort
+
+      - name: Prepare release notes
+        env:
+          VERSION: ${{ steps.contract.outputs.version }}
+        run: |
+          printf '%s\n' \
+            "# Anchor $VERSION" \
+            "" \
+            "First cross-platform preview release." \
+            "" \
+            "## Downloads" \
+            "" \
+            "- Linux x86_64: AppImage, Debian package, or RPM package" \
+            "- Windows x86_64: NSIS setup executable" \
+            "- macOS: Apple Silicon and Intel DMGs" \
+            "" \
+            "## Signing status" \
+            "" \
+            "These preview artifacts are not code-signed or notarized. The macOS bundles use ad-hoc signing so their structure is valid, but Gatekeeper can still require manual approval. The Windows installer can show an unknown-publisher warning." \
+            "" \
+            "## Verify checksums" \
+            "" \
+            '```bash' \
+            "shasum -a 256 -c SHA256SUMS.txt" \
+            '```' \
+            > release-notes.md
+
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.contract.outputs.version }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
+            if [ "$is_draft" != "true" ]; then
+              printf 'Refusing to replace public release %s\n' "$RELEASE_TAG" >&2
+              exit 1
+            fi
+            gh release edit "$RELEASE_TAG" \
+              --title "Anchor $VERSION" \
+              --notes-file release-notes.md \
+              --draft=true \
+              --latest=false
+          else
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --title "Anchor $VERSION" \
+              --notes-file release-notes.md \
+              --draft
+          fi
+
+      - name: Upload and publish verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest
+          gh release view "$RELEASE_TAG" \
+            --json url,tagName,targetCommitish,isDraft
+          latest_tag="$(
+            gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name
+          )"
+          test "$latest_tag" = "$RELEASE_TAG"
