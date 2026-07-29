@@ -11,10 +11,8 @@ and checksums as GitHub release `v0.1.0`.
 ## Constraints
 
 - Linux builds must run in the repository's Docker builder.
-- Windows builds should run in the repository's Windows-container builder on a
-  compatible Windows Docker host.
-- GitHub-hosted runners do not support Windows Docker container jobs. The
-  approved first-release exception is a clean GitHub-hosted Windows runner.
+- Windows NSIS builds must run in the repository's Linux-based Docker
+  cross-builder by using Tauri's documented `cargo-xwin` path.
 - macOS builds run on clean GitHub-hosted macOS runners. Docker Desktop for Mac
   runs Linux containers and cannot provide Apple's native bundle toolchain.
 - No Node, Rust, Tauri, Linux GUI, or Windows build dependencies are installed
@@ -32,11 +30,10 @@ environment. It pins the Node and Rust toolchain inputs, installs Tauri's Linux
 system packages, uses `npm ci`, and writes only final bundles to a mounted
 `artifacts/linux-x86_64/` directory.
 
-`build/docker/windows/Dockerfile` and its PowerShell entrypoint define the
-equivalent Windows x86_64 builder for a Windows Docker host. The image contains
-the Microsoft C++ toolchain, WebView2 build requirements, Node, Rust MSVC, and
-the Tauri CLI. This builder is a portable path for later Windows machines even
-though the first GitHub-hosted release uses a native Windows VM.
+`build/docker/windows/Dockerfile` defines the equivalent Windows x86_64
+cross-builder. It is a Linux container with Node, Rust, LLVM, NSIS, the Windows
+MSVC target, and `cargo-xwin`. This follows Tauri's documented Windows
+cross-compilation path and can run through Docker Desktop on macOS.
 
 The root `compose.yaml` exposes explicit `linux-x86_64` and
 `windows-x86_64` services. Each service mounts the repository read-only and a
@@ -49,7 +46,7 @@ volumes, not in the host checkout.
 dispatch. It has separate build jobs:
 
 1. Linux x86_64 runs the same Linux Dockerfile used by Compose.
-2. Windows x86_64 runs on a clean GitHub Windows VM as the approved exception.
+2. Windows x86_64 runs the Windows cross-builder on a GitHub Linux VM.
 3. macOS Apple Silicon runs on a clean GitHub macOS ARM runner.
 4. macOS Intel runs on a clean GitHub macOS Intel runner.
 
@@ -68,9 +65,9 @@ test, artifact inventory, and checksum step succeeds.
 The target artifact set is:
 
 - Linux x86_64: AppImage, Debian package, and RPM package.
-- Windows x86_64: NSIS installer and MSI installer when the hosted Windows
-  image supports Tauri's MSI prerequisites. A failed required package fails the
-  workflow; it is not silently omitted.
+- Windows x86_64: NSIS installer. Tauri documents that MSI bundles require
+  Windows because WiX only runs on Windows, so MSI is outside this
+  Docker-required release.
 - macOS Apple Silicon: DMG.
 - macOS Intel: DMG.
 - All platforms: `SHA256SUMS.txt`.
@@ -101,7 +98,7 @@ docker compose run --rm linux-x86_64
     -> artifacts/linux-x86_64/
 ```
 
-On a compatible Windows Docker host:
+On any x86_64 or ARM64 Docker host with Linux-container support:
 
 ```text
 docker compose run --rm windows-x86_64
