@@ -18,7 +18,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       libwebkit2gtk-4.1-dev \
       libxdo-dev \
       patchelf \
-      rpm
+      rpm \
+      xdg-utils
 
 ENV APPIMAGE_EXTRACT_AND_RUN=1
 ENV CARGO_TARGET_DIR=/build/target

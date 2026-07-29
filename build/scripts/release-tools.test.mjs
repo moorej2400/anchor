@@ -108,6 +108,20 @@ test('pins the minimum Rust version required by the locked dependencies', async 
   })
 })
 
+test('installs the xdg-open utility required by AppImage packaging', async () => {
+  const repositoryRoot = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    '..',
+    '..',
+  )
+  const dockerfile = await readFile(
+    path.join(repositoryRoot, 'build', 'docker', 'linux', 'Dockerfile'),
+    'utf8',
+  )
+
+  assert.match(dockerfile, /^\s+xdg-utils\s*$/m)
+})
+
 test('collects one artifact for every Linux package type', async () => {
   const fixture = await makeBundleFixture()
 
