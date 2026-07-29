@@ -1,0 +1,10 @@
+.git
+.worktrees
+artifacts
+dist
+node_modules
+src-tauri/target
+target
+e2e/out
+*.log
+.DS_Store

@@ -1,0 +1,32 @@
+name: anchor-builders
+
+services:
+  linux-x86_64:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: build/docker/linux/Dockerfile
+    environment:
+      RELEASE_TAG: ${RELEASE_TAG:-v0.1.0}
+    volumes:
+      - type: bind
+        source: .
+        target: /workspace
+        read_only: true
+      - type: bind
+        source: ./artifacts/linux-x86_64
+        target: /artifacts
+      - type: volume
+        source: anchor-linux-npm-cache
+        target: /root/.npm
+      - type: volume
+        source: anchor-linux-cargo-registry
+        target: /usr/local/cargo/registry
+      - type: volume
+        source: anchor-linux-cargo-git
+        target: /usr/local/cargo/git
+
+volumes:
+  anchor-linux-npm-cache:
+  anchor-linux-cargo-registry:
+  anchor-linux-cargo-git:

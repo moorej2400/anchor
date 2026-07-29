@@ -25,3 +25,6 @@ dist-ssr
 
 # End-to-end run artefacts (screenshots, reports)
 e2e/out/
+
+# Reproducible release output is generated locally or downloaded from CI.
+artifacts/
