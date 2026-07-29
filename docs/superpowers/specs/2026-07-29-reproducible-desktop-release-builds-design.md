@@ -86,7 +86,7 @@ treated as structurally unsigned.
 v0.1.0 tag
     |
     +--> Linux Docker build --------+
-    +--> Windows hosted VM build ---+--> inventory + SHA-256 --> draft release
+    +--> Windows Docker build ------+--> inventory + SHA-256 --> draft release
     +--> macOS ARM hosted build ----+
     +--> macOS Intel hosted build --+
 ```
@@ -124,6 +124,8 @@ Before the tag is pushed:
 - Validate Docker Compose configuration.
 - Build and test the Linux image through Docker Compose.
 - Verify the Linux artifact types and checksums.
+- Build and test the Windows cross-builder through Docker Compose.
+- Verify the Windows NSIS artifact type.
 - Run repository privacy and secret scans over the complete diff.
 - Run `git diff --check`.
 
@@ -150,7 +152,7 @@ packaging; later signed releases should add native launch and signing checks.
 `README.md` will document:
 
 - one-command Linux Docker builds;
-- the Windows Docker-host requirement;
+- one-command Windows Docker builds;
 - why macOS uses GitHub's native runners;
 - how to trigger a tagged release;
 - unsigned-release warnings and checksum verification.
