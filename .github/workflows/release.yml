@@ -20,7 +20,7 @@ concurrency:
 
 env:
   NODE_VERSION: "22.17.1"
-  RUST_VERSION: "1.88.0"
+  RUST_VERSION: "1.89.0"
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:

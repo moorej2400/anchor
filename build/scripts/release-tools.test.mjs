@@ -6,6 +6,7 @@ import test from 'node:test'
 
 import {
   collectArtifacts,
+  readToolchainPins,
   verifyVersion,
   writeChecksums,
 } from './release-tools.mjs'
@@ -91,6 +92,20 @@ test('rejects a tag that does not match the project version', async () => {
     () => verifyVersion(root, 'v0.2.0'),
     /tag v0\.2\.0 does not match project version 0\.1\.0/,
   )
+})
+
+test('pins the minimum Rust version required by the locked dependencies', async () => {
+  const repositoryRoot = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    '..',
+    '..',
+  )
+
+  assert.deepEqual(await readToolchainPins(repositoryRoot), {
+    linux: '1.89.0',
+    macos: '1.89.0',
+    windows: '1.89.0',
+  })
 })
 
 test('collects one artifact for every Linux package type', async () => {

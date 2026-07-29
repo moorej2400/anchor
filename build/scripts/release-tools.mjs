@@ -67,6 +67,34 @@ async function sha256(file) {
   return hash.digest('hex')
 }
 
+export async function readToolchainPins(root) {
+  const linux = await readFile(
+    path.join(root, 'build', 'docker', 'linux', 'Dockerfile'),
+    'utf8',
+  )
+  const windows = await readFile(
+    path.join(root, 'build', 'docker', 'windows', 'Dockerfile'),
+    'utf8',
+  )
+  const workflow = await readFile(
+    path.join(root, '.github', 'workflows', 'release.yml'),
+    'utf8',
+  )
+
+  const linuxMatch = /^FROM rust:(\d+\.\d+\.\d+)-/m.exec(linux)
+  const windowsMatch = /^FROM rust:(\d+\.\d+\.\d+)-/m.exec(windows)
+  const macosMatch = /^\s+RUST_VERSION: "(\d+\.\d+\.\d+)"$/m.exec(workflow)
+  if (!linuxMatch || !windowsMatch || !macosMatch) {
+    throw new Error('release toolchain pin is missing')
+  }
+
+  return {
+    linux: linuxMatch[1],
+    macos: macosMatch[1],
+    windows: windowsMatch[1],
+  }
+}
+
 export async function verifyVersion(root, tag) {
   const match = /^v(.+)$/.exec(tag)
   if (!match) {
