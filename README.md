@@ -80,7 +80,10 @@ The Windows image follows
 [Tauri's documented `cargo-xwin` NSIS path](https://v2.tauri.app/distribute/windows-installer/#build-windows-apps-on-linux-and-macos).
 MSI packages are not included because Tauri requires Windows and WiX to create
 them. Both builders run as Linux x86_64 containers. Docker Desktop can emulate
-that platform on an ARM64 Mac, but the first build is slower.
+that platform on an ARM64 Mac, but the first build is slower. Local emulated
+builds compile the full Rust application but skip native PTY timing tests. The
+GitHub Linux job enables those tests on its native x86_64 runner. On a native
+x86_64 Docker host, use `RUN_NATIVE_RUST_TESTS=1` to enable them locally.
 
 The source checkout is mounted read-only. Package-manager and compiler caches
 live in Docker volumes. Only the normalized files under `artifacts/` are

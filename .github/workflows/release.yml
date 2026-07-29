@@ -35,6 +35,8 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Build Linux packages
+        env:
+          RUN_NATIVE_RUST_TESTS: 1
         run: |
           mkdir -p artifacts/linux-x86_64
           docker compose run --rm --build linux-x86_64

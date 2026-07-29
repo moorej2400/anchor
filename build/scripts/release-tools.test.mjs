@@ -138,6 +138,29 @@ test('does not run Linux-target Rust tests in the Windows cross-builder', async 
   assert.match(buildScript, /^npm run test:release$/m)
 })
 
+test('runs native Rust tests in GitHub but not by default under emulation', async () => {
+  const repositoryRoot = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    '..',
+    '..',
+  )
+  const [buildScript, compose, workflow] = await Promise.all([
+    readFile(
+      path.join(repositoryRoot, 'build', 'docker', 'linux', 'build.sh'),
+      'utf8',
+    ),
+    readFile(path.join(repositoryRoot, 'compose.yaml'), 'utf8'),
+    readFile(
+      path.join(repositoryRoot, '.github', 'workflows', 'release.yml'),
+      'utf8',
+    ),
+  ])
+
+  assert.match(buildScript, /RUN_NATIVE_RUST_TESTS:-0/)
+  assert.match(compose, /RUN_NATIVE_RUST_TESTS: \$\{RUN_NATIVE_RUST_TESTS:-0\}/)
+  assert.match(workflow, /RUN_NATIVE_RUST_TESTS: 1/)
+})
+
 test('collects one artifact for every Linux package type', async () => {
   const fixture = await makeBundleFixture()
 

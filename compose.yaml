@@ -8,6 +8,7 @@ services:
       dockerfile: build/docker/linux/Dockerfile
     environment:
       RELEASE_TAG: ${RELEASE_TAG:-v0.1.0}
+      RUN_NATIVE_RUST_TESTS: ${RUN_NATIVE_RUST_TESTS:-0}
     volumes:
       - type: bind
         source: .

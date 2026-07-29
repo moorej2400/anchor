@@ -171,8 +171,9 @@ container image. It never touches repository or host files.
 1. Copy the read-only `/workspace` mount to a new `/build/source` directory
    without `.git`, `node_modules`, `target`, `dist`, or `artifacts`.
 2. Verify `RELEASE_TAG`.
-3. Run `npm ci`, frontend tests, release-tool tests, locked Rust tests, and
-   locked `cargo check`.
+3. Run `npm ci`, frontend tests, and release-tool tests. Run locked Rust tests
+   and locked `cargo check` when `RUN_NATIVE_RUST_TESTS=1`; the GitHub Linux
+   job sets this on its native x86_64 runner.
 4. Run `npm run tauri -- build --bundles appimage,deb,rpm`.
 5. Collect the three normalized artifacts into `/artifacts`.
 
