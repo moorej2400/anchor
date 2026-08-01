@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use adapters::claude::ClaudeAdapter;
-use adapters::codex::CodexAdapter;
+use adapters::codex::{available_profiles_at, CodexAdapter};
 use adapters::copilot::CopilotAdapter;
 use adapters::opencode::OpencodeAdapter;
 use adapters::terminal::TerminalAdapter;
@@ -29,6 +29,7 @@ fn session(tool: Tool) -> Session {
         status: Status::Stopped,
         model: None,
         extra_args: vec!["--synthetic-flag".into(), "value".into()],
+        codex_profile: None,
         created_at: "2026-07-21T12:00:00Z".into(),
         last_active_at: "2026-07-21T12:00:00Z".into(),
         was_open_in_tab: false,
@@ -170,6 +171,80 @@ fn codex_launch_appends_extra_args_but_resume_never_does() {
 }
 
 #[test]
+fn codex_profile_precedes_launch_args_and_resume_subcommand() {
+    let root = tempdir().unwrap();
+    let adapter = CodexAdapter::with_sessions_root(root.path());
+    let mut session = session(Tool::Codex);
+    session.codex_profile = Some("synthetic-profile".into());
+    session.cli_session_id = Some("33333333-3333-4333-8333-333333333333".into());
+    let settings = Settings::default();
+
+    let (launch, _) = adapter.launch(&session, Path::new(CWD), &settings).unwrap();
+    assert_eq!(
+        launch,
+        SpawnSpec::new(
+            "codex",
+            [
+                "--profile",
+                "synthetic-profile",
+                "--synthetic-flag",
+                "value"
+            ],
+            CWD,
+        )
+    );
+    assert_eq!(
+        adapter.resume(&session, Path::new(CWD), &settings).unwrap(),
+        SpawnSpec::new(
+            "codex",
+            [
+                "--profile",
+                "synthetic-profile",
+                "resume",
+                "33333333-3333-4333-8333-333333333333",
+            ],
+            CWD,
+        )
+    );
+}
+
+#[test]
+fn codex_profile_discovery_returns_only_safe_immediate_names() {
+    let root = tempdir().unwrap();
+    for name in [
+        "alpha.config.toml",
+        "zeta.config.toml",
+        "not-a-profile.toml",
+    ] {
+        fs::write(root.path().join(name), "synthetic").unwrap();
+    }
+    fs::write(root.path().join("unsafe&name.config.toml"), "synthetic").unwrap();
+    fs::create_dir(root.path().join("nested.config.toml")).unwrap();
+    fs::create_dir_all(root.path().join("nested")).unwrap();
+    fs::write(root.path().join("nested/ignored.config.toml"), "synthetic").unwrap();
+
+    assert_eq!(available_profiles_at(root.path()), vec!["alpha", "zeta"]);
+}
+
+#[test]
+fn codex_extra_args_cannot_override_persisted_profile() {
+    let root = tempdir().unwrap();
+    let adapter = CodexAdapter::with_sessions_root(root.path());
+    for args in [
+        vec!["--profile".into(), "other-profile".into()],
+        vec!["--profile=other-profile".into()],
+        vec!["-pother-profile".into()],
+    ] {
+        let mut session = session(Tool::Codex);
+        session.extra_args = args;
+        assert!(adapter
+            .launch(&session, Path::new(CWD), &Settings::default())
+            .unwrap_err()
+            .starts_with("INVALID_EXTRA_ARGS:"));
+    }
+}
+
+#[test]
 fn opencode_launch_appends_extra_args_but_resume_never_does() {
     let root = tempdir().unwrap();
     let adapter = OpencodeAdapter::with_database_path(root.path().join("missing.db"));
@@ -199,7 +274,9 @@ fn opencode_launch_appends_extra_args_but_resume_never_does() {
 #[test]
 fn opencode_default_database_uses_home_local_share_path() {
     let home = dirs::home_dir().expect("test platform must provide a home directory");
-    let xdg = std::env::var_os("XDG_DATA_HOME").map(std::path::PathBuf::from);
+    let xdg = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute());
 
     assert_eq!(
         OpencodeAdapter::default_database_path(),

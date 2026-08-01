@@ -8,9 +8,12 @@
  * `activeId` by the next paint.
  */
 import { useEffect, useLayoutEffect, useRef } from "react";
+import { Badge, Button } from "../components/lib";
 import { ipc } from "../ipc/commands";
 import type { Session } from "../ipc/types";
+import type { LaunchError } from "../app/store";
 import { useAnchor } from "../app/store";
+import { toolName } from "../app/display";
 import { isOn } from "../app/selectors";
 import type { TerminalManager } from "../app/terminals";
 import { ResumeCard } from "./ResumeCard";
@@ -30,7 +33,35 @@ export function TerminalPane({ active }: { active: Session | null }) {
         terminals={terminals}
         restoreScrollback={state.settings.restoreScrollback}
       />
-      {!active ? <EmptyState /> : !isOn(active.status) ? <ResumeCard session={active} /> : null}
+      {state.launchError ? <LaunchErrorCard error={state.launchError} /> : !active ? <EmptyState /> : !isOn(active.status) ? <ResumeCard session={active} /> : null}
+    </div>
+  );
+}
+
+function LaunchErrorCard({ error }: { error: LaunchError }) {
+  const { actions } = useAnchor();
+
+  return (
+    <div className="operation-error-wrap">
+      <div className="operation-error-card" role="alert">
+        <div className="operation-error-card__head">
+          <Badge tool={error.tool} scale={1.35} />
+          <div>
+            <div className="operation-error-card__title">Could not start {toolName(error.tool)}</div>
+            <div className="operation-error-card__code">{error.code ?? "LAUNCH_FAILED"}</div>
+          </div>
+        </div>
+        <div className="operation-error-card__message">{error.message}</div>
+        {error.isCliNotFound && (
+          <div className="operation-error-card__guidance">
+            Install {toolName(error.tool)} and ensure it is available on PATH. Then retry the launch.
+          </div>
+        )}
+        <div className="operation-error-card__actions">
+          <Button variant="subtle" onClick={actions.dismissLaunchError}>Back</Button>
+          <Button variant="primary" onClick={() => void actions.launch(error.tool, error.folderId)}>Retry launch</Button>
+        </div>
+      </div>
     </div>
   );
 }

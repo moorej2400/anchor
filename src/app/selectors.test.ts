@@ -20,6 +20,7 @@ function s(id: string, folderId: string, tool: Tool, title: string, status: Stat
     createdAt: "2026-01-01T00:00:00Z",
     lastActiveAt: "2026-01-01T00:00:00Z",
     wasOpenInTab: false,
+    codexProfile: null,
   };
 }
 

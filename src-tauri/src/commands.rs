@@ -103,10 +103,25 @@ pub fn launch_session(
     tool: Tool,
     title: Option<String>,
     extra_args: Option<Vec<String>>,
+    codex_profile: Option<String>,
 ) -> Result<Session, String> {
     backend
         .inner()
-        .launch_session(&folder_id, tool, title, extra_args)
+        .launch_session_with_profile(&folder_id, tool, title, extra_args, codex_profile)
+}
+
+#[tauri::command]
+pub fn get_codex_profiles(backend: State<'_, Arc<Backend>>) -> Vec<String> {
+    backend.codex_profiles()
+}
+
+#[tauri::command]
+pub fn set_codex_profile(
+    backend: State<'_, Arc<Backend>>,
+    session_id: String,
+    codex_profile: Option<String>,
+) -> Result<Session, String> {
+    backend.set_codex_profile(&session_id, codex_profile)
 }
 
 #[tauri::command]

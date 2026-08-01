@@ -29,12 +29,28 @@ import { TerminalManager } from "./terminals";
 export type SettingsSection = "general" | "persistence" | "appearance" | "shortcuts";
 export type View = "terminal" | "settings";
 
+export interface OperationError {
+  operation: "launch" | "resume";
+  tool: Tool;
+  message: string;
+  code: string | null;
+  /** A CLI-not-found failure has a concrete recovery path the UI can show. */
+  isCliNotFound: boolean;
+}
+
+export interface LaunchError extends OperationError {
+  operation: "launch";
+  folderId: string;
+}
+
 interface State {
   loaded: boolean;
   folders: Folder[];
   sessions: Session[];
   settings: Settings;
   clis: CliInfo[];
+  /** Available Codex profile names; a failed lookup leaves this empty. */
+  codexProfiles: string[];
   openTabs: string[];
   activeId: string | null;
   /** Sidebar ordering: session id → sequence of the last keystroke sent to it. */
@@ -50,6 +66,10 @@ interface State {
   newSessionFolderId: string | null;
   /** Tab awaiting close confirmation, when `confirmClose` guards a live session. */
   closeConfirmId: string | null;
+  /** The latest failed launch stays visible until the user retries or dismisses it. */
+  launchError: LaunchError | null;
+  /** Resume failures belong to their stopped session so switching tabs does not hide them. */
+  resumeErrors: Record<string, OperationError>;
   toast: string | null;
   waitingCount: number;
   fatalError: string | null;
@@ -78,6 +98,7 @@ const initialState: State = {
   sessions: [],
   settings: DEFAULT_SETTINGS,
   clis: [],
+  codexProfiles: [],
   openTabs: [],
   activeId: null,
   typedOrder: {},
@@ -89,13 +110,15 @@ const initialState: State = {
   newSessionOpen: false,
   newSessionFolderId: null,
   closeConfirmId: null,
+  launchError: null,
+  resumeErrors: {},
   toast: null,
   waitingCount: 0,
   fatalError: null,
 };
 
 type Action =
-  | { type: "HYDRATE"; folders: Folder[]; sessions: Session[]; settings: Settings; clis: CliInfo[]; openTabs: string[]; activeId: string | null }
+  | { type: "HYDRATE"; folders: Folder[]; sessions: Session[]; settings: Settings; clis: CliInfo[]; codexProfiles: string[]; openTabs: string[]; activeId: string | null }
   | { type: "UPSERT_SESSION"; session: Session }
   | { type: "REMOVE_SESSION"; id: string }
   | { type: "SET_STATUS"; id: string; status: Session["status"] }
@@ -112,6 +135,8 @@ type Action =
   | { type: "SET_PALETTE"; open: boolean }
   | { type: "SET_NEW_SESSION"; open: boolean; folderId?: string | null }
   | { type: "SET_CLOSE_CONFIRM"; id: string | null }
+  | { type: "SET_LAUNCH_ERROR"; error: LaunchError | null }
+  | { type: "SET_RESUME_ERROR"; id: string; error: OperationError | null }
   | { type: "SET_TOAST"; text: string | null }
   | { type: "SET_SETTINGS"; settings: Settings }
   | { type: "SET_WAITING"; count: number }
@@ -145,6 +170,7 @@ function reducer(state: State, action: Action): State {
         sessions: action.sessions,
         settings: action.settings,
         clis: action.clis,
+        codexProfiles: action.codexProfiles,
         openTabs: action.openTabs,
         activeId: action.activeId,
       };
@@ -205,7 +231,10 @@ function reducer(state: State, action: Action): State {
       const openTabs = state.openTabs.includes(action.id)
         ? state.openTabs
         : [...state.openTabs, action.id];
-      return { ...state, openTabs, activeId: action.id, view: "terminal", paletteOpen: false };
+      // A launch error is a transient pane overlay. Selecting any real session
+      // must restore that session's terminal or Resume card instead of leaving
+      // an unrelated failed launch on top of it.
+      return { ...state, openTabs, activeId: action.id, view: "terminal", paletteOpen: false, launchError: null };
     }
     case "CLOSE_TAB": {
       const active =
@@ -228,7 +257,7 @@ function reducer(state: State, action: Action): State {
       return { ...state, openTabs, activeId: state.activeId ?? action.id };
     }
     case "SET_ACTIVE":
-      return { ...state, activeId: action.id, view: "terminal" };
+      return { ...state, activeId: action.id, view: "terminal", launchError: null };
     case "SESSION_TYPED": {
       // Fires on every keystroke. Once a session already holds the newest
       // sequence it is at the top of its folder and cannot move further, so
@@ -253,6 +282,14 @@ function reducer(state: State, action: Action): State {
       };
     case "SET_CLOSE_CONFIRM":
       return state.closeConfirmId === action.id ? state : { ...state, closeConfirmId: action.id };
+    case "SET_LAUNCH_ERROR":
+      return { ...state, launchError: action.error };
+    case "SET_RESUME_ERROR": {
+      const resumeErrors = { ...state.resumeErrors };
+      if (action.error) resumeErrors[action.id] = action.error;
+      else delete resumeErrors[action.id];
+      return { ...state, resumeErrors };
+    }
     case "SET_TOAST":
       return { ...state, toast: action.text };
     case "SET_SETTINGS":
@@ -320,10 +357,13 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
         }
         unlisten = subs;
 
-        const [snapshot, settings, clis] = await Promise.all([
+        const [snapshot, settings, clis, codexProfiles] = await Promise.all([
           ipc.getState(),
           ipc.getSettings(),
           ipc.detectClis(),
+          // Profile discovery is optional. Codex still works with its base
+          // config when a platform cannot enumerate profiles.
+          ipc.getCodexProfiles().catch(() => []),
         ]);
         if (cancelled) return;
 
@@ -339,6 +379,7 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
           sessions: snapshot.sessions,
           settings,
           clis,
+          codexProfiles,
           openTabs: restoredTabs,
           activeId: restoredTabs[0] ?? null,
         });
@@ -391,7 +432,7 @@ export function useAnchor(): AnchorContextValue {
 
 export interface Actions {
   selectSession(id: string): void;
-  launch(tool: Tool, folderId: string): Promise<void>;
+  launch(tool: Tool, folderId: string, codexProfile?: string | null): Promise<void>;
   resume(id: string): Promise<void>;
   closeTab(id: string): Promise<void>;
   confirmCloseTab(): Promise<void>;
@@ -399,6 +440,7 @@ export interface Actions {
   stop(id: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
   renameSession(id: string, title: string): Promise<void>;
+  setCodexProfile(id: string, codexProfile: string | null): Promise<boolean>;
   addFolder(path: string): Promise<Folder | null>;
   createProject(name: string): Promise<Folder | null>;
   renameFolder(id: string, name: string): Promise<void>;
@@ -413,6 +455,7 @@ export interface Actions {
   setSettingsSection(section: SettingsSection): void;
   updateSettings(patch: Partial<Settings>): Promise<void>;
   copy(text: string, label: string): void;
+  dismissLaunchError(): void;
   toast(text: string): void;
 }
 
@@ -465,22 +508,48 @@ function makeActions(
       dispatch({ type: "OPEN_TAB", id });
       if (!already) persistTabOpen(id, true);
     },
-    async launch(tool, folderId) {
+    async launch(tool, folderId, codexProfile) {
+      dispatch({ type: "SET_LAUNCH_ERROR", error: null });
       try {
-        const session = await ipc.launchSession(folderId, tool);
+        const session = codexProfile === undefined
+          ? await ipc.launchSession(folderId, tool)
+          : await ipc.launchSession(folderId, tool, undefined, undefined, codexProfile);
+        dispatch({ type: "SET_LAUNCH_ERROR", error: null });
         dispatch({ type: "UPSERT_SESSION", session });
         dispatch({ type: "OPEN_TAB", id: session.id });
         persistTabOpen(session.id, true);
       } catch (e) {
-        showToast(shortError(e));
+        const baseError = operationError("launch", tool, e);
+        const error: LaunchError = { ...baseError, operation: "launch", folderId };
+        dispatch({ type: "SET_LAUNCH_ERROR", error });
+        showToast(error.message);
       }
     },
     async resume(id) {
+      const previous = stateRef.current.sessions.find((candidate) => candidate.id === id);
+      if (!previous) return;
+      dispatch({ type: "SET_RESUME_ERROR", id, error: null });
+      // AI CLIs can only resume their saved provider ID. Opening a provider
+      // picker here would resume an unrelated conversation and violate §1.
+      if (previous.tool !== "terminal" && !previous.cliSessionId) {
+        const error: OperationError = {
+          operation: "resume",
+          tool: previous.tool,
+          code: "SESSION_ID_UNAVAILABLE",
+          message: "This session has no saved CLI session ID.",
+          isCliNotFound: false,
+        };
+        dispatch({ type: "SET_RESUME_ERROR", id, error });
+        showToast(error.message);
+        return;
+      }
       try {
         const session = await ipc.resumeSession(id);
         dispatch({ type: "UPSERT_SESSION", session });
       } catch (e) {
-        showToast(shortError(e));
+        const error = operationError("resume", previous.tool, e);
+        dispatch({ type: "SET_RESUME_ERROR", id, error });
+        showToast(error.message);
       }
     },
     // Closing a live session kills a running CLI, so `confirmClose` guards it.
@@ -525,6 +594,17 @@ function makeActions(
         dispatch({ type: "UPSERT_SESSION", session });
       } catch (e) {
         showToast(shortError(e));
+      }
+    },
+    async setCodexProfile(id, codexProfile) {
+      try {
+        const session = await ipc.setCodexProfile(id, codexProfile);
+        dispatch({ type: "UPSERT_SESSION", session });
+        showToast(codexProfile ? `Codex profile set to ${codexProfile}` : "Codex base profile selected");
+        return true;
+      } catch (e) {
+        showToast(shortError(e));
+        return false;
       }
     },
     async addFolder(path) {
@@ -610,6 +690,9 @@ function makeActions(
       }
       showToast(label);
     },
+    dismissLaunchError() {
+      dispatch({ type: "SET_LAUNCH_ERROR", error: null });
+    },
     toast(text) {
       showToast(text);
     },
@@ -617,8 +700,22 @@ function makeActions(
 }
 
 function shortError(e: unknown): string {
-  const msg = String(e);
-  // Errors are "CODE: message"; show the human half when present.
-  const idx = msg.indexOf(": ");
-  return idx > 0 ? msg.slice(idx + 2) : msg;
+  return operationError("resume", "terminal", e).message;
+}
+
+function operationError(
+  operation: OperationError["operation"],
+  tool: Tool,
+  error: unknown,
+): OperationError {
+  const raw = String(error).replace(/^Error:\s*/, "");
+  const match = raw.match(/^([A-Z][A-Z0-9_]+):\s*(.+)$/);
+  const code = match?.[1] ?? null;
+  return {
+    operation,
+    tool,
+    code,
+    message: match?.[2] ?? raw,
+    isCliNotFound: code === "CLI_NOT_FOUND",
+  };
 }

@@ -108,6 +108,7 @@ Root data directory: **`~/.anchor/`** by default (the "Backup location" setting,
       "status": "stopped",          // persisted as stopped|<last known>; on app boot always normalized to "stopped"
       "model": "claude-sonnet-4-6|…|null",  // informational, shown in resume card; null if unknown
       "extraArgs": ["--model", "opus"],      // optional extra CLI args used at launch
+      "codexProfile": "work|…|null",          // selected Codex profile name; null = base config, always null for other tools
       "createdAt": "ISO-8601",
       "lastActiveAt": "ISO-8601",
       "wasOpenInTab": true          // for auto-restore: reopen this tab on next boot
@@ -143,6 +144,9 @@ Root data directory: **`~/.anchor/`** by default (the "Backup location" setting,
 - These safeguards cannot survive loss of the storage device. Users who need
   device-loss protection must place the configured backup directory on storage
   that is backed up independently.
+
+Registry version 1 records remain supported. They load with `codexProfile: null`
+and are rewritten as version 2 on the next registry mutation.
 
 ---
 
@@ -183,7 +187,7 @@ Each adapter answers: how to **launch**, how to **capture the CLI's session ID**
 |---|---|---|---|
 | `claude` | `claude --session-id <uuid>` (Anchor generates the UUID) | **Pre-assigned** — known before spawn | `claude --resume <uuid>` once a Claude transcript exists; otherwise `claude --session-id <uuid>` reopens the same saved empty identity, never the picker |
 | `copilot` | `copilot --resume <uuid>` (with a fresh UUID this *starts a new* session having that ID) | **Pre-assigned** | `copilot --resume <uuid>` |
-| `codex` | `codex` | **Discovered:** watch `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; a new file whose first-line JSON metadata has `cwd` == session folder and mtime ≥ launch time → extract its session UUID (in the filename and metadata) | `codex resume <uuid>` |
+| `codex` | `codex [--profile <name>]` | **Discovered:** watch `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; a new file whose first-line JSON metadata has `cwd` == session folder and mtime ≥ launch time → extract its session UUID (in the filename and metadata) | `codex [--profile <name>] resume <uuid>` |
 | `opencode` | `opencode` (run in cwd) | **Discovered:** read `~/.local/share/opencode/opencode.db` (SQLite, **read-only**, open with `immutable`/read-only flags to avoid locking): newest session row whose directory == folder path and created ≥ launch time. (macOS/Linux path shown; resolve per-platform data dir.) | `opencode --session <id>` run in cwd |
 | `terminal` | user's default shell (settings `shell`, default `$SHELL` / platform default) | n/a — persistence = scrollback file | respawn shell in cwd; if `restoreScrollback` on, prepend saved scrollback to the xterm buffer with a `── restored session · scrollback recovered (N lines) ──` divider line (see mock) |
 
@@ -193,6 +197,15 @@ Discovery rules (codex/opencode):
 - On success: write `cliSessionId` to registry immediately, emit `session:updated`.
 - Extra args: `extraArgs` from the session record are appended to launch (not resume) commands.
 - Model detection is best-effort (e.g. parse from output or store config); `model` may stay null.
+
+**Codex profiles:** Anchor discovers only the immediate `*.config.toml` filenames in
+`$CODEX_HOME` (or `~/.codex` when unset), returning names only. It never reads or
+exports profile TOML values because profiles can contain provider credentials.
+Selected names use Codex's `--profile <name>` option and persist as
+`codexProfile` on the Anchor session. A profile can change only while a Codex
+session is stopped, so the current process never changes accounts mid-session.
+Before launch or resume, the selected profile must still be present; otherwise
+return `CODEX_PROFILE_NOT_FOUND` and do not fall back to the base config.
 
 **Resume identity invariant:** every AI resume command must include the record's exact persisted `cliSessionId`. If an imported, corrupt, or undiscovered record has no ID, return `SESSION_ID_UNAVAILABLE` without spawning a process. Never launch a provider's interactive picker: manual selection can attach the Anchor record to the wrong conversation and defeats one-click resume.
 
@@ -221,6 +234,7 @@ export interface Session {
   status: Status;
   model: string | null;
   extraArgs: string[];
+  codexProfile: string | null; // selected Codex profile; null for base config and all non-Codex tools
   createdAt: string;      // ISO-8601
   lastActiveAt: string;   // ISO-8601
   wasOpenInTab: boolean;
@@ -258,8 +272,10 @@ export interface CliInfo { tool: Tool; found: boolean; version: string | null; p
 | `pick_folder` | — | `string \| null` | Opens the **OS folder picker** (Finder on macOS) via `tauri-plugin-dialog`; resolves to the chosen absolute path, or `null` if cancelled. Async + `spawn_blocking`: sync commands run on the main thread and the native dialog must be driven from there, so blocking on the main thread would deadlock. Errors: `DIALOG_FAILED`, `DIR_PATH_INVALID`. |
 | `rename_folder` | `{ folderId: string; name: string }` | `Folder` | |
 | `remove_folder` | `{ folderId: string }` | `void` | Stops + deletes all its sessions (UI shows the ack modal first). Async + `spawn_blocking`: it can wait on several PTY shutdowns. |
-| `launch_session` | `{ folderId: string; tool: Tool; title?: string; extraArgs?: string[] }` | `Session` | Creates record (persisted before spawn), spawns PTY, starts discovery. Status `running`. |
+| `launch_session` | `{ folderId: string; tool: Tool; title?: string; extraArgs?: string[]; codexProfile?: string }` | `Session` | Creates record (persisted before spawn), spawns PTY, starts discovery. Status `running`. `codexProfile` is valid only for Codex. |
 | `resume_session` | `{ sessionId: string }` | `Session` | Spawns the exact saved AI session by `cliSessionId`, or shell+scrollback for `terminal`. Missing AI IDs return `SESSION_ID_UNAVAILABLE`; provider pickers are never opened. |
+| `get_codex_profiles` | — | `string[]` | Safe profile names only; immediate `$CODEX_HOME/*.config.toml` files. Never returns profile file contents or paths. |
+| `set_codex_profile` | `{ sessionId: string; codexProfile: string \| null }` | `Session` | Persists the selected profile for future Codex launch/resume; `null` selects base config. Requires a stopped Codex session. Errors: `CODEX_PROFILE_CHANGE_REQUIRES_STOPPED`, `CODEX_PROFILE_NOT_FOUND`, `CODEX_PROFILE_INVALID`, `CODEX_PROFILE_UNSUPPORTED`. |
 | `stop_session` | `{ sessionId: string }` | `void` | Graceful kill (SIGTERM → SIGKILL after 5 s; ConPTY close on Windows). Async + `spawn_blocking` so the graceful wait never blocks the native UI thread. |
 | `delete_session` | `{ sessionId: string }` | `void` | Stops if ON; removes record + scrollback file. Async + `spawn_blocking`. |
 | `rename_session` | `{ sessionId: string; title: string }` | `Session` | |

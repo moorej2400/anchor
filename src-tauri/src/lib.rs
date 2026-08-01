@@ -150,6 +150,8 @@ pub fn run() {
             commands::remove_folder,
             commands::launch_session,
             commands::resume_session,
+            commands::get_codex_profiles,
+            commands::set_codex_profile,
             commands::stop_session,
             commands::delete_session,
             commands::rename_session,

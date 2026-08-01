@@ -27,12 +27,16 @@ const getStateMock = vi.fn();
 const getSettingsMock = vi.fn();
 const detectClisMock = vi.fn();
 const frontendReadyMock = vi.fn();
+const launchSessionMock = vi.fn();
+const resumeSessionMock = vi.fn();
 const setTabOpenMock = vi.fn();
 const stopSessionMock = vi.fn();
 const resizePtyMock = vi.fn();
 const replayOutputMock = vi.fn();
 const getScrollbackMock = vi.fn();
 const setSettingsMock = vi.fn();
+const getCodexProfilesMock = vi.fn();
+const setCodexProfileMock = vi.fn();
 
 vi.mock("../ipc/commands", () => ({
   ipc: {
@@ -40,12 +44,16 @@ vi.mock("../ipc/commands", () => ({
     getSettings: (...a: unknown[]) => getSettingsMock(...a),
     detectClis: (...a: unknown[]) => detectClisMock(...a),
     frontendReady: (...a: unknown[]) => frontendReadyMock(...a),
+    launchSession: (...a: unknown[]) => launchSessionMock(...a),
+    resumeSession: (...a: unknown[]) => resumeSessionMock(...a),
     setTabOpen: (...a: unknown[]) => setTabOpenMock(...a),
     stopSession: (...a: unknown[]) => stopSessionMock(...a),
     resizePty: (...a: unknown[]) => resizePtyMock(...a),
     replayOutput: (...a: unknown[]) => replayOutputMock(...a),
     getScrollback: (...a: unknown[]) => getScrollbackMock(...a),
     setSettings: (...a: unknown[]) => setSettingsMock(...a),
+    getCodexProfiles: (...a: unknown[]) => getCodexProfilesMock(...a),
+    setCodexProfile: (...a: unknown[]) => setCodexProfileMock(...a),
   },
 }));
 
@@ -97,6 +105,16 @@ function runningSession(id: string): Session {
     createdAt: "2026-01-01T00:00:00.000Z",
     lastActiveAt: "2026-01-01T00:00:00.000Z",
     wasOpenInTab: true,
+    codexProfile: null,
+  };
+}
+
+function stoppedAiSession(id: string, cliSessionId: string | null): Session {
+  return {
+    ...runningSession(id),
+    tool: "codex",
+    status: "stopped",
+    cliSessionId,
   };
 }
 
@@ -122,12 +140,16 @@ beforeEach(() => {
   getSettingsMock.mockImplementation(async () => ({ ...SETTINGS }));
   detectClisMock.mockImplementation(async () => []);
   frontendReadyMock.mockImplementation(async () => {});
+  launchSessionMock.mockResolvedValue(undefined);
+  resumeSessionMock.mockResolvedValue(undefined);
   setTabOpenMock.mockResolvedValue(undefined);
   stopSessionMock.mockResolvedValue(undefined);
   resizePtyMock.mockResolvedValue(undefined);
   replayOutputMock.mockResolvedValue(undefined);
   getScrollbackMock.mockResolvedValue("");
   setSettingsMock.mockImplementation(async (settings: Settings) => settings);
+  getCodexProfilesMock.mockResolvedValue([]);
+  setCodexProfileMock.mockResolvedValue(undefined);
 
   vi.stubGlobal(
     "ResizeObserver",
@@ -330,6 +352,140 @@ describe("settings exposure", () => {
     const calls = setSettingsMock.mock.calls;
     const [patch] = calls[calls.length - 1] as [Settings];
     expect(patch.notifyOnWaiting).toBe(true);
+  });
+});
+
+describe("launch and resume failures", () => {
+  async function renderStoppedAiSession(cliSessionId: string | null) {
+    getStateMock.mockImplementation(async () => ({
+      folders: [FOLDER],
+      sessions: [stoppedAiSession("codex-session", cliSessionId)],
+    }));
+    getSettingsMock.mockImplementation(async () => ({ ...SETTINGS, confirmClose: false }));
+    render(
+      <AnchorProvider>
+        <App />
+      </AnchorProvider>,
+    );
+    await screen.findByRole("button", { name: /resume session/i });
+  }
+
+  it("marks an AI session without a saved ID as unavailable and does not call resume", async () => {
+    await renderStoppedAiSession(null);
+
+    expect(screen.getByText("Unavailable", { selector: ".resume-card__grid .v" })).toBeInTheDocument();
+    expect(screen.getByText(/will not open a provider session picker/i)).toBeInTheDocument();
+    const resume = screen.getByRole("button", { name: /resume session/i });
+    expect(resume).toBeDisabled();
+
+    fireEvent.keyDown(window, { key: "Enter", metaKey: true });
+    expect(resumeSessionMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("no saved CLI session ID");
+  });
+
+  it("keeps a resume failure in the card and explains how to recover a missing CLI", async () => {
+    resumeSessionMock.mockRejectedValue("CLI_NOT_FOUND: Codex is not installed");
+    await renderStoppedAiSession("synthetic-session-id");
+
+    fireEvent.click(screen.getByRole("button", { name: /resume session/i }));
+
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveTextContent("Codex is not installed");
+    expect(error).toHaveTextContent("Install codex and ensure it is available on PATH");
+    expect(screen.getByRole("button", { name: /start fresh session in this folder/i })).toBeInTheDocument();
+  });
+
+  it("replaces the terminal pane with a retryable launch error", async () => {
+    launchSessionMock.mockRejectedValue("CLI_NOT_FOUND: Codex is not installed");
+    await renderStoppedAiSession("synthetic-session-id");
+
+    fireEvent.click(screen.getByRole("button", { name: "New session" }));
+    fireEvent.click(screen.getByRole("button", { name: /synthetic/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex$/ }));
+
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveTextContent("Could not start Codex");
+    expect(error).toHaveTextContent("Install Codex and ensure it is available on PATH");
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry launch" }));
+    await waitFor(() => expect(launchSessionMock).toHaveBeenLastCalledWith(FOLDER.id, "codex"));
+  });
+
+  it("clears a launch error when the user selects another session", async () => {
+    launchSessionMock.mockRejectedValue("CLI_NOT_FOUND: Codex is not installed");
+    getStateMock.mockImplementation(async () => ({
+      folders: [FOLDER],
+      sessions: [
+        stoppedAiSession("codex-session", "synthetic-session-id"),
+        runningSession("other-session"),
+      ],
+    }));
+    getSettingsMock.mockImplementation(async () => ({ ...SETTINGS, confirmClose: false }));
+    render(
+      <AnchorProvider>
+        <App />
+      </AnchorProvider>,
+    );
+    await screen.findByRole("button", { name: /resume session/i });
+
+    fireEvent.click(screen.getByRole("button", { name: "New session" }));
+    fireEvent.click(screen.getByRole("button", { name: /synthetic/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex$/ }));
+    await screen.findByRole("alert");
+
+    fireEvent.click(screen.getByText("other-session", { selector: ".a-tab__title" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
+describe("Codex profiles", () => {
+  const profiles = ["alpha", "beta"];
+
+  async function renderStoppedCodexProfileSession() {
+    const session = { ...stoppedAiSession("codex-session", "synthetic-session-id"), codexProfile: "alpha" };
+    getCodexProfilesMock.mockResolvedValue(profiles);
+    getStateMock.mockResolvedValue({ folders: [FOLDER], sessions: [session] });
+    getSettingsMock.mockResolvedValue({ ...SETTINGS, confirmClose: false });
+    setCodexProfileMock.mockResolvedValue({ ...session, codexProfile: "beta" });
+    render(<AnchorProvider><App /></AnchorProvider>);
+    await screen.findByRole("button", { name: /resume session/i });
+    return session;
+  }
+
+  it("lists each named Codex profile in the new-session chooser and folder quick launch", async () => {
+    const session = await renderStoppedCodexProfileSession();
+    launchSessionMock.mockResolvedValue({ ...session, id: "new-codex-session", status: "running", codexProfile: "beta" });
+
+    fireEvent.click(screen.getByRole("button", { name: "New session" }));
+    fireEvent.click(screen.getByRole("button", { name: /synthetic/i }));
+    expect(screen.getByRole("button", { name: /Codex · alpha/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Codex · beta/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Codex · beta/ }));
+    await waitFor(() => expect(launchSessionMock).toHaveBeenLastCalledWith(FOLDER.id, "codex", undefined, undefined, "beta"));
+
+    const group = screen.getByText(FOLDER.name, { selector: ".folder__name" }).closest(".folder")!;
+    fireEvent.mouseEnter(group);
+    fireEvent.click(screen.getByRole("button", { name: "Quick launch" }));
+    expect(screen.getAllByText("Codex · alpha")).toHaveLength(1);
+    expect(screen.getAllByText("Codex · beta")).toHaveLength(1);
+  });
+
+  it("sets the next-resume profile from a stopped Codex session menu", async () => {
+    await renderStoppedCodexProfileSession();
+
+    expect(screen.getByText("alpha", { selector: ".resume-card__grid .v" })).toBeInTheDocument();
+    const row = screen.getByText("codex-session", { selector: ".a-row__title" }).closest(".a-row")!;
+    fireEvent.mouseEnter(row);
+    fireEvent.click(screen.getByRole("button", { name: "More options" }));
+    fireEvent.click(screen.getByRole("button", { name: /Set Codex profile/ }));
+
+    const selector = screen.getByRole("combobox", { name: "Codex profile" });
+    expect(selector).toHaveValue("alpha");
+    fireEvent.change(selector, { target: { value: "beta" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+
+    await waitFor(() => expect(setCodexProfileMock).toHaveBeenCalledWith("codex-session", "beta"));
+    expect(screen.queryByText("Codex profile", { selector: ".dialog__title" })).not.toBeInTheDocument();
   });
 });
 

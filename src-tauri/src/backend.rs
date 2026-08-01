@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime};
 
 use chrono::Utc;
 
-use crate::adapters::{adapter_for, IdCapture, SpawnSpec};
+use crate::adapters::{adapter_for, codex, IdCapture, SpawnSpec};
 use crate::models::{AppState, CliInfo, Folder, Session, Settings, Status, Tool};
 use crate::pty::{PtyEvent, PtyManager};
 use crate::registry::Registry;
@@ -105,6 +105,8 @@ pub struct Backend {
     operations: Mutex<()>,
     #[cfg(test)]
     discovery_starts: AtomicUsize,
+    #[cfg(test)]
+    codex_profiles_root: Mutex<Option<PathBuf>>,
 }
 
 impl Backend {
@@ -136,6 +138,8 @@ impl Backend {
                 operations: Mutex::new(()),
                 #[cfg(test)]
                 discovery_starts: AtomicUsize::new(0),
+                #[cfg(test)]
+                codex_profiles_root: Mutex::new(None),
             }
         }))
     }
@@ -159,6 +163,7 @@ impl Backend {
             mutation: Mutex::new(()),
             operations: Mutex::new(()),
             discovery_starts: AtomicUsize::new(0),
+            codex_profiles_root: Mutex::new(None),
         })
     }
 
@@ -187,6 +192,7 @@ impl Backend {
                 mutation: Mutex::new(()),
                 operations: Mutex::new(()),
                 discovery_starts: AtomicUsize::new(0),
+                codex_profiles_root: Mutex::new(None),
             }
         })
     }
@@ -330,6 +336,17 @@ impl Backend {
         title: Option<String>,
         extra_args: Option<Vec<String>>,
     ) -> Result<Session, String> {
+        self.launch_session_with_profile(folder_id, tool, title, extra_args, None)
+    }
+
+    pub fn launch_session_with_profile(
+        self: &Arc<Self>,
+        folder_id: &str,
+        tool: Tool,
+        title: Option<String>,
+        extra_args: Option<Vec<String>>,
+        codex_profile: Option<String>,
+    ) -> Result<Session, String> {
         let _operation = self.operations.lock().map_err(lock_error)?;
         let (folder_path, settings) = self.folder_path_and_settings(folder_id)?;
         let now = Utc::now().to_rfc3339();
@@ -346,6 +363,7 @@ impl Backend {
             status: Status::Stopped,
             model: None,
             extra_args: extra_args.unwrap_or_default(),
+            codex_profile: self.validate_codex_profile_for_tool(tool, codex_profile)?,
             created_at: now.clone(),
             last_active_at: now,
             was_open_in_tab: true,
@@ -394,6 +412,10 @@ impl Backend {
         if self.runtime.is_live(session_id) {
             return Err("PTY_ALREADY_LIVE: session already has a live PTY".into());
         }
+        // A selected profile must not silently fall back to base config when
+        // its file was removed; that could resume the conversation as another account.
+        let _profile =
+            self.validate_codex_profile_for_tool(session.tool, session.codex_profile.clone())?;
         let folder_path = self.folder_path(&session.folder_id)?;
         let settings = self.get_settings()?;
         let adapter = adapter_for(session.tool);
@@ -414,6 +436,41 @@ impl Backend {
             return Err(error);
         }
         self.session(session_id)
+    }
+
+    pub fn codex_profiles(&self) -> Vec<String> {
+        self.available_codex_profiles()
+    }
+
+    pub fn set_codex_profile(
+        &self,
+        session_id: &str,
+        codex_profile: Option<String>,
+    ) -> Result<Session, String> {
+        let _operation = self.operations.lock().map_err(lock_error)?;
+        let _transition = self.mutation.lock().map_err(lock_error)?;
+        let mut registry = self.registry.lock().map_err(lock_error)?;
+        let index = session_index(&registry, session_id)?;
+        if registry.sessions[index].tool != Tool::Codex {
+            return Err("CODEX_PROFILE_UNSUPPORTED: only Codex sessions have a profile".into());
+        }
+        if registry.sessions[index].status != Status::Stopped || self.runtime.is_live(session_id) {
+            return Err(
+                "CODEX_PROFILE_CHANGE_REQUIRES_STOPPED: stop the Codex session before changing its profile"
+                    .into(),
+            );
+        }
+        let profile = self.validate_codex_profile_for_tool(Tool::Codex, codex_profile)?;
+        let previous = registry.sessions[index].codex_profile.clone();
+        registry.sessions[index].codex_profile = profile;
+        if let Err(error) = registry.save() {
+            registry.sessions[index].codex_profile = previous;
+            return Err(error);
+        }
+        let updated = registry.sessions[index].clone();
+        drop(registry);
+        self.events.session_updated(&updated);
+        Ok(updated)
     }
 
     pub fn stop_session(&self, session_id: &str) -> Result<(), String> {
@@ -858,6 +915,41 @@ impl Backend {
         Ok((self.folder_path(folder_id)?, self.get_settings()?))
     }
 
+    fn validate_codex_profile_for_tool(
+        &self,
+        tool: Tool,
+        profile: Option<String>,
+    ) -> Result<Option<String>, String> {
+        let Some(profile) = profile else {
+            return Ok(None);
+        };
+        if tool != Tool::Codex {
+            return Err("CODEX_PROFILE_UNSUPPORTED: only Codex sessions have a profile".into());
+        }
+        codex::validate_profile_name(&profile)?;
+        if !self
+            .available_codex_profiles()
+            .iter()
+            .any(|available| available == &profile)
+        {
+            return Err("CODEX_PROFILE_NOT_FOUND: selected Codex profile is not available".into());
+        }
+        Ok(Some(profile))
+    }
+
+    fn available_codex_profiles(&self) -> Vec<String> {
+        #[cfg(test)]
+        if let Some(root) = self
+            .codex_profiles_root
+            .lock()
+            .ok()
+            .and_then(|root| root.clone())
+        {
+            return codex::available_profiles_at(&root);
+        }
+        codex::available_profiles()
+    }
+
     fn scrollback_store(&self) -> Result<ScrollbackStore, String> {
         let settings = self.settings.lock().map_err(lock_error)?;
         Ok(ScrollbackStore::new(expand_tilde(&settings.backup_path)?))
@@ -1133,6 +1225,13 @@ fn resolve_spawn_spec_with_environment(
     // Preflight and PTY launch must use one resolved file. Passing the bare
     // command would make portable-pty perform a second PATH lookup that can
     // disagree with detection after a desktop-app restart.
+    spec.launcher_directory = executable.parent().map(Path::to_path_buf);
+    #[cfg(windows)]
+    {
+        if is_windows_batch_launcher(&executable) {
+            return wrap_windows_batch_launcher(spec, executable);
+        }
+    }
     spec.program = executable.to_string_lossy().into_owned();
     Ok(spec)
 }
@@ -1224,7 +1323,18 @@ fn is_executable(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                is_windows_supported_extension(&format!(".{}", extension.to_ascii_lowercase()))
+            })
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
@@ -1232,22 +1342,123 @@ fn is_executable(path: &Path) -> bool {
 fn executable_candidates(directory: &Path, program: &str) -> Vec<PathBuf> {
     #[cfg(windows)]
     {
-        let extensions = std::env::var_os("PATHEXT")
-            .map(|value| value.to_string_lossy().into_owned())
-            .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
-        let mut candidates = vec![directory.join(program)];
-        candidates.extend(
-            extensions
-                .split(';')
-                .filter(|extension| !extension.is_empty())
-                .map(|extension| directory.join(format!("{program}{extension}"))),
-        );
-        candidates
+        windows_executable_candidates(directory, program, &windows_executable_extensions())
     }
     #[cfg(not(windows))]
     {
         vec![directory.join(program)]
     }
+}
+
+#[cfg(windows)]
+fn windows_executable_extensions() -> Vec<String> {
+    let mut extensions = std::env::var_os("PATHEXT")
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into())
+        .split(';')
+        .map(str::trim)
+        .filter_map(normalize_windows_executable_extension)
+        .filter(|extension| is_windows_supported_extension(extension))
+        .collect::<Vec<_>>();
+    for extension in [".com", ".exe", ".bat", ".cmd"] {
+        if !extensions.iter().any(|candidate| candidate == extension) {
+            extensions.push(extension.into());
+        }
+    }
+    extensions
+}
+
+#[cfg(windows)]
+fn normalize_windows_executable_extension(extension: &str) -> Option<String> {
+    let extension = extension.trim();
+    let extension = extension.strip_prefix('.').unwrap_or(extension);
+    (!extension.is_empty()).then(|| format!(".{}", extension.to_ascii_lowercase()))
+}
+
+#[cfg(windows)]
+fn is_windows_supported_extension(extension: &str) -> bool {
+    matches!(extension, ".com" | ".exe" | ".bat" | ".cmd")
+}
+
+#[cfg(windows)]
+fn windows_executable_candidates(
+    directory: &Path,
+    program: &str,
+    extensions: &[String],
+) -> Vec<PathBuf> {
+    let program_path = Path::new(program);
+    if program_path.extension().is_some() {
+        return vec![directory.join(program_path)];
+    }
+
+    // npm installs an extensionless POSIX shell shim beside `tool.cmd`.
+    // CreateProcessW cannot execute that shim, so Windows must search only
+    // PATHEXT candidates instead of accepting the first regular file.
+    extensions
+        .iter()
+        .map(|extension| directory.join(format!("{program}{extension}")))
+        .collect()
+}
+
+#[cfg(windows)]
+fn is_windows_batch_launcher(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+        })
+}
+
+#[cfg(windows)]
+fn wrap_windows_batch_launcher(
+    mut spec: SpawnSpec,
+    launcher: PathBuf,
+) -> Result<SpawnSpec, String> {
+    validate_windows_cmd_argument(&launcher.to_string_lossy())?;
+    for argument in &spec.args {
+        validate_windows_cmd_argument(argument)?;
+    }
+
+    let mut args = vec!["/d".into(), "/v:off".into(), "/c".into(), "call".into()];
+    args.push(launcher.to_string_lossy().into_owned());
+    args.extend(spec.args);
+    // `.cmd` and `.bat` files require the command processor; passing either
+    // file directly to ConPTY reaches CreateProcessW, which only starts native
+    // executables. Keep the shim path as the child PATH prefix for its runtime.
+    spec.program = command_processor().to_string_lossy().into_owned();
+    spec.args = args;
+    Ok(spec)
+}
+
+#[cfg(windows)]
+fn validate_windows_cmd_argument(argument: &str) -> Result<(), String> {
+    // `cmd.exe /c` parses the rest of its command line itself. Reject syntax
+    // characters rather than letting imported IDs or extra arguments become
+    // command text; normal CLI flags, UUIDs, model names, and paths still work.
+    if argument.chars().any(|character| {
+        matches!(
+            character,
+            '\0' | '\r' | '\n' | '"' | '&' | '|' | '<' | '>' | '(' | ')' | '^' | '%' | '!'
+        )
+    }) {
+        Err("CLI_ARGUMENT_UNSUPPORTED: Windows batch launch arguments contain command control characters".into())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn command_processor() -> PathBuf {
+    std::env::var_os("ComSpec")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            std::env::var_os("SystemRoot")
+                .map(PathBuf::from)
+                .map(|root| root.join("System32").join("cmd.exe"))
+                .filter(|path| path.is_file())
+        })
+        .unwrap_or_else(|| PathBuf::from("cmd.exe"))
 }
 
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
@@ -1414,6 +1625,12 @@ mod tests {
     }
 
     fn harness() -> (tempfile::TempDir, Arc<Backend>, Arc<FakeRuntime>) {
+        harness_with_events(Arc::new(NoopEvents))
+    }
+
+    fn harness_with_events(
+        events: Arc<dyn BackendEvents>,
+    ) -> (tempfile::TempDir, Arc<Backend>, Arc<FakeRuntime>) {
         let root = tempdir().unwrap();
         let backup = root.path().join("backup");
         let settings_path = root.path().join("config/settings.json");
@@ -1429,13 +1646,7 @@ mod tests {
         let registry = Registry::empty(&backup);
         let runtime = Arc::new(FakeRuntime::default());
         *runtime.registry_path.lock().unwrap() = Some(backup.join("registry.json"));
-        let backend = Backend::for_test(
-            store,
-            settings,
-            registry,
-            runtime.clone(),
-            Arc::new(NoopEvents),
-        );
+        let backend = Backend::for_test(store, settings, registry, runtime.clone(), events);
         (root, backend, runtime)
     }
 
@@ -1583,6 +1794,7 @@ mod tests {
             status: Status::Stopped,
             model: None,
             extra_args: Vec::new(),
+            codex_profile: None,
             created_at: Utc::now().to_rfc3339(),
             last_active_at: Utc::now().to_rfc3339(),
             was_open_in_tab: true,
@@ -1834,6 +2046,138 @@ mod tests {
         assert_eq!(resolved.args, vec!["resume", "synthetic-session-id"]);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_resolution_skips_npm_posix_shim_and_prefers_pathext_candidates() {
+        let root = tempdir().unwrap();
+        let bin = root.path().join("npm-bin");
+        fs::create_dir(&bin).unwrap();
+        let posix_shim = bin.join("codex");
+        let batch_shim = bin.join("codex.cmd");
+        fs::write(&posix_shim, b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::write(&batch_shim, b"@echo off\r\n").unwrap();
+
+        assert_eq!(
+            find_executable_with_environment("codex", Some(bin.as_os_str()), None),
+            Some(batch_shim.clone())
+        );
+        assert_eq!(
+            find_executable_with_environment(posix_shim.to_str().unwrap(), None, None),
+            None,
+            "an explicitly configured extensionless shim is not executable on Windows"
+        );
+        let info = detect_cli(Tool::Codex, "codex", Some(bin.as_os_str()), None);
+        assert!(info.found);
+        assert_eq!(info.path.as_deref(), batch_shim.to_str());
+        assert_eq!(
+            windows_executable_candidates(&bin, "codex", &[".exe".into(), ".cmd".into()]),
+            vec![bin.join("codex.exe"), batch_shim]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_batch_shim_runs_through_conpty_and_keeps_sibling_runtime_on_path() {
+        use std::sync::mpsc;
+
+        let root = tempdir().unwrap();
+        let bin = root.path().join("npm bin with spaces");
+        fs::create_dir(&bin).unwrap();
+        fs::write(bin.join("codex"), b"#!/bin/sh\nexit 0\n").unwrap();
+        let launcher = bin.join("codex.cmd");
+        fs::write(
+            &launcher,
+            b"@echo off\r\ncall synthetic-runtime.cmd %*\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+        fs::write(
+            bin.join("synthetic-runtime.cmd"),
+            b"@echo off\r\necho SIBLING_RUNTIME_ARGS=%*\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+
+        let spec = resolve_spawn_spec_with_environment(
+            Tool::Codex,
+            SpawnSpec::new("codex", ["resume", "synthetic-session-id"], root.path()),
+            Some(bin.as_os_str()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(Path::new(&spec.program), command_processor());
+        assert_eq!(
+            spec.args,
+            vec![
+                "/d".into(),
+                "/v:off".into(),
+                "/c".into(),
+                "call".into(),
+                launcher.to_string_lossy().into_owned(),
+                "resume".into(),
+                "synthetic-session-id".into(),
+            ]
+        );
+        assert_eq!(spec.launcher_directory.as_deref(), Some(bin.as_path()));
+
+        let (sender, receiver) = mpsc::channel();
+        let manager = PtyManager::with_callback(move |event| {
+            let _ = sender.send(event);
+        });
+        let mut settings = Settings::default();
+        settings.env_vars = vec![crate::models::EnvVar {
+            key: "PATH".into(),
+            value: std::env::var("SystemRoot")
+                .map(|root| format!("{root}\\System32"))
+                .unwrap_or_default(),
+        }];
+        manager
+            .spawn("windows-npm-shim", spec, 80, 24, &settings)
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut output = String::new();
+        let mut events = Vec::new();
+        let mut answered_cursor_position_request = false;
+        while Instant::now() < deadline {
+            if let Ok(event) = receiver.recv_timeout(Duration::from_millis(100)) {
+                events.push(format!("{event:?}"));
+                if let PtyEvent::Output { data, .. } = event {
+                    output.push_str(&data);
+                    // ConPTY starts cmd.exe by asking the terminal emulator for
+                    // its cursor position. In production xterm answers this;
+                    // the direct PTY test must provide the same response.
+                    if !answered_cursor_position_request && data.contains("\x1b[6n") {
+                        manager.write("windows-npm-shim", b"\x1b[1;1R").unwrap();
+                        answered_cursor_position_request = true;
+                    }
+                    if output.contains("SIBLING_RUNTIME_ARGS=resume synthetic-session-id") {
+                        return;
+                    }
+                }
+            }
+        }
+        panic!(
+            "batch shim did not run with its sibling runtime on PATH: {output}; events: {events:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_batch_shim_rejects_command_control_characters_in_session_arguments() {
+        let root = tempdir().unwrap();
+        let bin = root.path().join("npm-bin");
+        fs::create_dir(&bin).unwrap();
+        fs::write(bin.join("codex.cmd"), b"@echo off\r\n").unwrap();
+
+        let error = resolve_spawn_spec_with_environment(
+            Tool::Codex,
+            SpawnSpec::new("codex", ["resume", "saved-id&whoami"], root.path()),
+            Some(bin.as_os_str()),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.starts_with("CLI_ARGUMENT_UNSUPPORTED:"));
+    }
+
     #[test]
     fn pty_status_and_discovered_identity_are_synchronously_persisted() {
         let (root, backend, _) = harness();
@@ -1872,6 +2216,64 @@ mod tests {
             persisted.cli_session_id.as_deref(),
             Some("synthetic-cli-id")
         );
+    }
+
+    #[test]
+    fn codex_profile_changes_require_a_stopped_session_and_missing_profile_blocks_resume() {
+        let events = Arc::new(TestEvents::default());
+        let (root, backend, runtime) = harness_with_events(events.clone());
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let profiles = root.path().join("profiles");
+        fs::create_dir(&profiles).unwrap();
+        fs::write(profiles.join("synthetic-profile.config.toml"), "synthetic").unwrap();
+        *backend.codex_profiles_root.lock().unwrap() = Some(profiles);
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let session = backend
+            .launch_session(&folder.id, Tool::Codex, None, None)
+            .unwrap();
+
+        let error = backend.set_codex_profile(&session.id, None).unwrap_err();
+        assert!(error.starts_with("CODEX_PROFILE_CHANGE_REQUIRES_STOPPED:"));
+        backend.stop_session(&session.id).unwrap();
+        backend.handle_pty_event(PtyEvent::Status {
+            session_id: session.id.clone(),
+            status: Status::Stopped,
+            exit_code: Some(0),
+        });
+        assert_eq!(
+            backend
+                .set_codex_profile(&session.id, Some("synthetic-profile".into()))
+                .unwrap()
+                .codex_profile,
+            Some("synthetic-profile".into())
+        );
+        let raw: serde_json::Value = serde_json::from_slice(
+            &fs::read(backend.registry.lock().unwrap().registry_path()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(raw["sessions"][0]["codexProfile"], "synthetic-profile");
+        assert_eq!(
+            events.updated.lock().unwrap().last().unwrap().codex_profile,
+            Some("synthetic-profile".into())
+        );
+
+        {
+            let mut registry = backend.registry.lock().unwrap();
+            let stored = registry
+                .sessions
+                .iter_mut()
+                .find(|stored| stored.id == session.id)
+                .unwrap();
+            stored.cli_session_id = Some("synthetic-cli-id".into());
+            stored.codex_profile = Some("synthetic-missing-profile".into());
+            registry.save().unwrap();
+        }
+        let error = backend.resume_session(&session.id).unwrap_err();
+        assert!(error.starts_with("CODEX_PROFILE_NOT_FOUND:"));
+        assert!(runtime.spawns.lock().unwrap().len() == 1);
     }
 
     #[test]
@@ -1962,6 +2364,7 @@ mod tests {
             status: Status::Stopped,
             model: None,
             extra_args: Vec::new(),
+            codex_profile: None,
             created_at: Utc::now().to_rfc3339(),
             last_active_at: Utc::now().to_rfc3339(),
             was_open_in_tab: false,
@@ -2313,6 +2716,7 @@ mod tests {
             status: Status::Stopped,
             model: None,
             extra_args: Vec::new(),
+            codex_profile: None,
             created_at: Utc::now().to_rfc3339(),
             last_active_at: Utc::now().to_rfc3339(),
             was_open_in_tab: false,

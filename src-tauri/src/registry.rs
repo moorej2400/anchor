@@ -16,8 +16,9 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 
+use crate::adapters::codex::validate_profile_name;
 use crate::durable_file::{atomic_write, atomic_write_with_directory_sync, sha256_hex};
-use crate::models::{AppState, Folder, Session, Status};
+use crate::models::{AppState, Folder, Session, Status, Tool};
 
 const REGISTRY_VERSION: u32 = 2;
 const OLDEST_SUPPORTED_REGISTRY_VERSION: u32 = 1;
@@ -425,6 +426,15 @@ fn validate_and_normalize_records(
         if !known_folder_ids.contains(&session.folder_id) {
             return Err("REGISTRY_INVALID: session references an unknown folder".into());
         }
+        match (&session.tool, &session.codex_profile) {
+            (Tool::Codex, Some(profile)) => validate_profile_name(profile)
+                .map_err(|_| "REGISTRY_INVALID: Codex profile name is not supported".to_string())?,
+            (Tool::Codex, None) => {}
+            (_, Some(_)) => {
+                return Err("REGISTRY_INVALID: only Codex sessions may have a profile".into())
+            }
+            (_, None) => {}
+        }
     }
     Ok(())
 }
@@ -512,6 +522,7 @@ mod tests {
             status,
             model: None,
             extra_args: vec!["--synthetic".into()],
+            codex_profile: None,
             created_at: "2026-01-02T03:04:05Z".into(),
             last_active_at: "2026-01-02T04:05:06Z".into(),
             was_open_in_tab: true,
@@ -718,7 +729,38 @@ mod tests {
 
         assert_eq!(json["version"], 2);
         assert_eq!(json["sessions"][0]["folderId"], FOLDER_ONE);
+        assert!(json["sessions"][0]["codexProfile"].is_null());
         assert_eq!(loaded.snapshot(), registry.snapshot());
+    }
+
+    #[test]
+    fn version_one_without_profile_loads_as_base_config_and_upgrades_on_save() {
+        let root = tempdir().unwrap();
+        let legacy = serde_json::json!({
+            "version": 1,
+            "folders": [folder(FOLDER_ONE, "alpha")],
+            "sessions": [session(SESSION_ONE, FOLDER_ONE, Status::Stopped)],
+        });
+        let mut legacy = legacy;
+        legacy["sessions"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("codexProfile");
+        std::fs::write(
+            root.path().join("registry.json"),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let registry = Registry::load_from_backup_path(root.path()).unwrap();
+        assert_eq!(registry.sessions[0].codex_profile, None);
+        registry.save().unwrap();
+
+        let upgraded: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.path().join("registry.json")).unwrap())
+                .unwrap();
+        assert_eq!(upgraded["version"], 2);
+        assert!(upgraded["sessions"][0]["codexProfile"].is_null());
     }
 
     #[test]
@@ -917,6 +959,30 @@ mod tests {
         ];
 
         for file in invalid_files {
+            std::fs::write(
+                root.path().join("registry.json"),
+                serde_json::to_vec(&file).unwrap(),
+            )
+            .unwrap();
+            assert!(Registry::load_from_backup_path(root.path()).is_err());
+        }
+    }
+
+    #[test]
+    fn registry_rejects_profiles_for_other_tools_and_unsafe_codex_names() {
+        let root = tempdir().unwrap();
+        let mut non_codex = session(SESSION_ONE, FOLDER_ONE, Status::Stopped);
+        non_codex.tool = Tool::Terminal;
+        non_codex.codex_profile = Some("synthetic-profile".into());
+        let mut unsafe_codex = session(SESSION_TWO, FOLDER_ONE, Status::Stopped);
+        unsafe_codex.codex_profile = Some("unsafe&profile".into());
+
+        for session in [non_codex, unsafe_codex] {
+            let file = RegistryFile {
+                version: REGISTRY_VERSION,
+                folders: vec![folder(FOLDER_ONE, "alpha")],
+                sessions: vec![session],
+            };
             std::fs::write(
                 root.path().join("registry.json"),
                 serde_json::to_vec(&file).unwrap(),

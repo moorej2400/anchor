@@ -32,7 +32,8 @@ export const ipc = {
     tool: Tool,
     title?: string,
     extraArgs?: string[],
-  ) => call<Session>("launch_session", { folderId, tool, title, extraArgs }),
+    codexProfile?: string | null,
+  ) => call<Session>("launch_session", { folderId, tool, title, extraArgs, codexProfile }),
   resumeSession: (sessionId: string) =>
     call<Session>("resume_session", { sessionId }),
   stopSession: (sessionId: string) => call<void>("stop_session", { sessionId }),
@@ -40,6 +41,9 @@ export const ipc = {
     call<void>("delete_session", { sessionId }),
   renameSession: (sessionId: string, title: string) =>
     call<Session>("rename_session", { sessionId, title }),
+  /** Persists the profile that a Codex record will use when it next starts. */
+  setCodexProfile: (sessionId: string, codexProfile: string | null) =>
+    call<Session>("set_codex_profile", { sessionId, codexProfile }),
   setTabOpen: (sessionId: string, open: boolean) =>
     call<void>("set_tab_open", { sessionId, open }),
 
@@ -57,6 +61,8 @@ export const ipc = {
     call<Settings>("set_settings", { settings }),
 
   detectClis: () => call<CliInfo[]>("detect_clis"),
+  /** Returns profile names only; profile directories remain core-owned. */
+  getCodexProfiles: () => call<string[]>("get_codex_profiles"),
   exportSessions: (toPath: string) => call<void>("export_sessions", { toPath }),
   importSessions: (fromPath: string) =>
     call<AppState>("import_sessions", { fromPath }),

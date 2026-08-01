@@ -20,6 +20,9 @@ pub struct SpawnSpec {
     pub program: String,
     pub args: Vec<String>,
     pub cwd: PathBuf,
+    /// Directory of the resolved CLI launcher. This differs from `program`
+    /// when Windows runs a `.cmd` shim through `cmd.exe`.
+    pub launcher_directory: Option<PathBuf>,
 }
 
 impl SpawnSpec {
@@ -32,6 +35,7 @@ impl SpawnSpec {
             program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
             cwd: cwd.into(),
+            launcher_directory: None,
         }
     }
 }
@@ -128,9 +132,12 @@ pub(crate) fn validate_extra_args(tool: Tool, args: &[String]) -> Result<(), Str
             has_flag(option_args, &["--session", "-s"])
                 || has_attached_short_value(option_args, &["-s"])
         }
-        Tool::Codex => option_args
-            .iter()
-            .any(|arg| matches!(arg.as_str(), "resume" | "fork")),
+        Tool::Codex => {
+            option_args.iter().any(|arg| {
+                matches!(arg.as_str(), "resume" | "fork" | "--profile" | "-p")
+                    || arg.starts_with("--profile=")
+            }) || has_attached_short_value(option_args, &["-p"])
+        }
         Tool::Terminal => false,
     };
     if changes_identity {

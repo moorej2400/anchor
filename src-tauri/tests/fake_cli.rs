@@ -67,6 +67,7 @@ fn session() -> Session {
         status: Status::Stopped,
         model: None,
         extra_args: Vec::new(),
+        codex_profile: None,
         created_at: "2026-07-21T12:00:00Z".into(),
         last_active_at: "2026-07-21T12:00:00Z".into(),
         was_open_in_tab: false,

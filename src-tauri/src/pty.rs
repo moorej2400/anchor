@@ -317,7 +317,10 @@ fn child_search_path(spec: &SpawnSpec, settings: &Settings) -> Option<OsString> 
         .find(|env| is_path_key(&env.key))
         .map(|env| OsString::from(&env.value))
         .or_else(|| std::env::var_os("PATH"));
-    let executable_directory = Path::new(&spec.program).parent()?;
+    let executable_directory = spec
+        .launcher_directory
+        .as_deref()
+        .or_else(|| Path::new(&spec.program).parent())?;
     let mut directories = configured
         .as_deref()
         .map(std::env::split_paths)
@@ -328,9 +331,9 @@ fn child_search_path(spec: &SpawnSpec, settings: &Settings) -> Option<OsString> 
         .iter()
         .any(|directory| directory == executable_directory)
     {
-        // Script-based CLIs commonly use `/usr/bin/env node`; keeping the
-        // resolved launcher's directory on PATH also exposes its matching
-        // interpreter when a desktop app inherited only a system PATH.
+        // Script-based CLIs commonly use a sibling runtime. Keep the resolved
+        // launcher directory on PATH even when Windows dispatches a `.cmd` shim
+        // through `cmd.exe`, whose directory is unrelated to that runtime.
         directories.insert(0, executable_directory.to_path_buf());
     }
     std::env::join_paths(directories).ok()

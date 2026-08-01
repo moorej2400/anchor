@@ -24,9 +24,10 @@ import { LAUNCHABLE, toolName } from "../app/display";
 
 interface SidebarProps {
   onRemoveFolder: (folder: Folder) => void;
+  onSetCodexProfile: (sessionId: string) => void;
 }
 
-export function Sidebar({ onRemoveFolder }: SidebarProps) {
+export function Sidebar({ onRemoveFolder, onSetCodexProfile }: SidebarProps) {
   const { state, actions } = useAnchor();
   // Selecting a tab changes `activeId` only. Without memoizing, every selection
   // would re-filter and re-sort every session before the terminal can paint.
@@ -86,6 +87,7 @@ export function Sidebar({ onRemoveFolder }: SidebarProps) {
             setUi={setUi}
             onToggle={() => setCollapsed((c) => ({ ...c, [folder.id]: !c[folder.id] }))}
             onRemoveFolder={onRemoveFolder}
+            onSetCodexProfile={onSetCodexProfile}
           />
         ))}
       </div>
@@ -135,9 +137,10 @@ function FolderGroup(props: {
   }>>;
   onToggle: () => void;
   onRemoveFolder: (folder: Folder) => void;
+  onSetCodexProfile: (sessionId: string) => void;
 }) {
-  const { folder, activeId, collapsed, ui, setUi, onToggle, onRemoveFolder } = props;
-  const { actions } = useAnchor();
+  const { folder, activeId, collapsed, ui, setUi, onToggle, onRemoveFolder, onSetCodexProfile } = props;
+  const { state, actions } = useAnchor();
   const [hover, setHover] = useState(false);
   const [renameDraft, setRenameDraft] = useState(folder.name);
   const renameRef = useRef<HTMLInputElement>(null);
@@ -221,17 +224,30 @@ function FolderGroup(props: {
         {ui.folderMenu === folder.id && (
           <Menu width={236} style={{ top: 30, right: 6 }}>
             <MenuLabel>Launch in {folder.name}</MenuLabel>
-            {LAUNCHABLE.map((tool) => (
-              <div key={tool}>
-                {tool === "terminal" && <MenuDivider />}
-                <MenuItem
-                  icon={<Badge tool={tool} />}
-                  onClick={() => { setUi((u) => ({ ...u, folderMenu: null })); void actions.launch(tool, folder.id); }}
-                >
-                  {tool === "terminal" ? "Generic terminal" : toolName(tool)}
-                </MenuItem>
-              </div>
-            ))}
+            {LAUNCHABLE.map((tool) => {
+              if (tool === "codex" && state.codexProfiles.length > 1) {
+                return state.codexProfiles.map((profile) => (
+                  <MenuItem
+                    key={`${tool}-${profile}`}
+                    icon={<Badge tool={tool} />}
+                    onClick={() => { setUi((u) => ({ ...u, folderMenu: null })); void actions.launch(tool, folder.id, profile); }}
+                  >
+                    {toolName(tool)} · {profile}
+                  </MenuItem>
+                ));
+              }
+              return (
+                <div key={tool}>
+                  {tool === "terminal" && <MenuDivider />}
+                  <MenuItem
+                    icon={<Badge tool={tool} />}
+                    onClick={() => { setUi((u) => ({ ...u, folderMenu: null })); void actions.launch(tool, folder.id); }}
+                  >
+                    {tool === "terminal" ? "Generic terminal" : toolName(tool)}
+                  </MenuItem>
+                </div>
+              );
+            })}
           </Menu>
         )}
       </div>
@@ -246,6 +262,7 @@ function FolderGroup(props: {
               active={session.id === activeId}
               ui={ui}
               setUi={setUi}
+              onSetCodexProfile={onSetCodexProfile}
             />
           ))}
         </div>
@@ -259,9 +276,10 @@ function SessionRow(props: {
   active: boolean;
   ui: Ui;
   setUi: SetUi;
+  onSetCodexProfile: (sessionId: string) => void;
 }) {
-  const { session, active, ui, setUi } = props;
-  const { actions } = useAnchor();
+  const { session, active, ui, setUi, onSetCodexProfile } = props;
+  const { state, actions } = useAnchor();
   const [hover, setHover] = useState(false);
   const [renameDraft, setRenameDraft] = useState(session.title);
   const renameRef = useRef<HTMLInputElement>(null);
@@ -339,6 +357,12 @@ function SessionRow(props: {
         <Menu width={194} style={{ top: 33, right: 6 }}>
           <MenuItem icon="✎" onClick={() => setUi((u) => ({ ...u, sessionRename: session.id, sessionMenu: null }))}>Rename session</MenuItem>
           <MenuItem icon="⧉" onClick={() => { if (session.cliSessionId) actions.copy(session.cliSessionId, "Session ID copied"); setUi((u) => ({ ...u, sessionMenu: null })); }}>Copy session ID</MenuItem>
+          {session.tool === "codex" && session.status === "stopped" && (
+            state.codexProfiles.length > 1
+            || Boolean(session.codexProfile && !state.codexProfiles.includes(session.codexProfile))
+          ) && (
+            <MenuItem icon="⚙" onClick={() => { setUi((u) => ({ ...u, sessionMenu: null })); onSetCodexProfile(session.id); }}>Set Codex profile</MenuItem>
+          )}
         </Menu>
       )}
     </SidebarRow>

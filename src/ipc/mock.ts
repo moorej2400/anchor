@@ -44,6 +44,7 @@ function mk(
     createdAt: now(),
     lastActiveAt: now(),
     wasOpenInTab: status !== "stopped",
+    codexProfile: null,
   };
 }
 
@@ -51,7 +52,7 @@ const sessions: Session[] = [
   mk("w-claude", "f1", "claude", "refactor auth middleware", "running", "a3f9-7c21-e004", "claude-sonnet-4-6"),
   mk("w-copilot", "f1", "copilot", "revert last 3 commits", "running", "b1d0-4487-9aa2", "gpt-5"),
   mk("w-term", "f1", "terminal", "vite dev · :5173", "stopped", "tty-0091", "/bin/zsh"),
-  mk("api-codex", "f2", "codex", "fix checkout.spec timers", "waiting", "c8e2-1120-77af", "gpt-5-codex"),
+  { ...mk("api-codex", "f2", "codex", "fix checkout.spec timers", "waiting", "c8e2-1120-77af", "gpt-5-codex"), codexProfile: "work" },
   mk("api-claude", "f2", "claude", "add /sessions pagination", "stopped", "d4a1-9931-0b6c", "claude-sonnet-4-6"),
   mk("api-oc", "f2", "opencode", "stripe webhook retries", "stopped", "e7f3-5540-2c19", "anthropic/claude-4-6"),
   mk("m-copilot", "f3", "copilot", "expo build errors", "stopped", "f0b8-3372-84de", "gpt-5"),
@@ -169,10 +170,14 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
           path: `/mock/bin/${tool}`,
         })) as CliInfo[] as T,
       );
+    case "get_codex_profiles":
+      // Names are deliberately generic public fixture data, never local account details.
+      return Promise.resolve(["work", "personal"] as T);
     case "launch_session": {
       const tool = a.tool as Tool;
       const id = `n${(seq += 1)}`;
       const s = mk(id, a.folderId as string, tool, `new ${tool} session`, "running", tool === "terminal" ? `tty-${id}` : genId(), MODEL_FOR[tool]);
+      s.codexProfile = tool === "codex" ? (a.codexProfile as string | null | undefined) ?? null : null;
       sessions.push(s);
       goRunning(s);
       return Promise.resolve({ ...s } as T);
@@ -201,6 +206,17 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
       const s = find(a.sessionId as string);
       if (!s) return Promise.reject("SESSION_NOT_FOUND: unknown id");
       s.title = (a.title as string) || "untitled";
+      return Promise.resolve({ ...s } as T);
+    }
+    case "set_codex_profile": {
+      const s = find(a.sessionId as string);
+      if (!s) return Promise.reject("SESSION_NOT_FOUND: unknown id");
+      if (s.tool !== "codex") return Promise.reject("CODEX_PROFILE_UNSUPPORTED: only Codex sessions have profiles");
+      const profile = (a.codexProfile as string | null | undefined) ?? null;
+      if (profile !== null && !["work", "personal"].includes(profile)) {
+        return Promise.reject("CODEX_PROFILE_UNAVAILABLE: profile is no longer available");
+      }
+      s.codexProfile = profile;
       return Promise.resolve({ ...s } as T);
     }
     case "set_tab_open": {

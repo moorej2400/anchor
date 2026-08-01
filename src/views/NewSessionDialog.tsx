@@ -24,7 +24,7 @@ type Step = "folder" | "create" | "tool";
 
 export function NewSessionDialog() {
   const { state, actions } = useAnchor();
-  const { newSessionOpen, folders, sessions, settings } = state;
+  const { newSessionOpen, folders, sessions, settings, codexProfiles } = state;
 
   const [step, setStep] = useState<Step>("folder");
   const [folder, setFolder] = useState<Folder | null>(null);
@@ -97,10 +97,10 @@ export function NewSessionDialog() {
     if (next) useFolder(next);
   };
 
-  const launch = (tool: Tool) => {
+  const launch = (tool: Tool, codexProfile?: string) => {
     if (!folder) return;
     close();
-    void actions.launch(tool, folder.id);
+    void actions.launch(tool, folder.id, codexProfile);
   };
 
   return (
@@ -214,15 +214,28 @@ export function NewSessionDialog() {
             </div>
           </div>
           <div className="dialog__body">
-            {LAUNCHABLE.map((tool) => (
-              <div key={tool}>
-                {tool === "terminal" && <div className="a-menu__divider" style={{ margin: "6px 7px" }} />}
-                <button className="tool-item" onClick={() => launch(tool)}>
-                  <Badge tool={tool} style={{ width: 26, height: 26, borderRadius: 7, fontSize: 11 }} />
-                  {tool === "terminal" ? "Generic terminal" : toolName(tool)}
-                </button>
-              </div>
-            ))}
+            {LAUNCHABLE.map((tool) => {
+              if (tool === "codex" && codexProfiles.length > 1) {
+                // Separate choices avoid relying on an invisible default when
+                // the machine has more than one named Codex configuration.
+                return codexProfiles.map((profile) => (
+                  <button key={`${tool}-${profile}`} className="tool-item" onClick={() => launch(tool, profile)}>
+                    <Badge tool={tool} style={{ width: 26, height: 26, borderRadius: 7, fontSize: 11 }} />
+                    <span style={{ flex: 1 }}>{toolName(tool)} · {profile}</span>
+                    <span className="tool-item__meta">profile</span>
+                  </button>
+                ));
+              }
+              return (
+                <div key={tool}>
+                  {tool === "terminal" && <div className="a-menu__divider" style={{ margin: "6px 7px" }} />}
+                  <button className="tool-item" onClick={() => launch(tool)}>
+                    <Badge tool={tool} style={{ width: 26, height: 26, borderRadius: 7, fontSize: 11 }} />
+                    {tool === "terminal" ? "Generic terminal" : toolName(tool)}
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </>
       )}

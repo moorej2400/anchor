@@ -1,5 +1,5 @@
 //! Codex adapter (SPEC.md §5).
-//! Launch: `codex` (no pre-assign flag → Discover).
+//! Launch: `codex [--profile <name>]` (no pre-assign flag → Discover).
 //! Discovery: watch `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` for a new
 //! file (mtime ≥ launch) whose first-line JSON metadata `cwd` matches the
 //! session's folder; extract the session UUID. Parsing failures = pending,
@@ -25,7 +25,7 @@ pub struct CodexAdapter {
 impl Default for CodexAdapter {
     fn default() -> Self {
         Self {
-            sessions_root: dirs::home_dir().map(|home| home.join(".codex/sessions")),
+            sessions_root: codex_home().map(|home| home.join("sessions")),
         }
     }
 }
@@ -53,6 +53,58 @@ impl CodexAdapter {
     }
 }
 
+/// Return profile names only. Profile TOML values can contain provider
+/// credentials, so Anchor never opens or serializes profile file contents.
+pub fn available_profiles() -> Vec<String> {
+    codex_home().map_or_else(Vec::new, |root| available_profiles_at(&root))
+}
+
+pub(crate) fn available_profiles_at(root: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+
+    let mut profiles = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            entry
+                .file_type()
+                .ok()
+                .filter(|kind| kind.is_file())
+                .and_then(|_| profile_name_from_path(&entry.path()))
+        })
+        .collect::<Vec<_>>();
+    profiles.sort_unstable();
+    profiles.dedup();
+    profiles
+}
+
+pub(crate) fn validate_profile_name(profile: &str) -> Result<(), String> {
+    if !is_valid_profile_name(profile) {
+        return Err("CODEX_PROFILE_INVALID: profile name is not supported".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+}
+
+fn profile_name_from_path(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?.strip_suffix(".config.toml")?;
+    is_valid_profile_name(name).then(|| name.to_owned())
+}
+
+fn is_valid_profile_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
 impl Adapter for CodexAdapter {
     fn tool(&self) -> Tool {
         Tool::Codex
@@ -65,10 +117,15 @@ impl Adapter for CodexAdapter {
         _settings: &Settings,
     ) -> Result<(SpawnSpec, IdCapture), String> {
         validate_extra_args(Tool::Codex, &session.extra_args)?;
-        Ok((
-            SpawnSpec::new("codex", session.extra_args.clone(), cwd),
-            IdCapture::Discover,
-        ))
+        if let Some(profile) = &session.codex_profile {
+            validate_profile_name(profile)?;
+        }
+        let mut args = Vec::new();
+        if let Some(profile) = &session.codex_profile {
+            args.extend(["--profile".to_owned(), profile.clone()]);
+        }
+        args.extend(session.extra_args.clone());
+        Ok((SpawnSpec::new("codex", args, cwd), IdCapture::Discover))
     }
 
     fn resume(
@@ -78,7 +135,15 @@ impl Adapter for CodexAdapter {
         _settings: &Settings,
     ) -> Result<SpawnSpec, String> {
         let id = session_id_for_resume(session, Tool::Codex)?;
-        Ok(SpawnSpec::new("codex", ["resume", id], cwd))
+        if let Some(profile) = &session.codex_profile {
+            validate_profile_name(profile)?;
+        }
+        let mut args = Vec::new();
+        if let Some(profile) = &session.codex_profile {
+            args.extend(["--profile".to_owned(), profile.clone()]);
+        }
+        args.extend(["resume".to_owned(), id.to_owned()]);
+        Ok(SpawnSpec::new("codex", args, cwd))
     }
 
     fn discover_session_id(

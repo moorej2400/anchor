@@ -31,6 +31,9 @@ impl OpencodeAdapter {
         #[cfg(unix)]
         {
             let xdg = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
+            // XDG_DATA_HOME is valid only when absolute. Keep this Unix rule at
+            // the platform entry point so the shared precedence helper is host-neutral.
+            let xdg = xdg.filter(|path| path.is_absolute());
             Self::resolve_database_path(dirs::home_dir().as_deref(), xdg.as_deref(), None, false)
         }
         #[cfg(windows)]
@@ -53,7 +56,6 @@ impl OpencodeAdapter {
             return windows_data.map(|data| data.join("opencode/opencode.db"));
         }
         xdg_data_home
-            .filter(|path| path.is_absolute())
             .map(|data| data.join("opencode/opencode.db"))
             .or_else(|| home.map(|home| home.join(".local/share/opencode/opencode.db")))
     }

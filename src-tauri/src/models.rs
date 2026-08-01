@@ -44,6 +44,10 @@ pub struct Session {
     pub status: Status,
     pub model: Option<String>,
     pub extra_args: Vec<String>,
+    /// The optional Codex config layer used for every future launch of this record.
+    /// Other tools always leave this unset.
+    #[serde(default)]
+    pub codex_profile: Option<String>,
     pub created_at: String,
     pub last_active_at: String,
     pub was_open_in_tab: bool,

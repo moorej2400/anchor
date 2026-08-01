@@ -25,6 +25,8 @@ export interface Session {
   createdAt: string; // ISO-8601
   lastActiveAt: string; // ISO-8601
   wasOpenInTab: boolean;
+  /** Codex configuration profile used for its next launch or resume. */
+  codexProfile: string | null;
 }
 
 export interface EnvVar {
