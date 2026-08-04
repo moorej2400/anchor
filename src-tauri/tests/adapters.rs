@@ -506,6 +506,38 @@ fn codex_discovers_newest_matching_first_line_fixture() {
 }
 
 #[test]
+fn codex_discovers_a_rollout_that_exposes_only_session_id_metadata() {
+    let root = tempdir().unwrap();
+    let launch_time = utc_time(2026, 7, 21, 12);
+    let id = "77777777-7777-4777-8777-777777777777";
+    let rollout = root
+        .path()
+        .join("2026/07/21")
+        .join(format!("rollout-2026-07-21T12-00-00-{id}.jsonl"));
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    fs::write(
+        &rollout,
+        format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"session_id\":\"{id}\",\"cwd\":\"{CWD}\"}}}}\n"
+        ),
+    )
+    .unwrap();
+    filetime::set_file_mtime(&rollout, filetime::FileTime::from_system_time(launch_time)).unwrap();
+    let adapter = CodexAdapter::with_sessions_root(root.path());
+
+    assert_eq!(
+        adapters::codex::parse_matching_rollout(&rollout, Path::new(CWD)),
+        Some(id.into())
+    );
+    assert_eq!(
+        adapter
+            .discover_session_id_at(Path::new(CWD), launch_time, launch_time)
+            .unwrap(),
+        Some(id.into())
+    );
+}
+
+#[test]
 fn codex_missing_or_malformed_store_is_pending() {
     let root = tempdir().unwrap();
     let adapter = CodexAdapter::with_sessions_root(root.path().join("missing"));

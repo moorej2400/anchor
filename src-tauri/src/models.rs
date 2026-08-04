@@ -111,12 +111,30 @@ impl Default for Settings {
 fn default_shell() -> String {
     #[cfg(windows)]
     {
-        "powershell.exe".into()
+        preferred_windows_shell()
     }
     #[cfg(not(windows))]
     {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
     }
+}
+
+#[cfg(windows)]
+pub(crate) fn preferred_windows_shell() -> String {
+    // PowerShell 7 carries the user's current profile and environment, but it
+    // is optional on Windows; keep the built-in host as the safe fallback.
+    let pwsh_available =
+        std::env::var_os("PATH").is_some_and(|path| executable_exists_in_path("pwsh.exe", &path));
+    if pwsh_available {
+        "pwsh.exe".into()
+    } else {
+        "powershell.exe".into()
+    }
+}
+
+#[cfg(windows)]
+fn executable_exists_in_path(executable: &str, path: &std::ffi::OsStr) -> bool {
+    std::env::split_paths(path).any(|directory| directory.join(executable).is_file())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

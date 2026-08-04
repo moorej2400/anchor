@@ -19,22 +19,28 @@ use std::time::{Duration, SystemTime};
 const PRE_LAUNCH_MTIME_TOLERANCE: Duration = Duration::from_secs(2);
 
 pub struct CodexAdapter {
-    sessions_root: Option<PathBuf>,
+    sessions_roots: Vec<PathBuf>,
 }
 
 impl Default for CodexAdapter {
     fn default() -> Self {
-        Self {
-            sessions_root: codex_home().map(|home| home.join("sessions")),
-        }
+        Self::with_session_roots(codex_session_roots())
     }
 }
 
 impl CodexAdapter {
     pub fn with_sessions_root(path: impl AsRef<Path>) -> Self {
-        Self {
-            sessions_root: Some(path.as_ref().to_path_buf()),
+        Self::with_session_roots([path.as_ref().to_path_buf()])
+    }
+
+    fn with_session_roots(roots: impl IntoIterator<Item = PathBuf>) -> Self {
+        let mut sessions_roots = Vec::new();
+        for root in roots {
+            if !sessions_roots.contains(&root) {
+                sessions_roots.push(root);
+            }
         }
+        Self { sessions_roots }
     }
 
     pub fn discover_session_id_at(
@@ -43,13 +49,17 @@ impl CodexAdapter {
         launched_at: SystemTime,
         now: SystemTime,
     ) -> Result<Option<String>, String> {
-        let Some(root) = self.sessions_root.as_deref() else {
-            return Ok(None);
-        };
-
         // Codex's store is explicitly version-fragile; unreadable directories
         // and malformed candidates remain pending instead of breaking the PTY.
-        Ok(newest_rollout(root, cwd, launched_at, now).map(|(_, id)| id))
+        // A desktop launcher can inherit a stale CODEX_HOME while `codex` uses
+        // the normal home directory. Check both roots so that mismatch cannot
+        // leave a live session without its resume key.
+        Ok(self
+            .sessions_roots
+            .iter()
+            .filter_map(|root| newest_rollout(root, cwd, launched_at, now))
+            .max_by_key(|(modified, _)| *modified)
+            .map(|(_, id)| id))
     }
 }
 
@@ -91,6 +101,20 @@ pub(crate) fn codex_home() -> Option<PathBuf> {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+}
+
+fn codex_session_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(home) = codex_home() {
+        roots.push(home.join("sessions"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        let default_root = home.join(".codex/sessions");
+        if !roots.contains(&default_root) {
+            roots.push(default_root);
+        }
+    }
+    roots
 }
 
 fn profile_name_from_path(path: &Path) -> Option<String> {
@@ -237,7 +261,7 @@ fn is_rollout_jsonl(path: &Path) -> bool {
             .is_some_and(|name| name.starts_with("rollout-"))
 }
 
-fn parse_matching_rollout(path: &Path, cwd: &Path) -> Option<String> {
+pub(crate) fn parse_matching_rollout(path: &Path, cwd: &Path) -> Option<String> {
     let file = fs::File::open(path).ok()?;
     let mut first_line = String::new();
     BufReader::new(file).read_line(&mut first_line).ok()?;
@@ -246,14 +270,27 @@ fn parse_matching_rollout(path: &Path, cwd: &Path) -> Option<String> {
         return None;
     }
     let payload = metadata.get("payload")?;
-    let id = payload.get("id")?.as_str()?;
-    uuid::Uuid::parse_str(id).ok()?;
     if !paths_match(Path::new(payload.get("cwd")?.as_str()?), cwd) {
         return None;
     }
-    let filename = path.file_name()?.to_str()?;
-    if !filename.strip_suffix(".jsonl")?.ends_with(id) {
+    let rollout_id = rollout_id_from_filename(path)?;
+    let metadata_id = payload
+        .get("id")
+        .or_else(|| payload.get("session_id"))?
+        .as_str()?;
+    let metadata_id = uuid::Uuid::parse_str(metadata_id)
+        .ok()?
+        .hyphenated()
+        .to_string();
+    if metadata_id != rollout_id {
         return None;
     }
-    Some(id.to_owned())
+    Some(rollout_id)
+}
+
+fn rollout_id_from_filename(path: &Path) -> Option<String> {
+    let filename = path.file_name()?.to_str()?;
+    let stem = filename.strip_suffix(".jsonl")?;
+    let id = stem.get(stem.len().checked_sub(36)?..)?;
+    Some(uuid::Uuid::parse_str(id).ok()?.hyphenated().to_string())
 }
