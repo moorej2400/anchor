@@ -39,8 +39,9 @@ unit test is faster and better.
 Terminal deck invariants across 50 alternating sidebar/tab selections (exactly
 one active slot, one visible slot, one focusable input surface), input-to-paint
 latency, main-thread long tasks, output buffered while a session is hidden, the
-close confirmation and its removal latency, and that a reopened session keeps
-its exact saved provider ID.
+close confirmation and its removal latency, that a reopened session keeps its
+exact saved provider ID, and that the tab strip's `+` stays pinned to the left
+and reachable with every session open and the strip scrolled to its end.
 
 ## Notes for extending it
 

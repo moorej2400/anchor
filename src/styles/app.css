@@ -110,8 +110,31 @@ body {
    doesn't collapse onto the pane below — and doesn't jump when the first tab
    opens. Border-box, so the top padding counts toward it. */
 .tabstrip { flex: none; display: flex; align-items: stretch; min-height: calc(var(--sp-2) + var(--tab-h)); padding: var(--sp-2) var(--gutter) 0; overflow-x: auto; }
+/* The `+` is pinned to the left of the strip rather than trailing the tabs, so
+   its position never depends on how many are open. The sticky wrapper spans the
+   strip's full height and masks tabs before they reach the button instead of
+   letting them show through beside it. Its --bg is attachment-fixed so it lines
+   up with the same wash body paints, leaving no seam against the strip.
+
+   z-index must clear the 1 that .a-tab's children carry: .a-tab is
+   position:relative with z-index:auto, so it opens no stacking context of its
+   own and those children would otherwise win on DOM order — painting over the
+   button and swallowing its clicks. */
+.tabstrip__lead {
+  position: sticky; left: 0; z-index: 2;
+  flex: none; display: flex; align-items: center; padding-right: 2px;
+  background: var(--bg); background-attachment: fixed;
+}
+/* Sticky clamps to the containing block, so the wrapper can never reach past
+   the strip's content edge — but the strip's left padding scrolls with its
+   content, so tabs pass through that gutter. This extends the mask across it. */
+.tabstrip__lead::before {
+  content: ""; position: absolute; top: 0; bottom: 0; right: 100%;
+  width: var(--gutter);
+  background: var(--bg); background-attachment: fixed;
+}
 .tabstrip__new {
-  flex: none; align-self: center; width: 28px; height: 28px; margin-left: 2px;
+  flex: none; width: 28px; height: 28px;
   display: grid; place-items: center; border-radius: 8px;
   border: 1px solid var(--hairline); background: rgba(255, 255, 255, 0.03);
   color: var(--text-2); font-size: 16px; cursor: pointer;

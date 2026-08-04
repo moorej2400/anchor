@@ -11,6 +11,11 @@ export function TabStrip() {
 
   return (
     <div className="tabstrip">
+      <div className="tabstrip__lead">
+        <button className="tabstrip__new a-plus" aria-label="New session" onClick={() => actions.openNewSession()}>
+          +
+        </button>
+      </div>
       {tabs.map((s) => (
         <Tab key={s.id} active={s.id === state.activeId} onSelect={() => actions.selectSession(s.id)}>
           <Badge tool={s.tool} />
@@ -26,9 +31,6 @@ export function TabStrip() {
           </button>
         </Tab>
       ))}
-      <button className="tabstrip__new a-plus" aria-label="New session" onClick={() => actions.openNewSession()}>
-        +
-      </button>
     </div>
   );
 }

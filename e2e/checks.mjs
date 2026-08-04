@@ -250,7 +250,69 @@ export async function runChecks(page, { screenshotsDir, save }) {
   record("reopened session keeps its exact provider id",
     reopened.providerId === "e7f3-5540-2c19", { ...reopened, expected: "e7f3-5540-2c19" });
 
+  // --- the `+` stays pinned to the left of the tab strip -------------------
+  // REGRESSION: the `+` used to trail the tabs, so it slid right with every new
+  // session. Pinning it needs sticky positioning plus a mask over the strip's
+  // left padding — which scrolls with the content — and a z-index above the 1
+  // that .a-tab's children carry. Get the stacking wrong and the button is
+  // still laid out exactly right while a tab paints over it and eats the click,
+  // so assert what is under the pixels, not just where the box sits.
+  await page.eval(`(() => {
+    const rows = [...document.querySelectorAll('.a-row')];
+    for (const r of rows) r.click();
+  })()`);
+  await sleep(400);
+
+  const PLUS_PROBE = `(() => {
+    const strip = document.querySelector('.tabstrip');
+    const plus = document.querySelector('.tabstrip__new');
+    if (!strip || !plus) return { error: 'tab strip or + missing' };
+    const box = plus.getBoundingClientRect();
+    const y = Math.round(box.top + box.height / 2);
+    // Every column from the strip's left edge to the button's right edge must
+    // belong to the pinned lead; anything else is a tab showing through.
+    const covered = [];
+    for (let x = Math.round(strip.getBoundingClientRect().left) + 1;
+         x < Math.round(box.right); x += 2) {
+      const el = document.elementFromPoint(x, y);
+      covered.push(el ? el.closest('.tabstrip__lead') !== null : false);
+    }
+    return {
+      tabs: document.querySelectorAll('.a-tab').length,
+      left: Math.round(box.left),
+      scrollable: Math.round(strip.scrollWidth) > Math.round(strip.clientWidth),
+      bleed: covered.filter(ok => !ok).length,
+    };
+  })()`;
+
+  const plusAtRest = await page.eval(PLUS_PROBE);
+  const plusScrolled = await page.eval(`(async () => {
+    const strip = document.querySelector('.tabstrip');
+    strip.scrollLeft = strip.scrollWidth;
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    return ${PLUS_PROBE};
+  })()`);
+
+  record("tab strip scrolls with every session open",
+    plusAtRest.scrollable === true, plusAtRest);
+  record("the + holds its place when the strip is scrolled",
+    plusAtRest.left === plusScrolled.left,
+    { atRest: plusAtRest.left, scrolled: plusScrolled.left });
+  record("no tab shows through beside the pinned +",
+    plusAtRest.bleed === 0 && plusScrolled.bleed === 0,
+    { atRest: plusAtRest.bleed, scrolled: plusScrolled.bleed });
+
+  const plusSpot = await page.clickElement("document.querySelector('.tabstrip__new')");
+  record("the pinned + is clickable over a scrolled strip",
+    !!plusSpot && plusSpot.hitsTarget, { plusSpot });
+  await sleep(300);
+  const newSessionOpen = await page.eval(
+    `!!document.querySelector('.a-modal, [role=dialog]')`,
+  );
+  record("clicking the + opens the new-session dialog", newSessionOpen === true,
+    { newSessionOpen });
   if (save) {
+    save(`${screenshotsDir}/tabstrip-plus.png`, await page.screenshot());
     for (const [id, data] of Object.entries(frames)) {
       save(`${screenshotsDir}/session-${id}.png`, data);
     }
