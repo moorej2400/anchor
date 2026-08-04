@@ -47,10 +47,7 @@ impl SettingsStore {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return match self.load_recovery() {
-                    Ok(Some(settings)) => {
-                        self.restore_primary(&settings)?;
-                        Ok(settings)
-                    }
+                    Ok(Some(settings)) => self.finish_loaded_settings(settings, true),
                     Ok(None) => Ok(Settings::default()),
                     Err(_) => {
                         Err("SETTINGS_INVALID: settings recovery file is not valid".to_string())
@@ -60,12 +57,9 @@ impl SettingsStore {
             Err(_) => return Err("SETTINGS_READ_FAILED: could not read settings.json".into()),
         };
         match parse_settings(&bytes) {
-            Ok(settings) => Ok(settings),
+            Ok(settings) => self.finish_loaded_settings(settings, false),
             Err(primary_error) => match self.load_recovery() {
-                Ok(Some(settings)) => {
-                    self.restore_primary(&settings)?;
-                    Ok(settings)
-                }
+                Ok(Some(settings)) => self.finish_loaded_settings(settings, true),
                 Ok(None) | Err(_) => Err(primary_error),
             },
         }
@@ -132,6 +126,19 @@ impl SettingsStore {
             .map_err(|_| "SETTINGS_WRITE_FAILED: could not serialize settings".to_string())?;
         atomic_write(&self.path, &bytes, "SETTINGS_WRITE_FAILED")
     }
+
+    fn finish_loaded_settings(
+        &self,
+        mut settings: Settings,
+        restore_primary: bool,
+    ) -> Result<Settings, String> {
+        if upgrade_legacy_windows_default_shell(&mut settings) {
+            self.save(&settings)?;
+        } else if restore_primary {
+            self.restore_primary(&settings)?;
+        }
+        Ok(settings)
+    }
 }
 
 fn parse_settings(bytes: &[u8]) -> Result<Settings, String> {
@@ -139,6 +146,25 @@ fn parse_settings(bytes: &[u8]) -> Result<Settings, String> {
         .map_err(|_| "SETTINGS_INVALID: settings.json is not valid JSON".to_string())?;
     validate(&settings)?;
     Ok(settings)
+}
+
+fn upgrade_legacy_windows_default_shell(settings: &mut Settings) -> bool {
+    #[cfg(windows)]
+    {
+        let preferred = crate::models::preferred_windows_shell();
+        if matches!(
+            settings.shell.to_ascii_lowercase().as_str(),
+            "cmd" | "cmd.exe" | "powershell" | "powershell.exe"
+        ) && settings.shell != preferred
+        {
+            // These were Anchor defaults, not a named PowerShell 7 choice.
+            // Upgrade only when PowerShell 7 is available; otherwise retain
+            // the built-in Windows PowerShell fallback.
+            settings.shell = preferred;
+            return true;
+        }
+    }
+    false
 }
 
 pub fn load() -> Result<Settings, String> {
@@ -290,6 +316,26 @@ mod tests {
 
         assert_eq!(json["envVars"][0]["key"], "SYNTHETIC_TOKEN");
         assert_eq!(store.load().unwrap(), expected);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn load_upgrades_only_legacy_windows_default_shells() {
+        let root = tempdir().unwrap();
+        let store = SettingsStore::new(root.path().join("config/settings.json"));
+        let preferred = crate::models::preferred_windows_shell();
+        assert_eq!(Settings::default().shell, preferred);
+        let mut legacy = Settings::default();
+        legacy.shell = "cmd.exe".into();
+        store.save(&legacy).unwrap();
+
+        assert_eq!(store.load().unwrap().shell, preferred);
+
+        let mut selected = Settings::default();
+        selected.shell = "C:\\Synthetic\\custom-shell.exe".into();
+        store.save(&selected).unwrap();
+
+        assert_eq!(store.load().unwrap().shell, selected.shell);
     }
 
     #[test]
