@@ -109,29 +109,26 @@ body {
 /* The floor keeps the strip a tab-row tall even with no tabs open, so the `+`
    doesn't collapse onto the pane below — and doesn't jump when the first tab
    opens. Border-box, so the top padding counts toward it. */
-.tabstrip { flex: none; display: flex; align-items: stretch; min-height: calc(var(--sp-2) + var(--tab-h)); padding: var(--sp-2) var(--gutter) 0; overflow-x: auto; }
-/* The `+` is pinned to the left of the strip rather than trailing the tabs, so
-   its position never depends on how many are open. The sticky wrapper spans the
-   strip's full height and masks tabs before they reach the button instead of
-   letting them show through beside it. Its --bg is attachment-fixed so it lines
-   up with the same wash body paints, leaving no seam against the strip.
+.tabstrip { flex: none; display: flex; align-items: stretch; min-height: calc(var(--sp-2) + var(--tab-h)); padding: var(--sp-2) var(--gutter) 0; }
+/* The `+` leads the strip rather than trailing the tabs, so its position never
+   depends on how many are open. It sits outside the scrollport entirely, which
+   is what keeps it still — no sticky positioning, no z-index contest with the
+   tabs, and no mask to stop them showing through beneath it.
 
-   z-index must clear the 1 that .a-tab's children carry: .a-tab is
-   position:relative with z-index:auto, so it opens no stacking context of its
-   own and those children would otherwise win on DOM order — painting over the
-   button and swallowing its clicks. */
+   Height is pinned to --tab-h rather than left to stretch: the scrollport beside
+   it is taller than its own tab row by the height of the horizontal scrollbar,
+   so a stretched lead would centre the button against that larger box and sit
+   visibly below the tab centres. */
 .tabstrip__lead {
-  position: sticky; left: 0; z-index: 2;
-  flex: none; display: flex; align-items: center; padding-right: 2px;
-  background: var(--bg); background-attachment: fixed;
+  flex: none; align-self: flex-start; height: var(--tab-h);
+  display: flex; align-items: center; padding-right: var(--sp-2);
 }
-/* Sticky clamps to the containing block, so the wrapper can never reach past
-   the strip's content edge — but the strip's left padding scrolls with its
-   content, so tabs pass through that gutter. This extends the mask across it. */
-.tabstrip__lead::before {
-  content: ""; position: absolute; top: 0; bottom: 0; right: 100%;
-  width: var(--gutter);
-  background: var(--bg); background-attachment: fixed;
+/* Only the tabs scroll. Scoping the scrollport to them means the scrollbar
+   spans the region the tabs actually occupy instead of the whole strip, and
+   tabs clip at the `+` instead of running under it. min-width:0 lets this flex
+   item shrink below its content width, without which it would never scroll. */
+.tabstrip__scroll {
+  flex: 1; min-width: 0; display: flex; align-items: stretch; overflow-x: auto;
 }
 .tabstrip__new {
   flex: none; width: 28px; height: 28px;

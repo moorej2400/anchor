@@ -250,13 +250,12 @@ export async function runChecks(page, { screenshotsDir, save }) {
   record("reopened session keeps its exact provider id",
     reopened.providerId === "e7f3-5540-2c19", { ...reopened, expected: "e7f3-5540-2c19" });
 
-  // --- the `+` stays pinned to the left of the tab strip -------------------
+  // --- the `+` leads the strip and only the tabs scroll ---------------------
   // REGRESSION: the `+` used to trail the tabs, so it slid right with every new
-  // session. Pinning it needs sticky positioning plus a mask over the strip's
-  // left padding — which scrolls with the content — and a z-index above the 1
-  // that .a-tab's children carry. Get the stacking wrong and the button is
-  // still laid out exactly right while a tab paints over it and eats the click,
-  // so assert what is under the pixels, not just where the box sits.
+  // session. It is now outside the scrollport, which is also what keeps the
+  // scrollbar to the region the tabs occupy instead of the full strip width.
+  // Assert what is under the pixels, not just where the boxes sit: a button can
+  // be laid out perfectly and still be covered by a tab that eats its clicks.
   await page.eval(`(() => {
     const rows = [...document.querySelectorAll('.a-row')];
     for (const r of rows) r.click();
@@ -265,30 +264,38 @@ export async function runChecks(page, { screenshotsDir, save }) {
 
   const PLUS_PROBE = `(() => {
     const strip = document.querySelector('.tabstrip');
+    const scroll = document.querySelector('.tabstrip__scroll');
     const plus = document.querySelector('.tabstrip__new');
-    if (!strip || !plus) return { error: 'tab strip or + missing' };
+    if (!strip || !scroll || !plus) return { error: 'tab strip, scrollport or + missing' };
     const box = plus.getBoundingClientRect();
+    const stripBox = strip.getBoundingClientRect();
+    const scrollBox = scroll.getBoundingClientRect();
     const y = Math.round(box.top + box.height / 2);
-    // Every column from the strip's left edge to the button's right edge must
-    // belong to the pinned lead; anything else is a tab showing through.
-    const covered = [];
-    for (let x = Math.round(strip.getBoundingClientRect().left) + 1;
-         x < Math.round(box.right); x += 2) {
+    // No tab may occupy any column from the strip's left edge through the
+    // button's right edge — that band belongs to the `+`, not the scrollport.
+    let bleed = 0;
+    for (let x = Math.round(stripBox.left) + 1; x < Math.round(box.right); x += 2) {
       const el = document.elementFromPoint(x, y);
-      covered.push(el ? el.closest('.tabstrip__lead') !== null : false);
+      if (el && el.closest('.a-tab')) bleed++;
     }
     return {
       tabs: document.querySelectorAll('.a-tab').length,
       left: Math.round(box.left),
-      scrollable: Math.round(strip.scrollWidth) > Math.round(strip.clientWidth),
-      bleed: covered.filter(ok => !ok).length,
+      scrollable: Math.round(scroll.scrollWidth) > Math.round(scroll.clientWidth),
+      // Gap between the button and where the tabs begin scrolling.
+      gap: Math.round(scrollBox.left - box.right),
+      // How far the scrollport reaches left of the strip's right edge; it must
+      // start after the `+`, not span the whole strip.
+      scrollLeftEdge: Math.round(scrollBox.left),
+      stripLeftEdge: Math.round(stripBox.left),
+      bleed,
     };
   })()`;
 
   const plusAtRest = await page.eval(PLUS_PROBE);
   const plusScrolled = await page.eval(`(async () => {
-    const strip = document.querySelector('.tabstrip');
-    strip.scrollLeft = strip.scrollWidth;
+    const scroll = document.querySelector('.tabstrip__scroll');
+    scroll.scrollLeft = scroll.scrollWidth;
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
     return ${PLUS_PROBE};
   })()`);
@@ -298,12 +305,18 @@ export async function runChecks(page, { screenshotsDir, save }) {
   record("the + holds its place when the strip is scrolled",
     plusAtRest.left === plusScrolled.left,
     { atRest: plusAtRest.left, scrolled: plusScrolled.left });
-  record("no tab shows through beside the pinned +",
+  record("no tab shows through beside the +",
     plusAtRest.bleed === 0 && plusScrolled.bleed === 0,
     { atRest: plusAtRest.bleed, scrolled: plusScrolled.bleed });
+  // The scrollport must begin after the button, so the scrollbar spans only
+  // where tabs can actually scroll rather than running under the `+`.
+  record("the tab scrollport starts after the +",
+    plusAtRest.scrollLeftEdge > plusAtRest.stripLeftEdge
+      && plusAtRest.gap >= 6,
+    plusAtRest);
 
   const plusSpot = await page.clickElement("document.querySelector('.tabstrip__new')");
-  record("the pinned + is clickable over a scrolled strip",
+  record("the + is clickable over a scrolled strip",
     !!plusSpot && plusSpot.hitsTarget, { plusSpot });
   await sleep(300);
   const newSessionOpen = await page.eval(

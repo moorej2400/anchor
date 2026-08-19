@@ -16,21 +16,23 @@ export function TabStrip() {
           +
         </button>
       </div>
-      {tabs.map((s) => (
-        <Tab key={s.id} active={s.id === state.activeId} onSelect={() => actions.selectSession(s.id)}>
-          <Badge tool={s.tool} />
-          <span className="a-tab__title">{s.title}</span>
-          <StatusDot status={s.status} />
-          <button
-            className="a-iconbtn"
-            style={{ width: 16, height: 16, fontSize: 13 }}
-            aria-label="Close tab"
-            onClick={(e) => { e.stopPropagation(); void actions.closeTab(s.id); }}
-          >
-            ×
-          </button>
-        </Tab>
-      ))}
+      <div className="tabstrip__scroll">
+        {tabs.map((s) => (
+          <Tab key={s.id} active={s.id === state.activeId} onSelect={() => actions.selectSession(s.id)}>
+            <Badge tool={s.tool} />
+            <span className="a-tab__title">{s.title}</span>
+            <StatusDot status={s.status} />
+            <button
+              className="a-iconbtn"
+              style={{ width: 16, height: 16, fontSize: 13 }}
+              aria-label="Close tab"
+              onClick={(e) => { e.stopPropagation(); void actions.closeTab(s.id); }}
+            >
+              ×
+            </button>
+          </Tab>
+        ))}
+      </div>
     </div>
   );
 }
