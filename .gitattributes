@@ -1,0 +1,18 @@
+# This repo is worked on from both Windows and macOS against one shared volume,
+# so without a normalization rule each side rewrites whole files to its own line
+# endings. That produced a `git status` listing 33 modified files whose content
+# diff was empty — pure CRLF/LF churn that buries real changes and turns any
+# `git commit -a` into a multi-thousand-line no-op.
+#
+# LF in the repository and in the working tree on every platform. Nothing here
+# needs CRLF: there are no .bat/.cmd/.ps1 scripts, and the Docker build scripts
+# must stay LF to run in their Linux images.
+* text=auto eol=lf
+
+# Binary assets, marked explicitly rather than left to git's auto-detection.
+# opencode.db is a SQLite fixture the adapter tests read — normalizing it would
+# corrupt the file rather than merely reformat it.
+*.png   binary
+*.ico   binary
+*.icns  binary
+*.db    binary
