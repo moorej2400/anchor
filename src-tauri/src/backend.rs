@@ -4,6 +4,7 @@
 //! session identity before its process can produce output--is testable without
 //! a webview or a real CLI installation.
 
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 #[cfg(unix)]
@@ -116,7 +117,10 @@ impl Backend {
         let settings_store = SettingsStore::platform()?;
         let settings = settings_store.load()?;
         let backup_path = expand_tilde(&settings.backup_path)?;
-        let registry = Registry::load_from_backup_path(&backup_path)?;
+        let mut registry = Registry::load_from_backup_path(&backup_path)?;
+        if recover_missing_codex_ids(&mut registry, &codex::CodexAdapter::default()) {
+            registry.save()?;
+        }
         ScrollbackStore::new(&backup_path).prune(settings.retention_days)?;
 
         Ok(Arc::new_cyclic(move |weak: &Weak<Self>| {
@@ -1001,6 +1005,53 @@ impl Backend {
     }
 }
 
+fn recover_missing_codex_ids(registry: &mut Registry, adapter: &codex::CodexAdapter) -> bool {
+    let folders = registry
+        .folders
+        .iter()
+        .map(|folder| (folder.id.clone(), PathBuf::from(&folder.path)))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut assigned_ids = registry
+        .sessions
+        .iter()
+        .filter_map(|session| session.cli_session_id.clone())
+        .collect::<HashSet<_>>();
+    let mut changed = false;
+
+    for session in &mut registry.sessions {
+        if session.tool != Tool::Codex || session.cli_session_id.is_some() {
+            continue;
+        }
+        let Some(cwd) = folders.get(&session.folder_id) else {
+            continue;
+        };
+        let Some(started_at) = parse_session_time(&session.created_at) else {
+            continue;
+        };
+        let Some(ended_at) = parse_session_time(&session.last_active_at) else {
+            continue;
+        };
+        let Ok(Some(id)) = adapter.recover_session_id_at(cwd, started_at, ended_at) else {
+            continue;
+        };
+        if assigned_ids.insert(id.clone()) {
+            session.cli_session_id = Some(id);
+            changed = true;
+        }
+    }
+
+    changed
+}
+
+fn parse_session_time(value: &str) -> Option<SystemTime> {
+    Some(
+        chrono::DateTime::parse_from_rfc3339(value)
+            .ok()?
+            .with_timezone(&Utc)
+            .into(),
+    )
+}
+
 fn next_discovery_delay(elapsed: Duration) -> Duration {
     if elapsed.is_zero() {
         Duration::from_secs(1)
@@ -1424,10 +1475,27 @@ fn wrap_windows_batch_launcher(
     args.extend(spec.args);
     // `.cmd` and `.bat` files require the command processor; passing either
     // file directly to ConPTY reaches CreateProcessW, which only starts native
-    // executables. Keep the shim path as the child PATH prefix for its runtime.
+    // executables. cmd.exe rejects UNC working directories and falls back to
+    // C:\Windows, so use an existing mapped-drive alias for the same folder.
+    spec.cwd = windows_batch_working_directory_with_resolver(
+        &spec.cwd,
+        crate::adapters::unc_to_mapped_drive,
+    );
     spec.program = command_processor().to_string_lossy().into_owned();
     spec.args = args;
     Ok(spec)
+}
+
+#[cfg(windows)]
+fn windows_batch_working_directory_with_resolver<F>(cwd: &Path, resolve_unc: F) -> PathBuf
+where
+    F: Fn(&Path) -> Option<PathBuf>,
+{
+    if cwd.to_string_lossy().starts_with(r"\\") {
+        resolve_unc(cwd).unwrap_or_else(|| cwd.to_path_buf())
+    } else {
+        cwd.to_path_buf()
+    }
 }
 
 #[cfg(windows)]
@@ -2077,6 +2145,23 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn windows_batch_working_directory_uses_an_existing_drive_for_unc_folders() {
+        let resolve_unc = |path: &Path| {
+            (path == Path::new(r"\\synthetic-server\shared\Synthetic\Project"))
+                .then(|| PathBuf::from(r"Z:\Synthetic\Project"))
+        };
+
+        assert_eq!(
+            windows_batch_working_directory_with_resolver(
+                Path::new(r"\\synthetic-server\shared\Synthetic\Project"),
+                resolve_unc,
+            ),
+            PathBuf::from(r"Z:\Synthetic\Project")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn windows_batch_shim_runs_through_conpty_and_keeps_sibling_runtime_on_path() {
         use std::sync::mpsc;
 
@@ -2429,6 +2514,57 @@ mod tests {
         // The background persistence failure test proves a failed identity
         // save leaves cliSessionId unset; the loop in
         // start_discovery only breaks on Ok(Some), so the next delay retries it.
+    }
+
+    #[test]
+    fn startup_recovery_backfills_a_missing_codex_identity_from_its_time_window() {
+        let root = tempdir().unwrap();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let sessions_root = root.path().join("codex-sessions");
+        let cli_id = "33333333-3333-4333-8333-333333333333";
+        let rollout = sessions_root
+            .join("2026/07/21")
+            .join(format!("rollout-synthetic-{cli_id}.jsonl"));
+        fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        fs::write(
+            &rollout,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{cli_id}\",\"cwd\":{}}}}}\n",
+                serde_json::to_string(&project.to_string_lossy()).unwrap()
+            ),
+        )
+        .unwrap();
+        let modified = parse_session_time("2026-07-21T12:00:10Z").unwrap();
+        filetime::set_file_mtime(&rollout, filetime::FileTime::from_system_time(modified)).unwrap();
+
+        let folder_id = "22222222-2222-4222-8222-222222222222";
+        let mut registry = Registry::empty(root.path().join("backup"));
+        registry.folders.push(Folder {
+            id: folder_id.into(),
+            name: "Synthetic project".into(),
+            path: project.to_string_lossy().into_owned(),
+        });
+        registry.sessions.push(Session {
+            id: "11111111-1111-4111-8111-111111111111".into(),
+            folder_id: folder_id.into(),
+            tool: Tool::Codex,
+            title: "Synthetic Codex session".into(),
+            cli_session_id: None,
+            status: Status::Stopped,
+            model: None,
+            extra_args: Vec::new(),
+            codex_profile: Some("synthetic-profile".into()),
+            created_at: "2026-07-21T12:00:00Z".into(),
+            last_active_at: "2026-07-21T12:00:30Z".into(),
+            was_open_in_tab: true,
+        });
+
+        assert!(recover_missing_codex_ids(
+            &mut registry,
+            &codex::CodexAdapter::with_sessions_root(sessions_root),
+        ));
+        assert_eq!(registry.sessions[0].cli_session_id.as_deref(), Some(cli_id));
     }
 
     #[test]

@@ -65,6 +65,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tempfile",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

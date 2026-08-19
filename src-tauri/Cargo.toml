@@ -39,5 +39,8 @@ libc = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 sha2 = "0.10"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_NetworkManagement_WNet"] }
+
 [dev-dependencies]
 filetime = "0.2"

@@ -324,6 +324,21 @@ fn windows_path_comparison_is_case_insensitive_and_lexically_normalized() {
     ));
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_path_comparison_resolves_mapped_drives_before_matching_unc_paths() {
+    let resolve_mapped_drive = |path: &str| {
+        path.strip_prefix("Z:")
+            .map(|suffix| format!(r"\\synthetic-server\shared{suffix}"))
+    };
+
+    assert!(adapters::windows_paths_match_with_resolver(
+        r"Z:\Synthetic\Project",
+        r"\\synthetic-server\shared\Synthetic\Project",
+        resolve_mapped_drive,
+    ));
+}
+
 #[test]
 fn adapter_owned_extra_args_are_rejected_without_echoing_values() {
     let settings = Settings::default();
@@ -480,11 +495,10 @@ fn codex_discovers_newest_matching_first_line_fixture() {
     fs::create_dir_all(&dated).unwrap();
     let launch_time = utc_time(2026, 7, 21, 12);
     let fixture = include_str!("fixtures/codex-rollout.jsonl").replace("__CWD__", CWD);
-    fs::write(
-        dated.join("rollout-2026-07-21T12-00-00-44444444-4444-4444-8444-444444444444.jsonl"),
-        fixture,
-    )
-    .unwrap();
+    let matching =
+        dated.join("rollout-2026-07-21T12-00-00-44444444-4444-4444-8444-444444444444.jsonl");
+    fs::write(&matching, fixture).unwrap();
+    filetime::set_file_mtime(&matching, filetime::FileTime::from_system_time(launch_time)).unwrap();
     fs::write(
         dated.join("rollout-2026-07-21T12-00-01-55555555-5555-4555-8555-555555555555.jsonl"),
         "{malformed\n",
@@ -618,6 +632,58 @@ fn codex_limits_date_scan_and_allows_slightly_backdated_mtime() {
             .discover_session_id_at(Path::new(CWD), launch, now)
             .unwrap(),
         Some(matching_id.into())
+    );
+}
+
+#[test]
+fn codex_ignores_rollouts_written_after_a_recovery_window() {
+    let root = tempdir().unwrap();
+    let launch = utc_time(2026, 7, 21, 12);
+    let window_end = launch + Duration::from_secs(30);
+    let later_id = "aaaaaaaa-1111-4111-8111-111111111111";
+    let later = root
+        .path()
+        .join("2026/07/21")
+        .join(format!("rollout-later-{later_id}.jsonl"));
+    write_rollout(&later, later_id, Path::new(CWD));
+    filetime::set_file_mtime(
+        &later,
+        filetime::FileTime::from_system_time(window_end + Duration::from_secs(30)),
+    )
+    .unwrap();
+    let adapter = CodexAdapter::with_sessions_root(root.path());
+
+    assert_eq!(
+        adapter
+            .discover_session_id_at(Path::new(CWD), launch, window_end)
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn codex_recovery_accepts_one_timed_rollout_when_cmd_lost_the_unc_cwd() {
+    let root = tempdir().unwrap();
+    let launch = utc_time(2026, 7, 21, 12);
+    let window_end = launch + Duration::from_secs(30);
+    let id = "aaaaaaaa-2222-4222-8222-222222222222";
+    let rollout = root
+        .path()
+        .join("2026/07/21")
+        .join(format!("rollout-cmd-fallback-{id}.jsonl"));
+    write_rollout(&rollout, id, Path::new(r"C:\Windows"));
+    filetime::set_file_mtime(
+        &rollout,
+        filetime::FileTime::from_system_time(launch + Duration::from_secs(10)),
+    )
+    .unwrap();
+    let adapter = CodexAdapter::with_sessions_root(root.path());
+
+    assert_eq!(
+        adapter
+            .recover_session_id_at(Path::new(CWD), launch, window_end)
+            .unwrap(),
+        Some(id.into())
     );
 }
 

@@ -221,7 +221,155 @@ fn lexical_normalize(path: &Path) -> PathBuf {
 }
 
 pub(crate) fn windows_paths_match(left: &str, right: &str) -> bool {
-    normalize_windows_path_text(left) == normalize_windows_path_text(right)
+    #[cfg(windows)]
+    {
+        windows_paths_match_with_resolver(left, right, mapped_drive_to_unc)
+    }
+    #[cfg(not(windows))]
+    {
+        normalize_windows_path_text(left) == normalize_windows_path_text(right)
+    }
+}
+
+pub(crate) fn windows_paths_match_with_resolver<F>(
+    left: &str,
+    right: &str,
+    resolve_mapped_drive: F,
+) -> bool
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if normalize_windows_path_text(left) == normalize_windows_path_text(right) {
+        return true;
+    }
+
+    // Codex can record a mapped-drive cwd while Anchor persists the same
+    // folder as UNC; resolve both sides before rejecting that rollout.
+    let left = resolve_mapped_drive(left).unwrap_or_else(|| left.to_owned());
+    let right = resolve_mapped_drive(right).unwrap_or_else(|| right.to_owned());
+    normalize_windows_path_text(&left) == normalize_windows_path_text(&right)
+}
+
+#[cfg(windows)]
+fn mapped_drive_to_unc(path: &str) -> Option<String> {
+    use std::ffi::{OsStr, OsString};
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, NO_ERROR};
+    use windows_sys::Win32::NetworkManagement::WNet::{
+        WNetGetUniversalNameW, UNIVERSAL_NAME_INFOW, UNIVERSAL_NAME_INFO_LEVEL,
+    };
+
+    const INITIAL_BUFFER_BYTES: u32 = 4 * 1024;
+    const MAX_BUFFER_BYTES: u32 = 128 * 1024;
+
+    let path_wide = OsStr::new(path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+
+    // WNetGetUniversalNameW rejects a null zero-length size probe with
+    // ERROR_INVALID_PARAMETER on Windows; start with storage and grow it only
+    // when the API returns the required size through ERROR_MORE_DATA.
+    let word_size = std::mem::size_of::<usize>();
+    let mut requested_bytes = INITIAL_BUFFER_BYTES;
+    let (buffer, allocated_bytes) = loop {
+        let word_count = (requested_bytes as usize).div_ceil(word_size);
+        let mut buffer = vec![0usize; word_count];
+        let allocated_bytes = word_count.checked_mul(word_size)?;
+        let mut returned_bytes = u32::try_from(allocated_bytes).ok()?;
+        let result = unsafe {
+            WNetGetUniversalNameW(
+                path_wide.as_ptr(),
+                UNIVERSAL_NAME_INFO_LEVEL,
+                buffer.as_mut_ptr().cast(),
+                &mut returned_bytes,
+            )
+        };
+        if result == NO_ERROR {
+            break (buffer, allocated_bytes);
+        }
+        if result != ERROR_MORE_DATA
+            || returned_bytes <= requested_bytes
+            || returned_bytes > MAX_BUFFER_BYTES
+        {
+            return None;
+        }
+        requested_bytes = returned_bytes;
+    };
+
+    let info = unsafe { &*(buffer.as_ptr().cast::<UNIVERSAL_NAME_INFOW>()) };
+    let name = info.lpUniversalName;
+    let buffer_start = buffer.as_ptr() as usize;
+    let buffer_end = buffer_start.checked_add(allocated_bytes)?;
+    let name_start = name as usize;
+    if name.is_null() || name_start < buffer_start || name_start >= buffer_end {
+        return None;
+    }
+    let max_units = (buffer_end - name_start) / std::mem::size_of::<u16>();
+    let length = (0..max_units).find(|index| unsafe { *name.add(*index) } == 0)?;
+    let wide_name = unsafe { std::slice::from_raw_parts(name, length) };
+    Some(
+        OsString::from_wide(wide_name)
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn unc_to_mapped_drive(path: &Path) -> Option<PathBuf> {
+    let unc_path = normalize_windows_path_text(&path.to_string_lossy());
+    if !unc_path.starts_with("//") {
+        return None;
+    }
+
+    for letter in b'A'..=b'Z' {
+        let drive_root = format!("{}:\\", letter as char);
+        let Some(mapped_root) = mapped_drive_to_unc(&drive_root) else {
+            continue;
+        };
+        let mapped_root = normalize_windows_path_text(&mapped_root);
+        let Some(suffix) = unc_path.strip_prefix(&mapped_root) else {
+            continue;
+        };
+        if !suffix.is_empty() && !suffix.starts_with('/') {
+            continue;
+        }
+        let suffix = suffix.trim_start_matches('/').replace('/', "\\");
+        return Some(PathBuf::from(format!("{drive_root}{suffix}")));
+    }
+
+    None
+}
+
+#[cfg(all(test, windows))]
+mod mapped_drive_tests {
+    use super::{mapped_drive_to_unc, unc_to_mapped_drive, windows_paths_match};
+
+    #[test]
+    fn current_mapped_checkout_matches_its_unc_name_when_available() {
+        let current = std::env::current_dir().unwrap();
+        let canonical = std::fs::canonicalize(&current).unwrap();
+        // Windows canonicalizes a mapped share to extended UNC form, so this
+        // detects a real mapping without relying on the resolver under test.
+        if !canonical
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .starts_with(r"\\?\unc\")
+        {
+            return;
+        }
+        let current = current.to_string_lossy();
+        let unc = mapped_drive_to_unc(&current)
+            .expect("the real mapped checkout must resolve to its UNC path");
+        let mapped = unc_to_mapped_drive(&canonical)
+            .expect("the canonical UNC checkout must resolve to a mapped drive");
+
+        assert!(windows_paths_match(&current, &unc));
+        assert!(windows_paths_match(
+            &mapped.to_string_lossy(),
+            &canonical.to_string_lossy()
+        ));
+    }
 }
 
 pub(crate) fn normalize_windows_path_text(path: &str) -> String {
