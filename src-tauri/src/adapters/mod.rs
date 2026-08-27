@@ -76,6 +76,27 @@ pub trait Adapter {
         settings: &Settings,
     ) -> Result<SpawnSpec, String>;
 
+    /// Reject a resume before PTY spawn when the provider exposes a reliable
+    /// local conflict signal. The default keeps providers without one on
+    /// their normal resume path.
+    fn preflight_resume(&self, session: &Session) -> Result<(), String> {
+        let _ = session;
+        Ok(())
+    }
+
+    /// Build a provider-supported fork that preserves an existing transcript
+    /// under a new CLI session ID. Providers without this capability fail
+    /// closed instead of substituting a fresh or picked conversation.
+    fn fork(
+        &self,
+        session: &Session,
+        cwd: &Path,
+        settings: &Settings,
+    ) -> Result<(SpawnSpec, IdCapture), String> {
+        let _ = (session, cwd, settings);
+        Err("SESSION_FORK_UNSUPPORTED: this CLI cannot fork saved sessions".into())
+    }
+
     /// Poll the CLI's session store for a session matching this record
     /// (cwd + created ≥ launch time). Returns Ok(None) while pending.
     /// Only meaningful for IdCapture::Discover tools; default: not applicable.

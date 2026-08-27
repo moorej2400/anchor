@@ -187,7 +187,7 @@ Each adapter answers: how to **launch**, how to **capture the CLI's session ID**
 |---|---|---|---|
 | `claude` | `claude --session-id <uuid>` (Anchor generates the UUID) | **Pre-assigned** — known before spawn | `claude --resume <uuid>` once a Claude transcript exists; otherwise `claude --session-id <uuid>` reopens the same saved empty identity, never the picker |
 | `copilot` | `copilot --resume <uuid>` (with a fresh UUID this *starts a new* session having that ID) | **Pre-assigned** | `copilot --resume <uuid>` |
-| `codex` | `codex [--profile <name>]` | **Discovered:** watch `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; a new file whose first-line JSON metadata has `cwd` == session folder and mtime ≥ launch time → extract its session UUID (in the filename and metadata) | `codex [--profile <name>] resume <uuid>` |
+| `codex` | `codex [--profile <name>]` | **Discovered:** watch `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; a new file whose first-line JSON metadata has `cwd` == session folder and mtime ≥ launch time → extract its session UUID (in the filename and metadata) | Resume: `codex [--profile <name>] resume <uuid>`; explicit parallel recovery: `codex [--profile <name>] fork <uuid>` |
 | `opencode` | `opencode` (run in cwd) | **Discovered:** read `~/.local/share/opencode/opencode.db` (SQLite, **read-only**, open with `immutable`/read-only flags to avoid locking): newest session row whose directory == folder path and created ≥ launch time. (macOS/Linux path shown; resolve per-platform data dir.) | `opencode --session <id>` run in cwd |
 | `terminal` | user's default shell (settings `shell`, default `$SHELL` / platform default) | n/a — persistence = scrollback file | respawn shell in cwd; if `restoreScrollback` on, prepend saved scrollback to the xterm buffer with a `── restored session · scrollback recovered (N lines) ──` divider line (see mock) |
 
@@ -197,6 +197,7 @@ Discovery rules (codex/opencode):
 - On success: write `cliSessionId` to registry immediately, emit `session:updated`.
 - Extra args: `extraArgs` from the session record are appended to launch (not resume) commands.
 - Model detection is best-effort (e.g. parse from output or store config); `model` may stay null.
+- A Codex fork creates a new Anchor record before spawn, uses the source record's folder/profile/model but no launch-only `extraArgs`, and discovers/persists the fresh Codex UUID through the same bounded store watcher as a normal launch.
 
 **Codex profiles:** Anchor discovers only the immediate `*.config.toml` filenames in
 `$CODEX_HOME` (or `~/.codex` when unset), returning names only. It never reads or
@@ -207,7 +208,7 @@ session is stopped, so the current process never changes accounts mid-session.
 Before launch or resume, the selected profile must still be present; otherwise
 return `CODEX_PROFILE_NOT_FOUND` and do not fall back to the base config.
 
-**Resume identity invariant:** every AI resume command must include the record's exact persisted `cliSessionId`. If an imported, corrupt, or undiscovered record has no ID, return `SESSION_ID_UNAVAILABLE` without spawning a process. Never launch a provider's interactive picker: manual selection can attach the Anchor record to the wrong conversation and defeats one-click resume.
+**Resume identity invariant:** every AI resume command must include the record's exact persisted `cliSessionId`. If an imported, corrupt, or undiscovered record has no ID, return `SESSION_ID_UNAVAILABLE` without spawning a process. Never launch a provider's interactive picker: manual selection can attach the Anchor record to the wrong conversation and defeats one-click resume. A fork is a separate, explicit user action that preserves the source transcript under a new provider ID; Anchor never substitutes it silently for Resume.
 
 **Version fragility:** store layouts and flags above were verified 2026-07 against current CLI versions. Adapters must treat parsing failures as "discovery pending", never crash, and are covered by fixture tests (§9). A `detect_clis` command reports which CLIs are installed (`which`/`where` + `--version`).
 
@@ -258,6 +259,9 @@ export interface Settings {
 }
 
 export interface CliInfo { tool: Tool; found: boolean; version: string | null; path: string | null; }
+export interface TerminalSize { cols: number; rows: number; }
+export interface PtyResize { throughSequence: number; gridEpoch: number; }
+export interface PtyReplay { data: string; throughSequence: number; cols: number; rows: number; coversUnsequenced: boolean; gridEpoch: number; }
 
 ```
 
@@ -266,14 +270,15 @@ export interface CliInfo { tool: Tool; found: boolean; version: string | null; p
 | Command | Args | Returns | Notes |
 |---|---|---|---|
 | `get_state` | — | `{ folders: Folder[]; sessions: Session[] }` | Full registry snapshot; called on boot. |
-| `frontend_ready` | — | `void` | Called after event subscriptions and HYDRATE; starts guarded one-time auto-restore. |
+| `frontend_ready` | `{ cols: number; rows: number }` | `TerminalSize` | Called after event subscriptions, HYDRATE, and terminal viewport measurement; runs guarded one-time auto-restore at that initial PTY size on a blocking worker and resolves only after the serial restore pass completes. Returns the authoritative grid used by that pass. A caller that overlaps an existing pass receives its claimed grid; a later reload receives its own current grid. |
 | `create_folder` | `{ path: string; name?: string }` | `Folder` | Name defaults to basename. Validates dir exists. |
 | `create_project` | `{ name: string }` | `Folder` | Creates `<projectsDir>/<name>` then registers it. `name` must be a single path segment — separators, `.`/`..` and dotfiles are rejected so the write stays inside `projectsDir`. Errors: `PROJECT_NAME_INVALID`, `PROJECT_EXISTS`, `PROJECT_DIR_FAILED`. |
 | `pick_folder` | — | `string \| null` | Opens the **OS folder picker** (Finder on macOS) via `tauri-plugin-dialog`; resolves to the chosen absolute path, or `null` if cancelled. Async + `spawn_blocking`: sync commands run on the main thread and the native dialog must be driven from there, so blocking on the main thread would deadlock. Errors: `DIALOG_FAILED`, `DIR_PATH_INVALID`. |
 | `rename_folder` | `{ folderId: string; name: string }` | `Folder` | |
 | `remove_folder` | `{ folderId: string }` | `void` | Stops + deletes all its sessions (UI shows the ack modal first). Async + `spawn_blocking`: it can wait on several PTY shutdowns. |
-| `launch_session` | `{ folderId: string; tool: Tool; title?: string; extraArgs?: string[]; codexProfile?: string }` | `Session` | Creates record (persisted before spawn), spawns PTY, starts discovery. Status `running`. `codexProfile` is valid only for Codex. |
-| `resume_session` | `{ sessionId: string }` | `Session` | Spawns the exact saved AI session by `cliSessionId`, or shell+scrollback for `terminal`. Missing AI IDs return `SESSION_ID_UNAVAILABLE`; provider pickers are never opened. |
+| `launch_session` | `{ folderId: string; tool: Tool; cols: number; rows: number; title?: string; extraArgs?: string[]; codexProfile?: string }` | `Session` | Creates record (persisted before spawn), spawns the PTY at the measured xterm size, and starts discovery. Status `running`. `codexProfile` is valid only for Codex. |
+| `resume_session` | `{ sessionId: string; cols: number; rows: number }` | `Session` | Spawns the exact saved AI session by `cliSessionId`, or shell+scrollback for `terminal`, at the measured xterm size. Missing AI IDs return `SESSION_ID_UNAVAILABLE`; provider pickers are never opened. On Windows, Codex rollout sharing is checked before spawn and an existing writer returns `CODEX_ACTIVE_WRITER` without opening a fallback TUI. |
+| `fork_codex_session` | `{ sessionId: string; cols: number; rows: number }` | `Session` | Creates and persists a new Anchor record, then runs `codex fork <sourceCliSessionId>` at the measured xterm size and discovers the fork's new ID. The source must be a stopped Codex record with a saved ID. No picker and no automatic resume fallback. |
 | `get_codex_profiles` | — | `string[]` | Safe profile names only; immediate `$CODEX_HOME/*.config.toml` files. Never returns profile file contents or paths. |
 | `set_codex_profile` | `{ sessionId: string; codexProfile: string \| null }` | `Session` | Persists the selected profile for future Codex launch/resume; `null` selects base config. Requires a stopped Codex session. Errors: `CODEX_PROFILE_CHANGE_REQUIRES_STOPPED`, `CODEX_PROFILE_NOT_FOUND`, `CODEX_PROFILE_INVALID`, `CODEX_PROFILE_UNSUPPORTED`. |
 | `stop_session` | `{ sessionId: string }` | `void` | Graceful kill (SIGTERM → SIGKILL after 5 s; ConPTY close on Windows). Async + `spawn_blocking` so the graceful wait never blocks the native UI thread. |
@@ -281,8 +286,8 @@ export interface CliInfo { tool: Tool; found: boolean; version: string | null; p
 | `rename_session` | `{ sessionId: string; title: string }` | `Session` | |
 | `set_tab_open` | `{ sessionId: string; open: boolean }` | `void` | Frontend reports tab open/close so `wasOpenInTab` persists for auto-restore. The sole close lifecycle command: with `stopOnClose` it also stops the PTY, so the frontend must not additionally call `stop_session`. Async + `spawn_blocking`. |
 | `write_pty` | `{ sessionId: string; data: string }` | `void` | Keystrokes (UTF-8). |
-| `resize_pty` | `{ sessionId: string; cols: number; rows: number }` | `void` | |
-| `replay_output` | `{ sessionId: string }` | `void` | Re-emits a live session's retained output as `pty_output`, repopulating a terminal a webview reload emptied. No-op for sessions with no live PTY. |
+| `resize_pty` | `{ sessionId: string; cols: number; rows: number }` | `PtyResize` | Returns the old-grid output boundary and the accepted grid epoch so xterm changes grids without parsing in-flight output at the wrong width. |
+| `replay_output` | `{ sessionId: string }` | `PtyReplay` | Returns one authoritative live snapshot, the last live-output sequence included in it, the current PTY character grid, and whether saved unsequenced output is covered. With scrollback restore enabled, live generic terminals return their formatted persisted scrollback, set `coversUnsequenced`, and include its atomic persisted sequence boundary; other sessions return bounded recent PTY output. Zero dimensions identify a session with no live PTY. |
 | `get_scrollback` | `{ sessionId: string }` | `string` | Saved scrollback (empty string if none). |
 | `get_settings` | — | `Settings` | |
 | `set_settings` | `{ settings: Settings }` | `Settings` | Full-object write. |
@@ -296,9 +301,10 @@ Errors: commands reject with a string error code + message, e.g. `"CLI_NOT_FOUND
 
 | Event | Payload | When |
 |---|---|---|
-| `pty:output` | `{ sessionId: string; data: string }` | PTY produced output (UTF-8; lossy-decoded). Batched ≤ every 16 ms per session. |
+| `pty:output` | `{ sessionId: string; data: string; sequence: number; gridEpoch: number; cols: number; rows: number }` | PTY produced output (UTF-8; lossy-decoded). `sequence` increases per PTY generation. The grid fields identify the exact PTY grid that produced the batch. `gridEpoch` changes after each effective PTY resize. Batched ≤ every 16 ms per session. |
 | `session:status` | `{ sessionId: string; status: Status; exitCode: number \| null }` | Any status transition (incl. exit → `stopped`). |
 | `session:updated` | `Session` | Record changed outside a command's return (e.g. `cliSessionId` discovered). |
+| `session:resume-error` | `{ sessionId: string; code: string; message: string }` | A provider rejected a resume after PTY spawn. Anchor emits a sanitized actionable error, stops the unusable PTY, and keeps the saved source identity unchanged. |
 | `attention:count` | `{ waiting: number }` | Waiting-count changed (backend also sets dock/taskbar badge + optional OS notification itself). |
 
 ---
@@ -378,12 +384,53 @@ Frontend architecture requirements:
 
   Each open ON session owns one stable xterm DOM slot for the tab's lifetime.
   Changing `activeId` changes visibility only; it never reparents another
-  session's xterm root. Exactly one slot is visible, and PTY output received
-  before first display is buffered in that session's xterm instance.
+  session's xterm root. Exactly one slot is visible. Before the viewport is
+  measured, PTY output stays as raw per-session chunks; Anchor creates or
+  resizes that session's xterm to the measured grid before parsing the chunks.
 
-  `fit` addon on resize → `resize_pty`. Fitting forces layout, so mount and
+  The deck keeps one hidden, non-interactive xterm measurement surface in the
+  same box and with the same layout-affecting xterm options as every session
+  slot. Launch, resume, and auto-restore apply the saved font, wait for its
+  measured cols/rows, and pass that size into the initial PTY spawn, so a CLI
+  never draws its first frame at xterm's 80×24 default. A detached measurement
+  surface is never accepted: operations started from Settings return to the
+  terminal view and wait for a fresh measurement. Every resumed PTY is a new
+  terminal generation: Anchor resets the retained xterm screen and parser state
+  after spawn success, then flushes output held during that preparation; generic
+  terminals restore saved scrollback exactly once. If resume fails, the held
+  output is discarded and the previous screen remains visible. Anchor allows
+  only one in-flight resume per session;
+  repeated keyboard or pointer activation does not replace its preparation.
+  Manual resume waits for any stopped-generation resize and both xterm parser
+  phases before it changes the grid or reset state. Closing or permanently
+  removing the session cancels a resume waiting at that boundary. Reopening a
+  tab can still complete a resume whose backend spawn is already in flight.
+  Tab-open persistence writes are serialized per session, so the newest open or
+  close intent is also the final durable state.
+
+  `fit` addon measurement on resize → `resize_pty`. Measurement does not resize
+  xterm. The core returns the last old-grid output sequence and the accepted
+  `gridEpoch`; the frontend buffers the transaction, parses every sequence
+  through that boundary at the old grid, then resizes xterm and releases
+  new-epoch output. The reader stamps bytes with their grid before the batching
+  channel. Resize cancels and joins an in-progress blocking pipe read before it
+  advances the epoch, so bytes already consumed cannot be labeled with the new
+  grid. A successful resize flushes that old-grid batch into its returned
+  boundary, while a failed resize leaves it pending. Sequence assignment through
+  callback delivery is serialized per PTY, and resize does not return until its
+  claimed old-grid event is delivered; neither newer output nor exit publication
+  can overtake that final batch. Each output event also carries its exact cols/rows, so an
+  epoch transition that crosses the independent command/event queues can apply
+  the producing PTY grid without guessing. Fitting forces layout, so mount and
   every `ResizeObserver` callback are coalesced into one animation frame, and
-  only changed dimensions reach `resize_pty`.
+  only dimensions not already confirmed or queued reach `resize_pty`. Resize
+  calls are serialized per session and coalesce to the newest measured size.
+  A rejected resize retries twice without requiring another layout event, then
+  reports the persistent error. Auto-restore uses the grid claimed by the first
+  readiness handshake. A replacement webview keeps restore output raw and uses
+  each replay's backend-authoritative live PTY grid before applying its
+  snapshot, even when the replacement arrives at the restore boundary.
+  Font-size changes use this same resize path.
 
   Every open ON session is fitted, not only the selected one. A background
   session keeps printing, and its CLI wraps that output to whatever width the
@@ -393,19 +440,61 @@ Frontend architecture requirements:
   will see. Focus follows selection only: refitting a hidden slot must never
   move the caret out of the visible terminal.
 
+  Terminal clipboard shortcuts follow desktop conventions. `Ctrl+C`/`Cmd+C`
+  copies selected xterm text and sends an interrupt only when no text is
+  selected. `Ctrl+V`/`Cmd+V` produces xterm's text paste event for text. When a
+  paste event contains an image, Anchor forwards the CLI image-paste key so AI
+  tools can read the image from the operating-system clipboard.
+
 - Frontend event listeners are installed before the initial `get_state` request.
-  After hydration, the frontend sends `frontend_ready`, which triggers one-time
+  Session status and identity events received while boot data is loading are
+  folded into that snapshot before `HYDRATE`; an older state read never
+  overwrites a newer live event.
+  After hydration and terminal viewport measurement, the frontend sends
+  `frontend_ready` with cols/rows, which triggers one-time
   auto-restore. Restored PTY output and status therefore cannot race listener
   registration or be overwritten by the pre-restore snapshot.
 
 - The core, not the webview, owns live session output. Every live PTY retains
   its recent output (capped, trimmed at line boundaries), because a webview
   reload — dev HMR, ⌘R, window recreation — destroys every xterm buffer while
-  the processes keep running. On boot the frontend calls `replay_output` once
-  per session that is already ON, so a reload restores what the pane was
-  showing instead of leaving a live CLI behind a blank terminal. Retained
-  output is emitted while the same lock is held as live output, so a replay and
-  the live stream can neither interleave nor duplicate.
+  the processes keep running. On boot the frontend buffers subscribed live
+  events and calls `replay_output` once per session that is already ON. The
+  returned snapshot includes a sequence boundary, PTY grid, and `gridEpoch` assigned under
+  the same ordering lock as live output and resize. The frontend sizes xterm to
+  that grid, writes the snapshot, drops buffered or delayed
+  events at or below that boundary, then appends newer events. Each chunk
+  appears once even when output arrives during boot. If the bounded frontend
+  capture drops an event newer than the returned boundary, it requests a newer
+  snapshot instead of applying output with a sequence gap. Retained runtime
+  bytes always belong to one grid: a resize keeps the old snapshot and its old
+  grid until new output arrives, then starts a fresh buffer at the new grid.
+  If output captured during replay belongs to a newer grid epoch, the hidden
+  xterm is reset and Anchor requests a newer snapshot. The parser handoff is
+  finite and capped; it never waits for a continuously printing PTY to become
+  idle. Output captured during the final handoff is queued through one last
+  parser callback before the live terminal can mount.
+  A live generic terminal
+  with scrollback restore enabled uses its persisted file as the snapshot and
+  the last sequence committed to that same file as the boundary. The frontend
+  never combines an independent scrollback read with recent PTY output, because
+  those overlapping sources cannot define an atomic duplicate-free boundary.
+  The frontend keeps restore output raw until `frontend_ready` completes, then
+  re-reads the authoritative session states. Each replay supplies the live
+  PTY's current grid; the frontend sizes that session's xterm to the replay grid
+  before parsing its snapshot and waits for xterm's final asynchronous write
+  callback before mounting or fitting live slots. The post-restore state replaces the hydrated
+  session set, including removal of records deleted while boot was in flight.
+  Every terminal replay owns the pre-generation saved transcript and sets
+  `coversUnsequenced`. After a persistence failure, the backend freezes the
+  exact saved-file byte boundary and keeps a bounded, generation-wide fallback
+  for later output across grid epochs; it never combines that prefix with the
+  epoch-local runtime replay. Delayed sequence-zero events are then safe to drop
+  as duplicates.
+  Launch and Resume remain blocked until this boot replay phase and
+  `frontend_ready` handshake complete, so a new PTY generation cannot cross a
+  stale boot snapshot. Output held for a prepared resume is lossless and separate from the
+  bounded live boot capture; success flushes it and failure discards it.
 
 - `set_tab_open(false)` is the sole close lifecycle command. When `stopOnClose`
   is enabled, the backend stops the PTY and persists the closed-tab state; the
@@ -428,7 +517,7 @@ Frontend architecture requirements:
 
 **Errors (all surfaced in-UI, never silent):**
 - CLI not installed → inline message in the terminal pane with install hint (`detect_clis`).
-- Resume rejected / CLI errors on resume → keep record, show error state, offer "Start fresh session in this folder" (clears `cliSessionId`).
+- Resume rejected / CLI errors on resume → keep record and show an error state. A Codex `CODEX_ACTIVE_WRITER` conflict is rejected before PTY spawn when Windows exposes the rollout sharing violation; a post-spawn provider rejection is also stopped. Both paths offer **Fork conversation and continue**, which preserves the transcript under a new ID; retry remains available after the other writer closes. Other failures offer "Start fresh session in this folder".
 - Discovery timeout → session works normally, but resume is blocked with `SESSION_ID_UNAVAILABLE` rather than opening a provider picker.
 - PTY unexpected exit → `session:status` with exitCode; UI shows it on the Resume card.
 - Registry write failure → blocking toast (persistence is the core promise).

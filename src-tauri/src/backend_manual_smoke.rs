@@ -13,7 +13,15 @@ struct ClaudeSmokeEvents {
 }
 
 impl BackendEvents for ClaudeSmokeEvents {
-    fn pty_output(&self, _session_id: &str, data: &str) {
+    fn pty_output(
+        &self,
+        _session_id: &str,
+        data: &str,
+        _sequence: u64,
+        _grid_epoch: u64,
+        _cols: u16,
+        _rows: u16,
+    ) {
         if !self.first_output_checked.swap(true, Ordering::AcqRel) {
             let path = self.registry_path.lock().unwrap().clone();
             let persisted = fs::read_to_string(path)
@@ -89,6 +97,8 @@ fn real_claude_launch_persists_identity_before_output_and_resumes() {
                 "-p".into(),
                 format!("Reply with exactly {marker}"),
             ]),
+            80,
+            24,
         )
         .unwrap();
     let cli_session_id = launched.cli_session_id.clone().unwrap();
@@ -110,7 +120,7 @@ fn real_claude_launch_persists_identity_before_output_and_resumes() {
     );
 
     events.output.lock().unwrap().clear();
-    let resumed = backend.resume_session(&launched.id).unwrap();
+    let resumed = backend.resume_session(&launched.id, 80, 24).unwrap();
     assert_eq!(
         resumed.cli_session_id.as_deref(),
         Some(cli_session_id.as_str())

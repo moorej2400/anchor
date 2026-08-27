@@ -17,7 +17,27 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
+
 const PRE_LAUNCH_MTIME_TOLERANCE: Duration = Duration::from_secs(2);
+const RECOVERY_SESSION_START_WINDOW: Duration = Duration::from_secs(60);
+pub(crate) const ACTIVE_WRITER_CODE: &str = "CODEX_ACTIVE_WRITER";
+pub(crate) const ACTIVE_WRITER_MESSAGE: &str = "This Codex conversation is already open in another Codex session. Close the other session and retry, or fork it to continue in parallel.";
+#[cfg(windows)]
+const WINDOWS_FILE_SHARE_READ: u32 = 1;
+
+enum RecoveryMatch {
+    Missing,
+    Unique(String),
+    Ambiguous,
+}
+
+struct RolloutMetadata {
+    id: String,
+    cwd: PathBuf,
+    started_at: Option<SystemTime>,
+}
 
 pub struct CodexAdapter {
     sessions_roots: Vec<PathBuf>,
@@ -69,20 +89,101 @@ impl CodexAdapter {
         launched_at: SystemTime,
         ended_at: SystemTime,
     ) -> Result<Option<String>, String> {
-        if let Some(id) = self.discover_session_id_at(cwd, launched_at, ended_at)? {
-            return Ok(Some(id));
+        // A rollout's mtime advances for every appended turn, so startup
+        // recovery must prefer the immutable session-start timestamp in its
+        // first metadata record. Otherwise long sessions disappear from their
+        // original launch window after Anchor restarts.
+        match self.recovery_match_from_session_start(cwd, launched_at) {
+            RecoveryMatch::Unique(id) => return Ok(Some(id)),
+            RecoveryMatch::Ambiguous => return Ok(None),
+            RecoveryMatch::Missing => {}
         }
 
-        // Older Windows builds let cmd.exe replace an intended UNC cwd with
-        // C:\Windows. A single rollout in the saved activity window is still
-        // unambiguous; multiple candidates fail closed instead of guessing.
-        let ids = self
+        // Legacy rollouts did not record a start timestamp. Keep their mtime
+        // recovery path, but require one exact-cwd ID or one total ID rather
+        // than selecting a newer unrelated session from a broad activity span.
+        Ok(select_recovery_match(
+            self.sessions_roots
+                .iter()
+                .flat_map(|root| rollout_candidates(root, launched_at, ended_at))
+                .filter_map(|(_, path)| parse_rollout(&path)),
+            cwd,
+        ))
+    }
+
+    fn recovery_match_from_session_start(
+        &self,
+        cwd: &Path,
+        launched_at: SystemTime,
+    ) -> RecoveryMatch {
+        let cutoff = launched_at
+            .checked_sub(PRE_LAUNCH_MTIME_TOLERANCE)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let end = launched_at
+            .checked_add(RECOVERY_SESSION_START_WINDOW)
+            .unwrap_or(launched_at);
+        let rollouts = self
             .sessions_roots
             .iter()
-            .flat_map(|root| rollout_candidates(root, launched_at, ended_at))
-            .filter_map(|(_, path)| parse_rollout(&path).map(|(id, _)| id))
-            .collect::<HashSet<_>>();
-        Ok((ids.len() == 1).then(|| ids.into_iter().next().unwrap()))
+            .flat_map(|root| rollout_paths(root, cutoff, end))
+            .filter_map(|path| parse_rollout(&path))
+            .filter(|rollout| {
+                rollout
+                    .started_at
+                    .is_some_and(|started_at| started_at >= cutoff && started_at <= end)
+            });
+        recovery_match(rollouts, cwd)
+    }
+
+    fn rollout_paths_for_id(&self, session_id: &str) -> Vec<PathBuf> {
+        let suffix = format!("{session_id}.jsonl");
+        self.sessions_roots
+            .iter()
+            .flat_map(|root| {
+                let mut directories = vec![root.clone()];
+                for _ in 0..3 {
+                    directories = directories
+                        .into_iter()
+                        .flat_map(|directory| {
+                            fs::read_dir(directory)
+                                .into_iter()
+                                .flatten()
+                                .filter_map(Result::ok)
+                                .filter_map(|entry| {
+                                    entry
+                                        .file_type()
+                                        .ok()
+                                        .filter(|kind| kind.is_dir())
+                                        .map(|_| entry.path())
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .collect();
+                }
+                directories.into_iter().flat_map(|directory| {
+                    fs::read_dir(directory)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Result::ok)
+                        .filter_map(|entry| {
+                            let path = entry.path();
+                            entry
+                                .file_type()
+                                .ok()
+                                .filter(|kind| kind.is_file())
+                                .and_then(|_| {
+                                    path.file_name()
+                                        .and_then(|name| name.to_str())
+                                        .filter(|name| {
+                                            name.starts_with("rollout-") && name.ends_with(&suffix)
+                                        })
+                                        .map(|_| path.clone())
+                                })
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect()
     }
 }
 
@@ -193,6 +294,53 @@ impl Adapter for CodexAdapter {
         Ok(SpawnSpec::new("codex", args, cwd))
     }
 
+    fn preflight_resume(&self, session: &Session) -> Result<(), String> {
+        let id = session_id_for_resume(session, Tool::Codex)?;
+        #[cfg(windows)]
+        for path in self.rollout_paths_for_id(id) {
+            // Codex keeps the active rollout open for the lifetime of its
+            // writer. This probe permits other readers and requests no
+            // mutation, but Windows returns sharing violation 32 when an
+            // existing handle has write access.
+            match fs::OpenOptions::new()
+                .read(true)
+                .share_mode(WINDOWS_FILE_SHARE_READ)
+                .open(path)
+            {
+                Ok(_) => {}
+                Err(error) if error.raw_os_error() == Some(32) => {
+                    return Err(format!("{ACTIVE_WRITER_CODE}: {ACTIVE_WRITER_MESSAGE}"));
+                }
+                // Access and store-layout errors are not proof of contention.
+                // Let Codex report its own specific resume error instead.
+                Err(_) => {}
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = id;
+        Ok(())
+    }
+
+    fn fork(
+        &self,
+        session: &Session,
+        cwd: &Path,
+        _settings: &Settings,
+    ) -> Result<(SpawnSpec, IdCapture), String> {
+        let id = session_id_for_resume(session, Tool::Codex)?;
+        if let Some(profile) = &session.codex_profile {
+            validate_profile_name(profile)?;
+        }
+        let mut args = Vec::new();
+        if let Some(profile) = &session.codex_profile {
+            args.extend(["--profile".to_owned(), profile.clone()]);
+        }
+        args.extend(["fork".to_owned(), id.to_owned()]);
+        // Codex assigns the fork a fresh UUID. Reuse the normal bounded store
+        // discovery so the new Anchor record never adopts a picked session.
+        Ok((SpawnSpec::new("codex", args, cwd), IdCapture::Discover))
+    }
+
     fn discover_session_id(
         &self,
         cwd: &Path,
@@ -219,21 +367,31 @@ fn rollout_candidates(
     launched_at: SystemTime,
     now: SystemTime,
 ) -> Vec<(SystemTime, PathBuf)> {
-    if !root.is_dir() {
-        return Vec::new();
-    }
     let cutoff = launched_at
         .checked_sub(PRE_LAUNCH_MTIME_TOLERANCE)
         .unwrap_or(SystemTime::UNIX_EPOCH);
     let end = now.checked_add(PRE_LAUNCH_MTIME_TOLERANCE).unwrap_or(now);
+    rollout_paths(root, cutoff, end)
+        .into_iter()
+        .filter_map(|path| {
+            let modified = fs::metadata(&path).ok()?.modified().ok()?;
+            (modified >= cutoff && modified <= end).then_some((modified, path))
+        })
+        .collect()
+}
+
+fn rollout_paths(root: &Path, start: SystemTime, end: SystemTime) -> Vec<PathBuf> {
+    if !root.is_dir() {
+        return Vec::new();
+    }
     // Codex partitions by the machine's local date, while SystemTime is UTC;
     // adjacent UTC dates conservatively cover every timezone boundary.
-    let mut date = utc_date(cutoff)
+    let mut date = utc_date(start)
         .pred_opt()
-        .unwrap_or_else(|| utc_date(cutoff));
-    let current_end = utc_date(now.max(launched_at));
+        .unwrap_or_else(|| utc_date(start));
+    let current_end = utc_date(end.max(start));
     let end_date = current_end.succ_opt().unwrap_or(current_end);
-    let mut candidates = Vec::new();
+    let mut paths = Vec::new();
 
     while date <= end_date {
         let directory = root
@@ -261,11 +419,7 @@ fn rollout_candidates(
             if !is_rollout_jsonl(&entry.path()) {
                 continue;
             }
-            let modified = match entry.metadata().and_then(|metadata| metadata.modified()) {
-                Ok(modified) if modified >= cutoff && modified <= end => modified,
-                _ => continue,
-            };
-            candidates.push((modified, entry.path()));
+            paths.push(entry.path());
         }
         let Some(next) = date.succ_opt() else {
             break;
@@ -273,7 +427,7 @@ fn rollout_candidates(
         date = next;
     }
 
-    candidates
+    paths
 }
 
 fn utc_date(time: SystemTime) -> NaiveDate {
@@ -289,11 +443,11 @@ fn is_rollout_jsonl(path: &Path) -> bool {
 }
 
 pub(crate) fn parse_matching_rollout(path: &Path, cwd: &Path) -> Option<String> {
-    let (id, rollout_cwd) = parse_rollout(path)?;
-    paths_match(&rollout_cwd, cwd).then_some(id)
+    let rollout = parse_rollout(path)?;
+    paths_match(&rollout.cwd, cwd).then_some(rollout.id)
 }
 
-fn parse_rollout(path: &Path) -> Option<(String, PathBuf)> {
+fn parse_rollout(path: &Path) -> Option<RolloutMetadata> {
     let file = fs::File::open(path).ok()?;
     let mut first_line = String::new();
     BufReader::new(file).read_line(&mut first_line).ok()?;
@@ -315,7 +469,45 @@ fn parse_rollout(path: &Path) -> Option<(String, PathBuf)> {
     if metadata_id != rollout_id {
         return None;
     }
-    Some((rollout_id, cwd))
+    let started_at = metadata
+        .get("timestamp")
+        .or_else(|| payload.get("timestamp"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc).into());
+    Some(RolloutMetadata {
+        id: rollout_id,
+        cwd,
+        started_at,
+    })
+}
+
+fn recovery_match(
+    rollouts: impl IntoIterator<Item = RolloutMetadata>,
+    cwd: &Path,
+) -> RecoveryMatch {
+    let mut matching_ids = HashSet::new();
+    for rollout in rollouts {
+        if paths_match(&rollout.cwd, cwd) {
+            matching_ids.insert(rollout.id);
+        }
+    }
+
+    match matching_ids.len() {
+        1 => RecoveryMatch::Unique(matching_ids.into_iter().next().unwrap()),
+        2.. => RecoveryMatch::Ambiguous,
+        _ => RecoveryMatch::Missing,
+    }
+}
+
+fn select_recovery_match(
+    rollouts: impl IntoIterator<Item = RolloutMetadata>,
+    cwd: &Path,
+) -> Option<String> {
+    match recovery_match(rollouts, cwd) {
+        RecoveryMatch::Unique(id) => Some(id),
+        RecoveryMatch::Missing | RecoveryMatch::Ambiguous => None,
+    }
 }
 
 fn rollout_id_from_filename(path: &Path) -> Option<String> {

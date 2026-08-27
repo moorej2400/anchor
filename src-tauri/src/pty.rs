@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -21,7 +21,7 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use crate::adapters::SpawnSpec;
-use crate::models::{Settings, Status};
+use crate::models::{PtyReplay, PtyResize, Settings, Status, TerminalSize};
 use crate::status::StatusDetector;
 
 const OUTPUT_BATCH_MAX_LATENCY: Duration = Duration::from_millis(16);
@@ -44,6 +44,10 @@ pub enum PtyEvent {
     Output {
         session_id: String,
         data: String,
+        sequence: u64,
+        grid_epoch: u64,
+        cols: u16,
+        rows: u16,
     },
     Status {
         session_id: String,
@@ -53,6 +57,93 @@ pub enum PtyEvent {
 }
 
 type EventCallback = Arc<dyn Fn(PtyEvent) + Send + Sync + 'static>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TerminalGrid {
+    size: TerminalSize,
+    epoch: u64,
+}
+
+struct RecentOutput {
+    data: Vec<u8>,
+    /// Grid that produced every retained byte. A resize does not relabel old
+    /// bytes; the first output at the new grid starts a fresh replay buffer.
+    grid: TerminalGrid,
+    /// Reader data enters this shared batch before the 16 ms dispatch delay.
+    /// Resize and replay can therefore flush it under the same ordering lock.
+    pending: Vec<u8>,
+    pending_grid: TerminalGrid,
+}
+
+impl RecentOutput {
+    fn new(grid: TerminalGrid) -> Self {
+        Self {
+            data: Vec::new(),
+            grid,
+            pending: Vec::new(),
+            pending_grid: grid,
+        }
+    }
+
+    fn append(&mut self, bytes: &[u8], current_grid: TerminalGrid) {
+        if self.grid.epoch != current_grid.epoch {
+            self.data.clear();
+            self.grid = current_grid;
+        }
+        self.data.extend_from_slice(bytes);
+        trim_recent(&mut self.data);
+    }
+
+    fn replay_grid(&self, current_grid: TerminalGrid) -> TerminalGrid {
+        if self.data.is_empty() {
+            current_grid
+        } else {
+            self.grid
+        }
+    }
+
+    fn queue(&mut self, bytes: &[u8], grid: TerminalGrid) -> Option<(Vec<u8>, TerminalGrid)> {
+        let previous = if !self.pending.is_empty() && self.pending_grid.epoch != grid.epoch {
+            Some((std::mem::take(&mut self.pending), self.pending_grid))
+        } else {
+            None
+        };
+        if self.pending.is_empty() {
+            self.pending_grid = grid;
+        }
+        self.pending.extend_from_slice(bytes);
+        previous
+    }
+
+    fn take_pending(&mut self) -> Option<(Vec<u8>, TerminalGrid)> {
+        if self.pending.is_empty() {
+            None
+        } else {
+            Some((std::mem::take(&mut self.pending), self.pending_grid))
+        }
+    }
+}
+
+struct OutputEmission {
+    bytes: Vec<u8>,
+    sequence: u64,
+    grid: TerminalGrid,
+}
+
+struct ReaderResizeRequest<'a>(&'a AtomicBool);
+
+impl<'a> ReaderResizeRequest<'a> {
+    fn begin(flag: &'a AtomicBool) -> Self {
+        flag.store(true, Ordering::Release);
+        Self(flag)
+    }
+}
+
+impl Drop for ReaderResizeRequest<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 #[cfg(unix)]
 type PtyReader = std::fs::File;
@@ -65,15 +156,28 @@ struct SessionRuntime {
     events_complete: AtomicBool,
     reader_cancel: AtomicBool,
     reader_complete: AtomicBool,
+    output_sequence: AtomicU64,
+    /// Covers sequence assignment through callback delivery. Multiple producer
+    /// threads must not publish N+1 before the callback for N has completed.
+    output_delivery: Mutex<()>,
+    /// Resize cancels/joins the one in-progress Windows ReadFile and takes this
+    /// gate before advancing the PTY epoch. A completed read is therefore
+    /// stamped before resize, never after it at the new grid.
+    reader_io: Mutex<()>,
+    reader_resize_pending: AtomicBool,
+    #[cfg(windows)]
+    reader_thread_handle: Mutex<Option<isize>>,
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     detector: Mutex<StatusDetector>,
-    /// Everything the session has printed lately, capped. Output is emitted
-    /// while this lock is held, so a replay and the live stream can never
-    /// interleave or duplicate: a chunk is either inside the replayed snapshot
-    /// or emitted strictly after it.
-    recent: Mutex<Vec<u8>>,
+    /// Everything the session has printed lately, capped. The sequence assigned
+    /// under this lock lets a reloaded frontend remove live chunks already
+    /// covered by its snapshot.
+    recent: Mutex<RecentOutput>,
+    /// Current PTY character grid. Resize takes the recent-output lock first,
+    /// so replay reads output, boundary, and the grid as one ordered snapshot.
+    terminal_grid: Mutex<TerminalGrid>,
     process_id: Option<u32>,
     callback: EventCallback,
 }
@@ -173,11 +277,24 @@ impl PtyManager {
             events_complete: AtomicBool::new(false),
             reader_cancel: AtomicBool::new(false),
             reader_complete: AtomicBool::new(false),
+            output_sequence: AtomicU64::new(0),
+            output_delivery: Mutex::new(()),
+            reader_io: Mutex::new(()),
+            reader_resize_pending: AtomicBool::new(false),
+            #[cfg(windows)]
+            reader_thread_handle: Mutex::new(None),
             master: Mutex::new(Some(pair.master)),
             writer: Mutex::new(Some(writer)),
             killer: Mutex::new(killer),
             detector: Mutex::new(StatusDetector::new()),
-            recent: Mutex::new(Vec::new()),
+            recent: Mutex::new(RecentOutput::new(TerminalGrid {
+                size: TerminalSize { cols, rows },
+                epoch: 1,
+            })),
+            terminal_grid: Mutex::new(TerminalGrid {
+                size: TerminalSize { cols, rows },
+                epoch: 1,
+            }),
             process_id,
             callback: Arc::clone(&self.callback),
         });
@@ -196,7 +313,12 @@ impl PtyManager {
         });
 
         let (reader_sender, reader_receiver) = mpsc::channel();
-        spawn_reader(reader, Arc::clone(&runtime), reader_sender.clone());
+        spawn_reader(
+            session_id.clone(),
+            reader,
+            Arc::clone(&runtime),
+            reader_sender.clone(),
+        );
         spawn_dispatcher(session_id.clone(), Arc::clone(&runtime), reader_receiver);
         spawn_waiter(session_id, runtime, child, reader_sender);
         Ok(())
@@ -225,11 +347,18 @@ impl PtyManager {
         Ok(())
     }
 
-    pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
+    pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<PtyResize, String> {
         if cols == 0 || rows == 0 {
             return Err("PTY_SIZE_INVALID: terminal dimensions must be non-zero".into());
         }
         let runtime = self.live_runtime(session_id)?;
+        // Order size changes with output snapshots. This prevents a reloaded
+        // xterm from parsing retained bytes at a grid that never produced them.
+        let _reader_request = ReaderResizeRequest::begin(&runtime.reader_resize_pending);
+        let _reader_io =
+            lock_reader_io_for_resize(&runtime.reader_io, || cancel_windows_reader(&runtime))?;
+        let _delivery = runtime.output_delivery.lock().map_err(lock_error)?;
+        let mut recent = runtime.recent.lock().map_err(lock_error)?;
         let master = runtime.master.lock().map_err(lock_error)?;
         master
             .as_ref()
@@ -240,7 +369,32 @@ impl PtyManager {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|_| "PTY_RESIZE_FAILED: could not resize terminal".to_string())
+            .map_err(|_| "PTY_RESIZE_FAILED: could not resize terminal".to_string())?;
+        // Claim pending bytes only after the PTY accepted the resize. A failed
+        // master operation must leave them available to the dispatcher.
+        let pending = take_pending_output_locked(&runtime, &mut recent);
+        let mut grid = runtime.terminal_grid.lock().map_err(lock_error)?;
+        let size = TerminalSize { cols, rows };
+        if grid.size != size {
+            grid.size = size;
+            grid.epoch = grid.epoch.saturating_add(1);
+        }
+        let result = PtyResize {
+            // `recent` is still locked, so no output can acquire the new grid
+            // until this old-grid sequence boundary has been captured.
+            through_sequence: runtime.output_sequence.load(Ordering::Relaxed),
+            grid_epoch: grid.epoch,
+        };
+        drop(grid);
+        drop(recent);
+        if let Some(emission) = pending {
+            // The waiter takes `master` before it can publish exit. Keep that
+            // gate until this old-grid emission is delivered so stopped never
+            // overtakes the final output batch.
+            deliver_output(session_id, &runtime, emission);
+        }
+        drop(master);
+        Ok(result)
     }
 
     pub fn stop(&self, session_id: &str) -> Result<(), String> {
@@ -252,22 +406,23 @@ impl PtyManager {
         }
     }
 
-    /// Re-emit what a live session has printed lately, for a webview that lost
-    /// its xterm buffer to a page reload. Unknown or finished sessions replay
-    /// nothing — there is no terminal left to repopulate.
-    pub fn replay_output(&self, session_id: &str) -> Result<(), String> {
+    /// Snapshot what a live session printed lately and the sequence boundary
+    /// covered by that snapshot. Unknown or finished sessions return empty.
+    pub fn replay_output(&self, session_id: &str) -> Result<PtyReplay, String> {
         let Ok(runtime) = self.live_runtime(session_id) else {
-            return Ok(());
+            return Ok(PtyReplay::default());
         };
         let recent = runtime.recent.lock().map_err(lock_error)?;
-        if recent.is_empty() {
-            return Ok(());
-        }
-        (runtime.callback)(PtyEvent::Output {
-            session_id: session_id.to_owned(),
-            data: String::from_utf8_lossy(&recent).into_owned(),
-        });
-        Ok(())
+        let current_grid = *runtime.terminal_grid.lock().map_err(lock_error)?;
+        let grid = recent.replay_grid(current_grid);
+        Ok(PtyReplay {
+            data: String::from_utf8_lossy(&recent.data).into_owned(),
+            through_sequence: runtime.output_sequence.load(Ordering::Relaxed),
+            cols: grid.size.cols,
+            rows: grid.size.rows,
+            covers_unsequenced: false,
+            grid_epoch: grid.epoch,
+        })
     }
 
     pub fn is_live(&self, session_id: &str) -> bool {
@@ -375,7 +530,7 @@ fn is_term_key(key: &str) -> bool {
 }
 
 enum ReaderMessage {
-    Data(Vec<u8>),
+    DataQueued { started_batch: bool },
     ReaderClosed,
     Exited(i32),
 }
@@ -402,28 +557,116 @@ fn make_reader(master: &(dyn MasterPty + Send)) -> Result<PtyReader, String> {
         .map_err(|_| "PTY_OPEN_FAILED: could not create terminal reader".to_string())
 }
 
+#[cfg(windows)]
+fn register_windows_reader(runtime: &SessionRuntime) {
+    use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThread};
+
+    let mut owned = std::ptr::null_mut();
+    // SAFETY: DuplicateHandle turns the current-thread pseudo handle into an
+    // owned handle that another thread may use with CancelSynchronousIo.
+    let duplicated = unsafe {
+        let process = GetCurrentProcess();
+        DuplicateHandle(
+            process,
+            GetCurrentThread(),
+            process,
+            &mut owned,
+            0,
+            0,
+            DUPLICATE_SAME_ACCESS,
+        )
+    };
+    if duplicated != 0 {
+        if let Ok(mut handle) = runtime.reader_thread_handle.lock() {
+            *handle = Some(owned as isize);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn register_windows_reader(_runtime: &SessionRuntime) {}
+
+#[cfg(windows)]
+fn cancel_windows_reader(runtime: &SessionRuntime) {
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::IO::CancelSynchronousIo;
+
+    if let Ok(handle) = runtime.reader_thread_handle.lock() {
+        if let Some(handle) = *handle {
+            // SAFETY: the mutex keeps the owned duplicate open for this call;
+            // unregister must take it from the same slot before closing it.
+            let _ = unsafe { CancelSynchronousIo(handle as HANDLE) };
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn cancel_windows_reader(_runtime: &SessionRuntime) {}
+
+fn lock_reader_io_for_resize<'a>(
+    reader_io: &'a Mutex<()>,
+    mut interrupt_reader: impl FnMut(),
+) -> Result<std::sync::MutexGuard<'a, ()>, String> {
+    loop {
+        match reader_io.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(error)) => return Err(lock_error(error)),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                // A Windows reader can pass its resize flag check immediately
+                // before entering ReadFile. Reissuing cancellation until this
+                // gate is ours closes that arm race without relabeling bytes.
+                interrupt_reader();
+                thread::yield_now();
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn unregister_windows_reader(runtime: &SessionRuntime) {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+
+    let handle = runtime
+        .reader_thread_handle
+        .lock()
+        .ok()
+        .and_then(|mut handle| handle.take());
+    if let Some(handle) = handle {
+        // SAFETY: swap transfers the sole owned duplicate to this close call.
+        let _ = unsafe { CloseHandle(handle as HANDLE) };
+    }
+}
+
+#[cfg(not(windows))]
+fn unregister_windows_reader(_runtime: &SessionRuntime) {}
+
 fn spawn_reader(
+    session_id: String,
     mut reader: PtyReader,
     runtime: Arc<SessionRuntime>,
     sender: mpsc::Sender<ReaderMessage>,
 ) {
     thread::spawn(move || {
+        register_windows_reader(&runtime);
         let mut buffer = [0_u8; 8192];
         while !runtime.reader_cancel.load(Ordering::Acquire) {
-            match read_with_cancellation(&mut reader, &runtime.reader_cancel, &mut buffer) {
-                Ok(None) | Ok(Some(0)) => break,
-                Ok(Some(read)) => {
+            match read_and_queue(&mut reader, &runtime, &mut buffer, &session_id) {
+                Ok(ReaderRead::Closed) => break,
+                Ok(ReaderRead::Retry) => thread::yield_now(),
+                Ok(ReaderRead::DataQueued { started_batch }) => {
                     if sender
-                        .send(ReaderMessage::Data(buffer[..read].to_vec()))
+                        .send(ReaderMessage::DataQueued { started_batch })
                         .is_err()
                     {
                         break;
                     }
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) if is_reader_resize_interrupt(&error) => {}
                 Err(_) => break,
             }
         }
+        unregister_windows_reader(&runtime);
         // Close the FD before publishing completion; respawn gating relies on
         // this release/acquire edge to prove the old reader owns no descriptor.
         drop(reader);
@@ -432,15 +675,22 @@ fn spawn_reader(
     });
 }
 
+enum ReaderRead {
+    DataQueued { started_batch: bool },
+    Retry,
+    Closed,
+}
+
 #[cfg(unix)]
-fn read_with_cancellation(
+fn read_and_queue(
     reader: &mut PtyReader,
-    cancel: &AtomicBool,
+    runtime: &SessionRuntime,
     buffer: &mut [u8],
-) -> std::io::Result<Option<usize>> {
+    session_id: &str,
+) -> std::io::Result<ReaderRead> {
     loop {
-        if cancel.load(Ordering::Acquire) {
-            return Ok(None);
+        if runtime.reader_cancel.load(Ordering::Acquire) {
+            return Ok(ReaderRead::Closed);
         }
         let mut descriptor = libc::pollfd {
             fd: reader.as_raw_fd(),
@@ -457,7 +707,21 @@ fn read_with_cancellation(
             )
         };
         if ready > 0 {
-            return reader.read(buffer).map(Some);
+            let _reader_io = runtime
+                .reader_io
+                .lock()
+                .map_err(|_| std::io::Error::other("terminal reader state is unavailable"))?;
+            if runtime.reader_resize_pending.load(Ordering::Acquire) {
+                return Ok(ReaderRead::Retry);
+            }
+            let read = reader.read(buffer)?;
+            if read == 0 {
+                return Ok(ReaderRead::Closed);
+            }
+            // Keep reader_io through grid stamping. Resize uses the same gate,
+            // so bytes consumed before it cannot be labeled with its new epoch.
+            let started_batch = queue_output(session_id, runtime, &buffer[..read]);
+            return Ok(ReaderRead::DataQueued { started_batch });
         }
         if ready == 0 {
             continue;
@@ -470,16 +734,42 @@ fn read_with_cancellation(
 }
 
 #[cfg(windows)]
-fn read_with_cancellation(
+fn read_and_queue(
     reader: &mut PtyReader,
-    cancel: &AtomicBool,
+    runtime: &SessionRuntime,
     buffer: &mut [u8],
-) -> std::io::Result<Option<usize>> {
-    if cancel.load(Ordering::Acquire) {
-        Ok(None)
-    } else {
-        reader.read(buffer).map(Some)
+    session_id: &str,
+) -> std::io::Result<ReaderRead> {
+    if runtime.reader_cancel.load(Ordering::Acquire) {
+        return Ok(ReaderRead::Closed);
     }
+    if runtime.reader_resize_pending.load(Ordering::Acquire) {
+        return Ok(ReaderRead::Retry);
+    }
+    let _reader_io = runtime
+        .reader_io
+        .lock()
+        .map_err(|_| std::io::Error::other("terminal reader state is unavailable"))?;
+    if runtime.reader_resize_pending.load(Ordering::Acquire) {
+        return Ok(ReaderRead::Retry);
+    }
+    let read = reader.read(buffer)?;
+    if read == 0 {
+        return Ok(ReaderRead::Closed);
+    }
+    let started_batch = queue_output(session_id, runtime, &buffer[..read]);
+    Ok(ReaderRead::DataQueued { started_batch })
+}
+
+#[cfg(windows)]
+fn is_reader_resize_interrupt(error: &std::io::Error) -> bool {
+    // ERROR_OPERATION_ABORTED is what CancelSynchronousIo reports to ReadFile.
+    error.raw_os_error() == Some(995)
+}
+
+#[cfg(not(windows))]
+fn is_reader_resize_interrupt(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::Interrupted
 }
 
 fn spawn_dispatcher(
@@ -488,7 +778,6 @@ fn spawn_dispatcher(
     receiver: mpsc::Receiver<ReaderMessage>,
 ) {
     thread::spawn(move || {
-        let mut batch = Vec::new();
         let mut batch_deadline = None;
         let mut reader_closed = false;
         let mut exit_code = None;
@@ -504,11 +793,10 @@ fn spawn_dispatcher(
                 .unwrap_or(STATUS_TICK_INTERVAL)
                 .min(STATUS_TICK_INTERVAL);
             match receiver.recv_timeout(timeout) {
-                Ok(ReaderMessage::Data(chunk)) => {
-                    if batch.is_empty() {
+                Ok(ReaderMessage::DataQueued { started_batch }) => {
+                    if started_batch {
                         batch_deadline = Some(Instant::now() + OUTPUT_BATCH_MAX_LATENCY);
                     }
-                    batch.extend_from_slice(&chunk);
                 }
                 Ok(ReaderMessage::ReaderClosed) => reader_closed = true,
                 Ok(ReaderMessage::Exited(code)) => {
@@ -516,7 +804,7 @@ fn spawn_dispatcher(
                     exit_deadline.get_or_insert_with(|| post_exit_drain_deadline(Instant::now()));
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if batch.is_empty() {
+                    if batch_deadline.is_none() {
                         emit_tick(&session_id, &runtime);
                     }
                 }
@@ -532,10 +820,7 @@ fn spawn_dispatcher(
             if batch_deadline.is_some_and(|deadline| Instant::now() >= deadline)
                 || ((reader_closed || exit_drain_expired) && exit_code.is_some())
             {
-                if !batch.is_empty() {
-                    emit_output(&session_id, &runtime, &batch);
-                    batch.clear();
-                }
+                deliver_pending_output(&session_id, &runtime);
                 batch_deadline = None;
             }
 
@@ -616,30 +901,98 @@ fn post_exit_drain_deadline(now: Instant) -> Instant {
     now + POST_EXIT_DRAIN_TIMEOUT
 }
 
-fn emit_output(session_id: &str, runtime: &SessionRuntime, bytes: &[u8]) {
-    let data = String::from_utf8_lossy(bytes).into_owned();
-    // Record and emit under one lock so `replay_output` sees a consistent
-    // snapshot: concurrent output is either already in it or emitted after it.
-    match runtime.recent.lock() {
-        Ok(mut recent) => {
-            recent.extend_from_slice(bytes);
-            trim_recent(&mut recent);
-            (runtime.callback)(PtyEvent::Output {
-                session_id: session_id.to_owned(),
-                data,
+fn queue_output(session_id: &str, runtime: &SessionRuntime, bytes: &[u8]) -> bool {
+    let Ok(_delivery) = runtime.output_delivery.lock() else {
+        return false;
+    };
+    let Ok(mut recent) = runtime.recent.lock() else {
+        let grid = runtime
+            .terminal_grid
+            .lock()
+            .map(|grid| *grid)
+            .unwrap_or(TerminalGrid {
+                size: TerminalSize { cols: 0, rows: 0 },
+                epoch: 0,
             });
-        }
-        // A poisoned buffer must not cost the user their live output.
-        Err(_) => (runtime.callback)(PtyEvent::Output {
-            session_id: session_id.to_owned(),
-            data,
-        }),
+        deliver_output(
+            session_id,
+            runtime,
+            OutputEmission {
+                bytes: bytes.to_vec(),
+                sequence: runtime.output_sequence.fetch_add(1, Ordering::Relaxed) + 1,
+                grid,
+            },
+        );
+        return false;
+    };
+    let grid = runtime
+        .terminal_grid
+        .lock()
+        .map(|grid| *grid)
+        .unwrap_or(recent.grid);
+    let started_batch = recent.pending.is_empty();
+    let previous = recent
+        .queue(bytes, grid)
+        .map(|(bytes, grid)| record_output(runtime, &mut recent, bytes, grid));
+    drop(recent);
+    if let Some(emission) = previous {
+        deliver_output(session_id, runtime, emission);
     }
+    started_batch
+}
+
+fn record_output(
+    runtime: &SessionRuntime,
+    recent: &mut RecentOutput,
+    bytes: Vec<u8>,
+    grid: TerminalGrid,
+) -> OutputEmission {
+    recent.append(&bytes, grid);
+    OutputEmission {
+        bytes,
+        sequence: runtime.output_sequence.fetch_add(1, Ordering::Relaxed) + 1,
+        grid,
+    }
+}
+
+fn take_pending_output_locked(
+    runtime: &SessionRuntime,
+    recent: &mut RecentOutput,
+) -> Option<OutputEmission> {
+    recent
+        .take_pending()
+        .map(|(bytes, grid)| record_output(runtime, recent, bytes, grid))
+}
+
+fn deliver_pending_output(session_id: &str, runtime: &SessionRuntime) {
+    let Ok(_delivery) = runtime.output_delivery.lock() else {
+        return;
+    };
+    let emission = runtime
+        .recent
+        .lock()
+        .ok()
+        .and_then(|mut recent| take_pending_output_locked(runtime, &mut recent));
+    if let Some(emission) = emission {
+        deliver_output(session_id, runtime, emission);
+    }
+}
+
+fn deliver_output(session_id: &str, runtime: &SessionRuntime, emission: OutputEmission) {
+    let data = String::from_utf8_lossy(&emission.bytes).into_owned();
+    (runtime.callback)(PtyEvent::Output {
+        session_id: session_id.to_owned(),
+        data,
+        sequence: emission.sequence,
+        grid_epoch: emission.grid.epoch,
+        cols: emission.grid.size.cols,
+        rows: emission.grid.size.rows,
+    });
     let transition = runtime
         .detector
         .lock()
         .ok()
-        .and_then(|mut detector| detector.on_output(bytes));
+        .and_then(|mut detector| detector.on_output(&emission.bytes));
     if let Some(status) = transition {
         (runtime.callback)(PtyEvent::Status {
             session_id: session_id.to_owned(),
@@ -786,10 +1139,13 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::adapters::SpawnSpec;
+    #[cfg(unix)]
     use crate::models::{EnvVar, Settings, Status};
     use std::sync::mpsc::{self, Receiver};
     use std::time::{Duration, Instant};
+    #[cfg(unix)]
     use tempfile::tempdir;
 
     fn manager_with_events() -> (PtyManager, Receiver<PtyEvent>) {
@@ -859,25 +1215,165 @@ mod tests {
     }
 
     #[test]
+    fn recent_output_never_relabels_old_bytes_after_a_resize() {
+        let old_size = TerminalSize { cols: 80, rows: 24 };
+        let new_size = TerminalSize {
+            cols: 120,
+            rows: 40,
+        };
+        let old_grid = TerminalGrid {
+            size: old_size,
+            epoch: 1,
+        };
+        let new_grid = TerminalGrid {
+            size: new_size,
+            epoch: 2,
+        };
+        let mut recent = RecentOutput::new(old_grid);
+        recent.append(b"old frame", old_grid);
+
+        assert_eq!(recent.replay_grid(new_grid), old_grid);
+        assert_eq!(recent.data, b"old frame");
+
+        recent.append(b"new frame", new_grid);
+
+        assert_eq!(recent.replay_grid(new_grid), new_grid);
+        assert_eq!(recent.data, b"new frame");
+    }
+
+    #[test]
+    fn delayed_output_batch_keeps_the_grid_captured_before_resize() {
+        let old_grid = TerminalGrid {
+            size: TerminalSize { cols: 80, rows: 24 },
+            epoch: 1,
+        };
+        let new_grid = TerminalGrid {
+            size: TerminalSize {
+                cols: 120,
+                rows: 36,
+            },
+            epoch: 2,
+        };
+        let mut recent = RecentOutput::new(old_grid);
+
+        assert!(recent.queue(b"old delayed frame", old_grid).is_none());
+        let (bytes, producing_grid) = recent.take_pending().unwrap();
+        recent.append(&bytes, producing_grid);
+
+        assert_eq!(producing_grid, old_grid);
+        assert_ne!(producing_grid, new_grid);
+        assert_eq!(recent.data, b"old delayed frame");
+    }
+
+    #[test]
+    fn resize_reissues_reader_interrupt_until_the_io_gate_is_acquired() {
+        let reader_io = Arc::new(Mutex::new(()));
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker_io = Arc::clone(&reader_io);
+        let worker = thread::spawn(move || {
+            let _guard = worker_io.lock().unwrap();
+            locked_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        locked_rx.recv().unwrap();
+
+        let mut interrupts = 0;
+        let mut release_tx = Some(release_tx);
+        let guard = lock_reader_io_for_resize(&reader_io, || {
+            interrupts += 1;
+            // The first cancellation models ERROR_NOT_FOUND when ReadFile has
+            // not armed yet. A later attempt releases the in-flight read.
+            if interrupts == 2 {
+                release_tx.take().unwrap().send(()).unwrap();
+            }
+        })
+        .unwrap();
+
+        assert!(interrupts >= 2);
+        drop(guard);
+        worker.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_delivery_keeps_sequence_order_across_producer_threads() {
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let (first_entered_tx, first_entered_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let release_first_rx = Arc::new(Mutex::new(release_first_rx));
+        let manager = PtyManager::with_callback({
+            let delivered = Arc::clone(&delivered);
+            let release_first_rx = Arc::clone(&release_first_rx);
+            move |event| {
+                if let PtyEvent::Output { sequence, .. } = event {
+                    delivered.lock().unwrap().push(sequence);
+                    if sequence == 1 {
+                        first_entered_tx.send(()).unwrap();
+                        release_first_rx.lock().unwrap().recv().unwrap();
+                    }
+                }
+            }
+        });
+        manager
+            .spawn(
+                "ordered-output",
+                SpawnSpec::new("/bin/sh", ["-c", "sleep 10"], "/"),
+                80,
+                24,
+                &Settings::default(),
+            )
+            .unwrap();
+        let runtime = manager.runtime("ordered-output").unwrap();
+        assert!(queue_output("ordered-output", &runtime, b"old grid"));
+        *runtime.terminal_grid.lock().unwrap() = TerminalGrid {
+            size: TerminalSize {
+                cols: 120,
+                rows: 36,
+            },
+            epoch: 2,
+        };
+
+        let first_runtime = Arc::clone(&runtime);
+        let first = thread::spawn(move || {
+            queue_output("ordered-output", &first_runtime, b"new grid");
+        });
+        first_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        let second_runtime = Arc::clone(&runtime);
+        let second = thread::spawn(move || {
+            deliver_pending_output("ordered-output", &second_runtime);
+        });
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(*delivered.lock().unwrap(), vec![1]);
+
+        release_first_tx.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+        assert_eq!(*delivered.lock().unwrap(), vec![1, 2]);
+        manager.stop("ordered-output").unwrap();
+    }
+
+    #[test]
     fn replaying_an_unknown_session_is_a_no_op() {
         let (manager, receiver) = manager_with_events();
 
-        assert_eq!(manager.replay_output("missing"), Ok(()));
+        assert_eq!(manager.replay_output("missing"), Ok(PtyReplay::default()));
         assert!(receiver.try_recv().is_err());
     }
 
     #[cfg(unix)]
     #[test]
-    fn replay_output_resends_what_a_live_session_already_printed() {
+    fn replay_output_returns_a_sequence_stamped_snapshot_without_an_event() {
         let (manager, receiver) = manager_with_events();
-        let spec = SpawnSpec::new(
-            "/bin/sh",
-            ["-c", "printf 'restored-line\\n'; sleep 30"],
-            "/",
-        );
+        let spec = SpawnSpec::new("/bin/sh", Vec::<String>::new(), "/");
 
         manager
             .spawn("replay", spec, 80, 24, &Settings::default())
+            .unwrap();
+        manager
+            .write("replay", b"printf 'restored-line\\n'\n")
             .unwrap();
         wait_for_event(
             &receiver,
@@ -886,16 +1382,31 @@ mod tests {
         );
 
         // The webview reloaded: its buffer is gone but the PTY is still live.
-        manager.replay_output("replay").unwrap();
+        let replay = manager.replay_output("replay").unwrap();
 
-        let event = wait_for_event(&receiver, Duration::from_secs(3), |event| {
-            matches!(event, PtyEvent::Output { .. })
-        });
-        let PtyEvent::Output { session_id, data } = event else {
-            unreachable!()
-        };
-        assert_eq!(session_id, "replay");
-        assert!(data.contains("restored-line"));
+        assert!(replay.data.contains("restored-line"));
+        assert!(replay.through_sequence > 0);
+        assert_eq!((replay.cols, replay.rows), (80, 24));
+        assert!(!replay.covers_unsequenced);
+        assert!(receiver.try_recv().is_err());
+
+        manager.resize("replay", 100, 40).unwrap();
+        // Until new-width output arrives, retained bytes still belong to their
+        // original grid and must not be mislabeled as 100x40.
+        let resized_replay = manager.replay_output("replay").unwrap();
+        assert_eq!((resized_replay.cols, resized_replay.rows), (80, 24));
+        manager
+            .write("replay", b"printf 'resized-line\\n'\n")
+            .unwrap();
+        wait_for_event(
+            &receiver,
+            Duration::from_secs(3),
+            |event| matches!(event, PtyEvent::Output { data, .. } if data.contains("resized-line")),
+        );
+        let resized_replay = manager.replay_output("replay").unwrap();
+        assert_eq!((resized_replay.cols, resized_replay.rows), (100, 40));
+        assert!(resized_replay.data.contains("resized-line"));
+        assert!(!resized_replay.data.contains("restored-line"));
 
         manager.stop("replay").unwrap();
     }
@@ -926,7 +1437,10 @@ mod tests {
             Duration::from_secs(3),
             |event| matches!(event, PtyEvent::Output { data, .. } if data.contains("synthetic-value")),
         );
-        let PtyEvent::Output { session_id, data } = event else {
+        let PtyEvent::Output {
+            session_id, data, ..
+        } = event
+        else {
             unreachable!()
         };
         assert_eq!(session_id, "cwd-env");
@@ -1496,7 +2010,7 @@ mod tests {
         // the read end while the test retains the write end to prevent EOF.
         let reader = unsafe { std::fs::File::from_raw_fd(pipe_fds[0]) };
         let (sender, receiver) = mpsc::channel();
-        spawn_reader(reader, Arc::clone(&runtime), sender);
+        spawn_reader("reader-cancel".into(), reader, Arc::clone(&runtime), sender);
         std::thread::sleep(Duration::from_millis(20));
         assert!(!runtime.reader_complete.load(Ordering::Acquire));
 

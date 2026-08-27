@@ -8,6 +8,7 @@ import {
   type AttentionCountPayload,
   type PtyOutputPayload,
   type Session,
+  type SessionResumeErrorPayload,
   type SessionStatusPayload,
 } from "./types";
 import { mockListen } from "./mock";
@@ -27,6 +28,9 @@ export const onSessionStatus = (h: (p: SessionStatusPayload) => void) =>
 
 export const onSessionUpdated = (h: (p: Session) => void) =>
   sub<Session>(EVENT.sessionUpdated, h);
+
+export const onSessionResumeError = (h: (p: SessionResumeErrorPayload) => void) =>
+  sub<SessionResumeErrorPayload>(EVENT.sessionResumeError, h);
 
 export const onAttentionCount = (h: (p: AttentionCountPayload) => void) =>
   sub<AttentionCountPayload>(EVENT.attentionCount, h);

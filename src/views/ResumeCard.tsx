@@ -9,6 +9,7 @@ export function ResumeCard({ session }: { session: Session }) {
   const path = folderPathOf(session, state.folders);
   const canResume = session.tool === "terminal" || Boolean(session.cliSessionId);
   const error = state.resumeErrors[session.id];
+  const activeWriter = session.tool === "codex" && error?.code === "CODEX_ACTIVE_WRITER";
 
   return (
     <div className="resume-wrap">
@@ -50,15 +51,26 @@ export function ResumeCard({ session }: { session: Session }) {
             <div className="operation-error__title">Unable to resume {session.title}</div>
             <div>{error.message}</div>
             {error.isCliNotFound && <div className="operation-error__guidance">Install {session.tool} and ensure it is available on PATH, then retry.</div>}
+            {activeWriter && <div className="operation-error__guidance">Codex permits only one writer per conversation. Forking preserves the transcript under a new session ID.</div>}
           </div>
         )}
         {canResume ? (
-          <Button variant="primary" block onClick={() => void actions.resume(session.id)} style={{ padding: 13, fontSize: 14 }}>
+          <Button variant="primary" block disabled={!state.bootReady} onClick={() => void actions.resume(session.id)} style={{ padding: 13, fontSize: 14 }}>
             ↻ Resume session
           </Button>
         ) : (
           <Button variant="primary" block disabled style={{ padding: 13, fontSize: 14 }}>
             ↻ Resume session
+          </Button>
+        )}
+        {activeWriter && (
+          <Button
+            variant="subtle"
+            block
+            onClick={() => void actions.forkCodex(session.id)}
+            style={{ marginTop: 9, padding: 11, fontSize: 13 }}
+          >
+            Fork conversation and continue
           </Button>
         )}
         {(!canResume || error) && (

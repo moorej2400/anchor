@@ -4,7 +4,7 @@
 //! session identity before its process can produce output--is testable without
 //! a webview or a real CLI installation.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 #[cfg(unix)]
@@ -15,21 +15,28 @@ use std::process::{Command, Stdio};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
 use chrono::Utc;
 
-use crate::adapters::{adapter_for, codex, IdCapture, SpawnSpec};
-use crate::models::{AppState, CliInfo, Folder, Session, Settings, Status, Tool};
+use crate::adapters::{adapter_for, codex, Adapter, IdCapture, SpawnSpec};
+use crate::models::{
+    AppState, CliInfo, Folder, PtyReplay, PtyResize, Session, Settings, Status, Tool,
+};
 use crate::pty::{PtyEvent, PtyManager};
 use crate::registry::Registry;
 use crate::scrollback::{format_restored_scrollback, ScrollbackStore};
 use crate::settings::{expand_tilde, SettingsStore};
 
-const DEFAULT_COLS: u16 = 80;
-const DEFAULT_ROWS: u16 = 24;
+const TERMINAL_FALLBACK_MAX_BYTES: usize = 2 * 1024 * 1024;
+const TERMINAL_FALLBACK_GAP: &str =
+    "\r\n── Anchor omitted older output after scrollback persistence failed ──\r\n";
+const RESUME_BOOTSTRAP_SCAN_MAX_BYTES: usize = 256 * 1024;
+const RESUME_BOOTSTRAP_TAIL_BYTES: usize = 8 * 1024;
+const CODEX_ACTIVE_WRITER_CODE: &str = codex::ACTIVE_WRITER_CODE;
+const CODEX_ACTIVE_WRITER_MESSAGE: &str = codex::ACTIVE_WRITER_MESSAGE;
 
 pub trait PtyRuntime: Send + Sync {
     fn spawn(
@@ -41,9 +48,9 @@ pub trait PtyRuntime: Send + Sync {
         settings: &Settings,
     ) -> Result<(), String>;
     fn write(&self, session_id: &str, data: &[u8]) -> Result<(), String>;
-    fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String>;
+    fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<PtyResize, String>;
     fn stop(&self, session_id: &str) -> Result<(), String>;
-    fn replay_output(&self, session_id: &str) -> Result<(), String>;
+    fn replay_output(&self, session_id: &str) -> Result<PtyReplay, String>;
     fn is_live(&self, session_id: &str) -> bool;
 }
 
@@ -63,7 +70,7 @@ impl PtyRuntime for PtyManager {
         self.write(session_id, data)
     }
 
-    fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
+    fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<PtyResize, String> {
         self.resize(session_id, cols, rows)
     }
 
@@ -71,7 +78,7 @@ impl PtyRuntime for PtyManager {
         self.stop(session_id)
     }
 
-    fn replay_output(&self, session_id: &str) -> Result<(), String> {
+    fn replay_output(&self, session_id: &str) -> Result<PtyReplay, String> {
         self.replay_output(session_id)
     }
 
@@ -82,9 +89,19 @@ impl PtyRuntime for PtyManager {
 
 /// UI side effects are abstracted so mutation and ordering tests remain local.
 pub trait BackendEvents: Send + Sync {
-    fn pty_output(&self, _session_id: &str, _data: &str) {}
+    fn pty_output(
+        &self,
+        _session_id: &str,
+        _data: &str,
+        _sequence: u64,
+        _grid_epoch: u64,
+        _cols: u16,
+        _rows: u16,
+    ) {
+    }
     fn session_status(&self, _session_id: &str, _status: Status, _exit_code: Option<i32>) {}
     fn session_updated(&self, _session: &Session) {}
+    fn session_resume_error(&self, _session_id: &str, _code: &str, _message: &str) {}
     fn attention_count(&self, _waiting: u32, _notify: bool) {}
     fn background_error(&self, _message: &str) {}
 }
@@ -102,12 +119,148 @@ pub struct Backend {
     events: Arc<dyn BackendEvents>,
     enforce_executable_checks: bool,
     auto_restore_started: AtomicBool,
+    auto_restore_progress: Mutex<AutoRestoreProgress>,
+    auto_restore_complete: Condvar,
     mutation: Mutex<()>,
     operations: Mutex<()>,
+    terminal_replay: Mutex<HashMap<String, TerminalReplayState>>,
+    resume_bootstraps: Mutex<HashMap<String, ResumeBootstrapWatch>>,
     #[cfg(test)]
     discovery_starts: AtomicUsize,
     #[cfg(test)]
     codex_profiles_root: Mutex<Option<PathBuf>>,
+}
+
+#[derive(Clone)]
+struct TerminalReplayState {
+    through_sequence: u64,
+    reliable: bool,
+    /// Exact saved-file boundary through the last successful generation write.
+    /// Once persistence fails, later bytes stay only in `fallback_output`, so
+    /// replay can join the two sources without overlap or an epoch-local gap.
+    persisted_bytes: usize,
+    fallback_output: Vec<u8>,
+    fallback_truncated: bool,
+}
+
+struct ResumeBootstrapWatch {
+    tool: Tool,
+    observed_bytes: usize,
+    tail: String,
+    escape: BootstrapEscape,
+}
+
+#[derive(Default)]
+enum BootstrapEscape {
+    #[default]
+    Text,
+    Escape,
+    Csi,
+    ControlString,
+    ControlStringEscape,
+}
+
+impl ResumeBootstrapWatch {
+    fn new(tool: Tool) -> Self {
+        Self {
+            tool,
+            observed_bytes: 0,
+            tail: String::new(),
+            escape: BootstrapEscape::Text,
+        }
+    }
+
+    fn observe(&mut self, data: &str) -> Option<(&'static str, &'static str)> {
+        self.observed_bytes = self.observed_bytes.saturating_add(data.len());
+        // Codex draws bootstrap errors through a TUI. Escape sequences and
+        // cursor movement may split otherwise plain words across PTY chunks,
+        // so detection must inspect terminal text rather than raw bytes.
+        for character in data.chars() {
+            match self.escape {
+                BootstrapEscape::Text => match character {
+                    '\u{1b}' => self.escape = BootstrapEscape::Escape,
+                    character if character.is_control() || character.is_whitespace() => {
+                        if !self.tail.ends_with(' ') {
+                            self.tail.push(' ');
+                        }
+                    }
+                    character => self.tail.push(character.to_ascii_lowercase()),
+                },
+                BootstrapEscape::Escape => {
+                    self.escape = match character {
+                        '[' => BootstrapEscape::Csi,
+                        ']' | 'P' | '^' | '_' | 'X' => BootstrapEscape::ControlString,
+                        _ => BootstrapEscape::Text,
+                    };
+                }
+                BootstrapEscape::Csi => {
+                    if ('@'..='~').contains(&character) {
+                        self.escape = BootstrapEscape::Text;
+                    }
+                }
+                BootstrapEscape::ControlString => match character {
+                    '\u{7}' => self.escape = BootstrapEscape::Text,
+                    '\u{1b}' => self.escape = BootstrapEscape::ControlStringEscape,
+                    _ => {}
+                },
+                BootstrapEscape::ControlStringEscape => {
+                    self.escape = if character == '\\' {
+                        BootstrapEscape::Text
+                    } else {
+                        BootstrapEscape::ControlString
+                    };
+                }
+            }
+        }
+        if self.tail.len() > RESUME_BOOTSTRAP_TAIL_BYTES {
+            let mut cut = self.tail.len() - RESUME_BOOTSTRAP_TAIL_BYTES;
+            while !self.tail.is_char_boundary(cut) {
+                cut += 1;
+            }
+            self.tail.drain(..cut);
+        }
+
+        (self.tool == Tool::Codex
+            && self.tail.contains("thread/resume failed")
+            && self.tail.contains("already has an active writer"))
+        .then_some((CODEX_ACTIVE_WRITER_CODE, CODEX_ACTIVE_WRITER_MESSAGE))
+    }
+
+    fn expired(&self) -> bool {
+        self.observed_bytes >= RESUME_BOOTSTRAP_SCAN_MAX_BYTES
+    }
+}
+
+#[derive(Default)]
+struct AutoRestoreProgress {
+    size: Option<(u16, u16)>,
+    finished: bool,
+}
+
+impl Default for TerminalReplayState {
+    fn default() -> Self {
+        Self {
+            through_sequence: 0,
+            reliable: true,
+            persisted_bytes: 0,
+            fallback_output: Vec::new(),
+            fallback_truncated: false,
+        }
+    }
+}
+
+fn append_terminal_fallback(state: &mut TerminalReplayState, data: &[u8]) {
+    state.fallback_output.extend_from_slice(data);
+    if state.fallback_output.len() <= TERMINAL_FALLBACK_MAX_BYTES {
+        return;
+    }
+    let overflow = state.fallback_output.len() - TERMINAL_FALLBACK_MAX_BYTES;
+    let cut = state.fallback_output[overflow..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map_or(overflow, |offset| overflow + offset + 1);
+    state.fallback_output.drain(..cut);
+    state.fallback_truncated = true;
 }
 
 impl Backend {
@@ -138,8 +291,12 @@ impl Backend {
                 events,
                 enforce_executable_checks: true,
                 auto_restore_started: AtomicBool::new(false),
+                auto_restore_progress: Mutex::new(AutoRestoreProgress::default()),
+                auto_restore_complete: Condvar::new(),
                 mutation: Mutex::new(()),
                 operations: Mutex::new(()),
+                terminal_replay: Mutex::new(HashMap::new()),
+                resume_bootstraps: Mutex::new(HashMap::new()),
                 #[cfg(test)]
                 discovery_starts: AtomicUsize::new(0),
                 #[cfg(test)]
@@ -164,8 +321,12 @@ impl Backend {
             events,
             enforce_executable_checks: false,
             auto_restore_started: AtomicBool::new(false),
+            auto_restore_progress: Mutex::new(AutoRestoreProgress::default()),
+            auto_restore_complete: Condvar::new(),
             mutation: Mutex::new(()),
             operations: Mutex::new(()),
+            terminal_replay: Mutex::new(HashMap::new()),
+            resume_bootstraps: Mutex::new(HashMap::new()),
             discovery_starts: AtomicUsize::new(0),
             codex_profiles_root: Mutex::new(None),
         })
@@ -193,8 +354,12 @@ impl Backend {
                 events,
                 enforce_executable_checks: false,
                 auto_restore_started: AtomicBool::new(false),
+                auto_restore_progress: Mutex::new(AutoRestoreProgress::default()),
+                auto_restore_complete: Condvar::new(),
                 mutation: Mutex::new(()),
                 operations: Mutex::new(()),
+                terminal_replay: Mutex::new(HashMap::new()),
+                resume_bootstraps: Mutex::new(HashMap::new()),
                 discovery_starts: AtomicUsize::new(0),
                 codex_profiles_root: Mutex::new(None),
             }
@@ -329,6 +494,15 @@ impl Backend {
                 );
             }
         }
+        let mut terminal_replay = self.terminal_replay.lock().map_err(lock_error)?;
+        for session_id in &session_ids {
+            terminal_replay.remove(session_id);
+        }
+        drop(terminal_replay);
+        let mut resume_bootstraps = self.resume_bootstraps.lock().map_err(lock_error)?;
+        for session_id in &session_ids {
+            resume_bootstraps.remove(session_id);
+        }
         self.publish_attention_if_changed(waiting_before_removal);
         Ok(())
     }
@@ -339,8 +513,10 @@ impl Backend {
         tool: Tool,
         title: Option<String>,
         extra_args: Option<Vec<String>>,
+        cols: u16,
+        rows: u16,
     ) -> Result<Session, String> {
-        self.launch_session_with_profile(folder_id, tool, title, extra_args, None)
+        self.launch_session_with_profile(folder_id, tool, title, extra_args, None, cols, rows)
     }
 
     pub fn launch_session_with_profile(
@@ -350,6 +526,8 @@ impl Backend {
         title: Option<String>,
         extra_args: Option<Vec<String>>,
         codex_profile: Option<String>,
+        cols: u16,
+        rows: u16,
     ) -> Result<Session, String> {
         let _operation = self.operations.lock().map_err(lock_error)?;
         let (folder_path, settings) = self.folder_path_and_settings(folder_id)?;
@@ -358,7 +536,7 @@ impl Backend {
             Some(title) => nonempty_name(&title, "session")?,
             None => default_title(tool, &settings),
         };
-        let mut session = Session {
+        let session = Session {
             id: uuid::Uuid::new_v4().hyphenated().to_string(),
             folder_id: folder_id.to_owned(),
             tool,
@@ -376,6 +554,85 @@ impl Backend {
         let launched_at = SystemTime::now();
         let (spec, capture) = adapter.launch(&session, &folder_path, &settings)?;
         let spec = self.resolve_spawn_spec(tool, spec, &settings)?;
+        self.persist_spawn_and_discover(
+            session,
+            folder_path,
+            &settings,
+            spec,
+            capture,
+            launched_at,
+            cols,
+            rows,
+            adapter,
+        )
+    }
+
+    pub fn fork_codex_session(
+        self: &Arc<Self>,
+        source_session_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Session, String> {
+        let _operation = self.operations.lock().map_err(lock_error)?;
+        let source = self.session(source_session_id)?;
+        if source.tool != Tool::Codex {
+            return Err("SESSION_FORK_UNSUPPORTED: only Codex sessions can be forked".into());
+        }
+        if self.runtime.is_live(source_session_id) {
+            return Err("PTY_ALREADY_LIVE: stop the current Anchor PTY before forking".into());
+        }
+        let (folder_path, settings) = self.folder_path_and_settings(&source.folder_id)?;
+        let codex_profile =
+            self.validate_codex_profile_for_tool(Tool::Codex, source.codex_profile.clone())?;
+        let now = Utc::now().to_rfc3339();
+        let session = Session {
+            id: uuid::Uuid::new_v4().hyphenated().to_string(),
+            folder_id: source.folder_id.clone(),
+            tool: Tool::Codex,
+            title: format!("{} (fork)", source.title),
+            cli_session_id: None,
+            status: Status::Stopped,
+            model: source.model.clone(),
+            // Launch-only arguments can change behavior or identity and do not
+            // belong on a provider-defined fork command.
+            extra_args: Vec::new(),
+            codex_profile,
+            created_at: now.clone(),
+            last_active_at: now,
+            was_open_in_tab: true,
+        };
+        let adapter = adapter_for(Tool::Codex);
+        let launched_at = SystemTime::now();
+        let (spec, capture) = adapter.fork(&source, &folder_path, &settings)?;
+        let spec = self.resolve_spawn_spec(Tool::Codex, spec, &settings)?;
+        self.persist_spawn_and_discover(
+            session,
+            folder_path,
+            &settings,
+            spec,
+            capture,
+            launched_at,
+            cols,
+            rows,
+            adapter,
+        )
+    }
+
+    // Launch and fork must share this save-before-spawn transaction. Keeping
+    // the complete spawn inputs explicit makes their identity rules visible.
+    #[allow(clippy::too_many_arguments)]
+    fn persist_spawn_and_discover(
+        self: &Arc<Self>,
+        mut session: Session,
+        folder_path: PathBuf,
+        settings: &Settings,
+        spec: SpawnSpec,
+        capture: IdCapture,
+        launched_at: SystemTime,
+        cols: u16,
+        rows: u16,
+        adapter: Box<dyn Adapter + Send + Sync>,
+    ) -> Result<Session, String> {
         if let IdCapture::PreAssigned(id) = &capture {
             session.cli_session_id = Some(id.clone());
         }
@@ -392,11 +649,13 @@ impl Backend {
                 return Err(error);
             }
         }
+        if session.tool == Tool::Terminal {
+            self.reset_terminal_replay(&session.id, 0)?;
+        }
 
-        if let Err(spawn_error) =
-            self.runtime
-                .spawn(&session.id, spec, DEFAULT_COLS, DEFAULT_ROWS, &settings)
-        {
+        // The CLI must see the measured xterm grid before its first output;
+        // resizing an already drawn TUI leaves cursor-addressed rows misplaced.
+        if let Err(spawn_error) = self.runtime.spawn(&session.id, spec, cols, rows, settings) {
             self.compensate_failed_launch(&session.id)?;
             return Err(spawn_error);
         }
@@ -410,7 +669,12 @@ impl Backend {
         self.session(&session.id)
     }
 
-    pub fn resume_session(self: &Arc<Self>, session_id: &str) -> Result<Session, String> {
+    pub fn resume_session(
+        self: &Arc<Self>,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Session, String> {
         let _operation = self.operations.lock().map_err(lock_error)?;
         let session = self.session(session_id)?;
         if self.runtime.is_live(session_id) {
@@ -423,19 +687,51 @@ impl Backend {
         let folder_path = self.folder_path(&session.folder_id)?;
         let settings = self.get_settings()?;
         let adapter = adapter_for(session.tool);
+        if let Err(error) = adapter.preflight_resume(&session) {
+            if error == format!("{CODEX_ACTIVE_WRITER_CODE}: {CODEX_ACTIVE_WRITER_MESSAGE}") {
+                self.events.session_resume_error(
+                    session_id,
+                    CODEX_ACTIVE_WRITER_CODE,
+                    CODEX_ACTIVE_WRITER_MESSAGE,
+                );
+            }
+            return Err(error);
+        }
         let spec = adapter.resume(&session, &folder_path, &settings)?;
         let spec = self.resolve_spawn_spec(session.tool, spec, &settings)?;
 
-        if session.tool == Tool::Terminal && settings.restore_scrollback {
-            let saved = self.scrollback_store()?.read(session_id)?;
-            if !saved.is_empty() {
+        if session.tool == Tool::Terminal {
+            let (restored_bytes, restored_prefix) = if settings.restore_scrollback {
+                let saved = self.scrollback_store()?.read_bytes(session_id)?;
+                let formatted = if saved.is_empty() {
+                    String::new()
+                } else {
+                    format_restored_scrollback(&String::from_utf8_lossy(&saved))
+                };
+                (saved.len(), formatted)
+            } else {
+                (0, String::new())
+            };
+            self.reset_terminal_replay(session_id, restored_bytes)?;
+            if !restored_prefix.is_empty() {
                 self.events
-                    .pty_output(session_id, &format_restored_scrollback(&saved));
+                    .pty_output(session_id, &restored_prefix, 0, 0, cols, rows);
             }
+        } else if session.tool == Tool::Codex && cfg!(not(windows)) {
+            // Codex reports some resume rejections only after the PTY spawn has
+            // succeeded. Arm before spawn because output callbacks may run from
+            // inside spawn itself.
+            self.resume_bootstraps.lock().map_err(lock_error)?.insert(
+                session_id.to_owned(),
+                ResumeBootstrapWatch::new(session.tool),
+            );
         }
-        self.runtime
-            .spawn(session_id, spec, DEFAULT_COLS, DEFAULT_ROWS, &settings)?;
+        if let Err(error) = self.runtime.spawn(session_id, spec, cols, rows, &settings) {
+            self.clear_resume_bootstrap(session_id);
+            return Err(error);
+        }
         if let Err(error) = self.ensure_running_after_spawn(session_id) {
+            self.clear_resume_bootstrap(session_id);
             let _ = self.runtime.stop(session_id);
             return Err(error);
         }
@@ -502,6 +798,14 @@ impl Backend {
                 "SCROLLBACK_DELETE_FAILED: removed-session scrollback cleanup failed",
             );
         }
+        self.terminal_replay
+            .lock()
+            .map_err(lock_error)?
+            .remove(session_id);
+        self.resume_bootstraps
+            .lock()
+            .map_err(lock_error)?
+            .remove(session_id);
         self.publish_attention_if_changed(waiting_before_removal);
         Ok(())
     }
@@ -544,17 +848,73 @@ impl Backend {
         self.runtime.write(session_id, data.as_bytes())
     }
 
-    pub fn resize_pty(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
+    pub fn resize_pty(
+        &self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<crate::models::PtyResize, String> {
         self.session(session_id)?;
         self.runtime.resize(session_id, cols, rows)
     }
 
-    /// Resend a live session's recent output. A webview reload destroys every
-    /// xterm buffer while the PTYs keep running, so without this the pane for a
-    /// still-running CLI comes back blank (SPEC.md §8).
-    pub fn replay_output(&self, session_id: &str) -> Result<(), String> {
-        self.session(session_id)?;
-        self.runtime.replay_output(session_id)
+    /// Return one authoritative live snapshot. Terminal sessions use their
+    /// full persisted scrollback and the last sequence committed to that same
+    /// file; AI sessions use the runtime's bounded recent-output snapshot.
+    pub fn replay_output(&self, session_id: &str) -> Result<PtyReplay, String> {
+        let transition = self.mutation.lock().map_err(lock_error)?;
+        let session = self.session(session_id)?;
+        let runtime_replay = self.runtime.replay_output(session_id)?;
+        if session.tool == Tool::Terminal && self.get_settings()?.restore_scrollback {
+            let state = self
+                .terminal_replay
+                .lock()
+                .map_err(lock_error)?
+                .get(session_id)
+                .cloned()
+                .unwrap_or_default();
+            if state.reliable {
+                let saved = self.scrollback_store()?.read(session_id)?;
+                return Ok(PtyReplay {
+                    data: if saved.is_empty() {
+                        String::new()
+                    } else {
+                        format_restored_scrollback(&saved)
+                    },
+                    through_sequence: state.through_sequence,
+                    cols: runtime_replay.cols,
+                    rows: runtime_replay.rows,
+                    covers_unsequenced: true,
+                    grid_epoch: runtime_replay.grid_epoch,
+                });
+            }
+            let mut saved = self.scrollback_store()?.read_bytes(session_id)?;
+            saved.truncate(state.persisted_bytes.min(saved.len()));
+            let restored_prefix = if saved.is_empty() {
+                String::new()
+            } else {
+                format_restored_scrollback(&String::from_utf8_lossy(&saved))
+            };
+            return Ok(PtyReplay {
+                data: format!(
+                    "{}{}{}",
+                    restored_prefix,
+                    if state.fallback_truncated {
+                        TERMINAL_FALLBACK_GAP
+                    } else {
+                        ""
+                    },
+                    String::from_utf8_lossy(&state.fallback_output)
+                ),
+                through_sequence: state.through_sequence,
+                cols: runtime_replay.cols,
+                rows: runtime_replay.rows,
+                covers_unsequenced: true,
+                grid_epoch: runtime_replay.grid_epoch,
+            });
+        }
+        drop(transition);
+        Ok(runtime_replay)
     }
 
     pub fn get_scrollback(&self, session_id: &str) -> Result<String, String> {
@@ -656,17 +1016,46 @@ impl Backend {
     /// restored output and status cannot race listener registration. The atomic
     /// claim makes reloads and repeated ready calls harmless.
     ///
-    /// Returns whether this call is the one that started auto-restore.
-    pub fn on_frontend_ready(self: &Arc<Self>) -> bool {
+    /// Returns after the one guarded auto-restore pass is complete. The Tauri
+    /// wrapper runs this work off the UI thread.
+    pub fn on_frontend_ready(self: &Arc<Self>, cols: u16, rows: u16) -> (bool, u16, u16) {
         if self.auto_restore_started.swap(true, Ordering::AcqRel) {
-            return false;
+            let mut progress = self
+                .auto_restore_progress
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let overlapped_restore = !progress.finished;
+            while !progress.finished {
+                progress = self
+                    .auto_restore_complete
+                    .wait(progress)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            let (claimed_cols, claimed_rows) = progress.size.unwrap_or((cols, rows));
+            return if overlapped_restore {
+                (false, claimed_cols, claimed_rows)
+            } else {
+                (false, cols, rows)
+            };
         }
-        let backend = Arc::clone(self);
-        thread::spawn(move || backend.restore_open_sessions());
-        true
+        {
+            let mut progress = self
+                .auto_restore_progress
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            progress.size = Some((cols, rows));
+        }
+        self.restore_open_sessions(cols, rows);
+        let mut progress = self
+            .auto_restore_progress
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        progress.finished = true;
+        self.auto_restore_complete.notify_all();
+        (true, cols, rows)
     }
 
-    fn restore_open_sessions(self: &Arc<Self>) {
+    fn restore_open_sessions(self: &Arc<Self>, cols: u16, rows: u16) {
         let Ok(settings) = self.get_settings() else {
             self.events
                 .background_error("SETTINGS_READ_FAILED: auto-restore could not read settings");
@@ -690,16 +1079,44 @@ impl Backend {
             }
         };
         for id in ids {
-            if self.resume_session(&id).is_err() {
+            if self.resume_session(&id, cols, rows).is_err() {
                 self.events
                     .background_error("AUTO_RESTORE_FAILED: a saved session could not be restored");
             }
         }
     }
 
+    fn observe_resume_bootstrap(
+        &self,
+        session_id: &str,
+        data: &str,
+    ) -> Option<(&'static str, &'static str)> {
+        let mut watches = self.resume_bootstraps.lock().ok()?;
+        let watch = watches.get_mut(session_id)?;
+        let failure = watch.observe(data);
+        if failure.is_some() || watch.expired() {
+            watches.remove(session_id);
+        }
+        failure
+    }
+
+    fn clear_resume_bootstrap(&self, session_id: &str) {
+        if let Ok(mut watches) = self.resume_bootstraps.lock() {
+            watches.remove(session_id);
+        }
+    }
+
     fn handle_pty_event(&self, event: PtyEvent) {
         match event {
-            PtyEvent::Output { session_id, data } => {
+            PtyEvent::Output {
+                session_id,
+                data,
+                sequence,
+                grid_epoch,
+                cols,
+                rows,
+            } => {
+                let resume_failure = self.observe_resume_bootstrap(&session_id, &data);
                 let _transition = match self.mutation.lock() {
                     Ok(transition) => transition,
                     Err(_) => {
@@ -713,23 +1130,70 @@ impl Backend {
                     return;
                 };
                 let is_terminal = session.tool == Tool::Terminal;
-                if is_terminal
-                    && self
-                        .scrollback_store()
-                        .and_then(|store| store.append(&session_id, data.as_bytes()))
-                        .is_err()
-                {
-                    self.events.background_error(
-                        "SCROLLBACK_WRITE_FAILED: terminal output could not be persisted",
-                    );
+                if is_terminal {
+                    let mut write_failed = false;
+                    match self.terminal_replay.lock() {
+                        Ok(mut states) => {
+                            let state = states.entry(session_id.clone()).or_default();
+                            let expected = sequence == state.through_sequence.saturating_add(1);
+                            if state.reliable && expected {
+                                if self
+                                    .scrollback_store()
+                                    .and_then(|store| store.append(&session_id, data.as_bytes()))
+                                    .is_ok()
+                                {
+                                    state.persisted_bytes =
+                                        state.persisted_bytes.saturating_add(data.len());
+                                } else {
+                                    write_failed = true;
+                                    state.reliable = false;
+                                    append_terminal_fallback(state, data.as_bytes());
+                                }
+                            } else {
+                                // After the first failure, stop extending the file.
+                                // This keeps its byte boundary disjoint from the
+                                // generation-wide in-memory fallback across resizes.
+                                state.reliable = false;
+                                append_terminal_fallback(state, data.as_bytes());
+                            }
+                            state.through_sequence = state.through_sequence.max(sequence);
+                        }
+                        Err(_) => self.events.background_error(
+                            "BACKEND_STATE_FAILED: terminal replay state is unavailable",
+                        ),
+                    }
+                    if write_failed {
+                        self.events.background_error(
+                            "SCROLLBACK_WRITE_FAILED: terminal output could not be persisted",
+                        );
+                    }
                 }
-                self.events.pty_output(&session_id, &data);
+                self.events
+                    .pty_output(&session_id, &data, sequence, grid_epoch, cols, rows);
+                if let Some((code, message)) = resume_failure {
+                    self.events.session_resume_error(&session_id, code, message);
+                    // PTY output callbacks hold runtime ordering gates. Stop on
+                    // another thread so a rejected Codex bootstrap cannot
+                    // deadlock while unwinding its own reader callback.
+                    let runtime = Arc::clone(&self.runtime);
+                    let events = Arc::clone(&self.events);
+                    thread::spawn(move || {
+                        if runtime.stop(&session_id).is_err() {
+                            events.background_error(
+                                "CODEX_RESUME_ABORT_FAILED: rejected Codex resume could not be stopped",
+                            );
+                        }
+                    });
+                }
             }
             PtyEvent::Status {
                 session_id,
                 status,
                 exit_code,
             } => {
+                if status == Status::Stopped {
+                    self.clear_resume_bootstrap(&session_id);
+                }
                 let _transition = match self.mutation.lock() {
                     Ok(transition) => transition,
                     Err(_) => return,
@@ -887,6 +1351,11 @@ impl Backend {
                     .into(),
             );
         }
+        drop(registry);
+        self.terminal_replay
+            .lock()
+            .map_err(lock_error)?
+            .remove(session_id);
         Ok(())
     }
 
@@ -957,6 +1426,17 @@ impl Backend {
     fn scrollback_store(&self) -> Result<ScrollbackStore, String> {
         let settings = self.settings.lock().map_err(lock_error)?;
         Ok(ScrollbackStore::new(expand_tilde(&settings.backup_path)?))
+    }
+
+    fn reset_terminal_replay(&self, session_id: &str, restored_bytes: usize) -> Result<(), String> {
+        self.terminal_replay.lock().map_err(lock_error)?.insert(
+            session_id.to_owned(),
+            TerminalReplayState {
+                persisted_bytes: restored_bytes,
+                ..TerminalReplayState::default()
+            },
+        );
+        Ok(())
     }
 
     fn stop_if_live(&self, session_id: &str) -> Result<(), String> {
@@ -1475,8 +1955,9 @@ fn wrap_windows_batch_launcher(
     args.extend(spec.args);
     // `.cmd` and `.bat` files require the command processor; passing either
     // file directly to ConPTY reaches CreateProcessW, which only starts native
-    // executables. cmd.exe rejects UNC working directories and falls back to
-    // C:\Windows, so use an existing mapped-drive alias for the same folder.
+    // executables. cmd.exe treats even a local `\\?\C:\...` path as UNC and
+    // falls back to C:\Windows, so remove the verbatim prefix before launch and
+    // use an existing mapped-drive alias when the result is a real UNC path.
     spec.cwd = windows_batch_working_directory_with_resolver(
         &spec.cwd,
         crate::adapters::unc_to_mapped_drive,
@@ -1491,10 +1972,31 @@ fn windows_batch_working_directory_with_resolver<F>(cwd: &Path, resolve_unc: F) 
 where
     F: Fn(&Path) -> Option<PathBuf>,
 {
+    let cwd = windows_path_without_verbatim_prefix(cwd);
     if cwd.to_string_lossy().starts_with(r"\\") {
-        resolve_unc(cwd).unwrap_or_else(|| cwd.to_path_buf())
+        resolve_unc(&cwd).unwrap_or(cwd)
     } else {
-        cwd.to_path_buf()
+        cwd
+    }
+}
+
+#[cfg(windows)]
+fn windows_path_without_verbatim_prefix(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    let Some(prefix) = text.get(..4) else {
+        return path.to_path_buf();
+    };
+    if prefix != r"\\?\" && prefix != "//?/" {
+        return path.to_path_buf();
+    }
+
+    let remainder = &text[4..];
+    if remainder.get(..4).is_some_and(|prefix| {
+        prefix.eq_ignore_ascii_case(r"UNC\") || prefix.eq_ignore_ascii_case("UNC/")
+    }) {
+        PathBuf::from(format!(r"\\{}", &remainder[4..]))
+    } else {
+        PathBuf::from(remainder)
     }
 }
 
@@ -1537,7 +2039,7 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
 mod tests {
     #![allow(clippy::field_reassign_with_default)]
     use super::*;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::sync::atomic::AtomicU64;
     use std::time::Instant;
     use tempfile::tempdir;
@@ -1545,14 +2047,19 @@ mod tests {
     #[derive(Default)]
     struct FakeRuntime {
         live: Mutex<HashSet<String>>,
-        spawns: Mutex<Vec<(String, SpawnSpec)>>,
+        sizes: Mutex<HashMap<String, (u16, u16)>>,
+        spawns: Mutex<Vec<(String, SpawnSpec, u16, u16)>>,
         registry_path: Mutex<Option<PathBuf>>,
         saw_persisted_identity: Mutex<bool>,
         exit_immediately: AtomicBool,
         fail_stop: AtomicBool,
         fail_spawn: AtomicBool,
+        block_spawn: AtomicBool,
+        spawn_entered: AtomicBool,
+        release_spawn: AtomicBool,
         stop_calls: AtomicUsize,
         replays: Mutex<Vec<String>>,
+        replay_data: Mutex<HashMap<String, String>>,
         /// Milliseconds `stop` should wait, standing in for the graceful window.
         stop_delay_ms: AtomicU64,
         /// Set once a delayed `stop` is actually in flight.
@@ -1564,10 +2071,16 @@ mod tests {
             &self,
             session_id: &str,
             spec: SpawnSpec,
-            _cols: u16,
-            _rows: u16,
+            cols: u16,
+            rows: u16,
             _settings: &Settings,
         ) -> Result<(), String> {
+            if self.block_spawn.load(Ordering::Acquire) {
+                self.spawn_entered.store(true, Ordering::Release);
+                while !self.release_spawn.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
             if let Some(path) = self.registry_path.lock().unwrap().clone() {
                 let raw = fs::read_to_string(path).unwrap();
                 let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -1581,19 +2094,31 @@ mod tests {
             }
             if !self.exit_immediately.load(Ordering::Acquire) {
                 self.live.lock().unwrap().insert(session_id.to_owned());
+                self.sizes
+                    .lock()
+                    .unwrap()
+                    .insert(session_id.to_owned(), (cols, rows));
             }
             self.spawns
                 .lock()
                 .unwrap()
-                .push((session_id.to_owned(), spec));
+                .push((session_id.to_owned(), spec, cols, rows));
             Ok(())
         }
 
         fn write(&self, session_id: &str, _data: &[u8]) -> Result<(), String> {
             self.live(session_id)
         }
-        fn resize(&self, session_id: &str, _cols: u16, _rows: u16) -> Result<(), String> {
-            self.live(session_id)
+        fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<PtyResize, String> {
+            self.live(session_id)?;
+            self.sizes
+                .lock()
+                .unwrap()
+                .insert(session_id.to_owned(), (cols, rows));
+            Ok(PtyResize {
+                through_sequence: 0,
+                grid_epoch: 2,
+            })
         }
         fn stop(&self, session_id: &str) -> Result<(), String> {
             self.stop_calls.fetch_add(1, Ordering::AcqRel);
@@ -1608,11 +2133,27 @@ mod tests {
                 return Err("PTY_STOP_FAILED: synthetic stop failure".into());
             }
             self.live.lock().unwrap().remove(session_id);
+            self.sizes.lock().unwrap().remove(session_id);
             Ok(())
         }
-        fn replay_output(&self, session_id: &str) -> Result<(), String> {
+        fn replay_output(&self, session_id: &str) -> Result<PtyReplay, String> {
             self.replays.lock().unwrap().push(session_id.to_owned());
-            Ok(())
+            let Some((cols, rows)) = self.sizes.lock().unwrap().get(session_id).copied() else {
+                return Ok(PtyReplay::default());
+            };
+            Ok(PtyReplay {
+                data: self
+                    .replay_data
+                    .lock()
+                    .unwrap()
+                    .get(session_id)
+                    .cloned()
+                    .unwrap_or_default(),
+                cols,
+                rows,
+                grid_epoch: 1,
+                ..PtyReplay::default()
+            })
         }
         fn is_live(&self, session_id: &str) -> bool {
             self.live.lock().unwrap().contains(session_id)
@@ -1667,11 +2208,20 @@ mod tests {
         statuses: Mutex<Vec<Status>>,
         attention: Mutex<Vec<u32>>,
         updated: Mutex<Vec<Session>>,
+        resume_errors: Mutex<Vec<(String, String, String)>>,
         errors: Mutex<Vec<String>>,
     }
 
     impl BackendEvents for TestEvents {
-        fn pty_output(&self, _session_id: &str, data: &str) {
+        fn pty_output(
+            &self,
+            _session_id: &str,
+            data: &str,
+            _sequence: u64,
+            _grid_epoch: u64,
+            _cols: u16,
+            _rows: u16,
+        ) {
             self.outputs.lock().unwrap().push(data.into());
         }
 
@@ -1681,6 +2231,14 @@ mod tests {
 
         fn session_updated(&self, session: &Session) {
             self.updated.lock().unwrap().push(session.clone());
+        }
+
+        fn session_resume_error(&self, session_id: &str, code: &str, message: &str) {
+            self.resume_errors.lock().unwrap().push((
+                session_id.to_owned(),
+                code.to_owned(),
+                message.to_owned(),
+            ));
         }
 
         fn attention_count(&self, waiting: u32, _notify: bool) {
@@ -1716,6 +2274,27 @@ mod tests {
         *runtime.registry_path.lock().unwrap() = Some(backup.join("registry.json"));
         let backend = Backend::for_test(store, settings, registry, runtime.clone(), events);
         (root, backend, runtime)
+    }
+
+    fn add_stopped_codex_session(backend: &Backend, folder_id: &str) -> Session {
+        let session = Session {
+            id: "11111111-1111-4111-8111-111111111111".into(),
+            folder_id: folder_id.into(),
+            tool: Tool::Codex,
+            title: "Synthetic Codex conversation".into(),
+            cli_session_id: Some("33333333-3333-4333-8333-333333333333".into()),
+            status: Status::Stopped,
+            model: Some("synthetic-model".into()),
+            extra_args: vec!["--synthetic-launch-only".into()],
+            codex_profile: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            last_active_at: "2026-01-01T00:00:00Z".into(),
+            was_open_in_tab: true,
+        };
+        let mut registry = backend.registry.lock().unwrap();
+        registry.sessions.push(session.clone());
+        registry.save().unwrap();
+        session
     }
 
     #[test]
@@ -1804,17 +2383,37 @@ mod tests {
             .create_folder(project.to_string_lossy().into(), None)
             .unwrap();
         let launched = backend
-            .launch_session(&folder.id, Tool::Claude, None, None)
+            .launch_session(&folder.id, Tool::Claude, None, None, 80, 24)
             .unwrap();
         assert!(launched.cli_session_id.is_some());
         assert!(*runtime.saw_persisted_identity.lock().unwrap());
         backend.stop_session(&launched.id).unwrap();
-        backend.resume_session(&launched.id).unwrap();
+        backend.resume_session(&launched.id, 80, 24).unwrap();
         let spawns = runtime.spawns.lock().unwrap();
         assert_eq!(
             spawns[1].1.args,
             vec!["--session-id", launched.cli_session_id.as_ref().unwrap()]
         );
+    }
+
+    #[test]
+    fn launch_and_resume_spawn_with_the_frontend_terminal_size() {
+        let (root, backend, runtime) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+
+        let launched = backend
+            .launch_session(&folder.id, Tool::Terminal, None, None, 137, 42)
+            .unwrap();
+        backend.stop_session(&launched.id).unwrap();
+        backend.resume_session(&launched.id, 151, 47).unwrap();
+
+        let spawns = runtime.spawns.lock().unwrap();
+        assert_eq!((spawns[0].2, spawns[0].3), (137, 42));
+        assert_eq!((spawns[1].2, spawns[1].3), (151, 47));
     }
 
     #[test]
@@ -1828,7 +2427,7 @@ mod tests {
         runtime.fail_spawn.store(true, Ordering::Release);
 
         let error = backend
-            .launch_session(&folder.id, Tool::Claude, None, None)
+            .launch_session(&folder.id, Tool::Claude, None, None, 80, 24)
             .unwrap_err();
 
         assert!(error.starts_with("PTY_SPAWN_FAILED:"));
@@ -1838,6 +2437,12 @@ mod tests {
             Registry::load_from_backup_path(expand_tilde(&settings.backup_path).unwrap()).unwrap();
         assert!(persisted.sessions.is_empty());
         assert!(*runtime.saw_persisted_identity.lock().unwrap());
+
+        let terminal_error = backend
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
+            .unwrap_err();
+        assert!(terminal_error.starts_with("PTY_SPAWN_FAILED:"));
+        assert!(backend.terminal_replay.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -1898,7 +2503,7 @@ mod tests {
             .create_folder(project.to_string_lossy().into(), None)
             .unwrap();
         let session = backend
-            .launch_session(&folder.id, Tool::Terminal, None, None)
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
             .unwrap();
         assert_eq!(
             backend
@@ -1933,7 +2538,7 @@ mod tests {
             .create_folder(project.to_string_lossy().into(), None)
             .unwrap();
         let session = backend
-            .launch_session(&folder.id, Tool::Terminal, None, None)
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
             .unwrap();
 
         runtime.stop_delay_ms.store(1_500, Ordering::Release);
@@ -1968,13 +2573,16 @@ mod tests {
     #[test]
     fn replay_output_reaches_the_runtime_only_for_known_sessions() {
         let (root, backend, runtime) = harness();
+        let mut settings = backend.get_settings().unwrap();
+        settings.restore_scrollback = false;
+        backend.set_settings(settings).unwrap();
         let project = root.path().join("project");
         fs::create_dir(&project).unwrap();
         let folder = backend
             .create_folder(project.to_string_lossy().into(), None)
             .unwrap();
         let session = backend
-            .launch_session(&folder.id, Tool::Terminal, None, None)
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
             .unwrap();
 
         backend.replay_output(&session.id).unwrap();
@@ -1985,11 +2593,125 @@ mod tests {
     }
 
     #[test]
+    fn live_terminal_replay_uses_one_persisted_snapshot_and_boundary() {
+        let (root, backend, runtime) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let session = backend
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
+            .unwrap();
+        backend.handle_pty_event(PtyEvent::Output {
+            session_id: session.id.clone(),
+            data: "one\n".into(),
+            sequence: 1,
+            grid_epoch: 1,
+            cols: 80,
+            rows: 24,
+        });
+        backend.handle_pty_event(PtyEvent::Output {
+            session_id: session.id.clone(),
+            data: "two\n".into(),
+            sequence: 2,
+            grid_epoch: 1,
+            cols: 80,
+            rows: 24,
+        });
+
+        let replay = backend.replay_output(&session.id).unwrap();
+
+        assert_eq!(replay.through_sequence, 2);
+        assert_eq!((replay.cols, replay.rows), (80, 24));
+        assert!(replay.covers_unsequenced);
+        assert_eq!(
+            replay.data,
+            "one\ntwo\n── restored session · scrollback recovered (2 lines) ──\n"
+        );
+        assert_eq!(*runtime.replays.lock().unwrap(), vec![session.id.clone()]);
+
+        backend.remove_folder(&folder.id).unwrap();
+        assert!(!backend
+            .terminal_replay
+            .lock()
+            .unwrap()
+            .contains_key(&session.id));
+    }
+
+    #[test]
+    fn unreliable_terminal_replay_keeps_persisted_and_cross_grid_fallback_output() {
+        let (root, backend, runtime) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let session = backend
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
+            .unwrap();
+        {
+            let mut states = backend.terminal_replay.lock().unwrap();
+            let state = states.get_mut(&session.id).unwrap();
+            state.reliable = false;
+            state.persisted_bytes = "saved history\nold-grid output\n".len();
+            state.through_sequence = 2;
+            state.fallback_output = b"new-grid output\n".to_vec();
+        }
+        backend
+            .scrollback_store()
+            .unwrap()
+            .replace(
+                &session.id,
+                b"saved history\nold-grid output\nignored overlapping bytes\n",
+            )
+            .unwrap();
+        runtime
+            .replay_data
+            .lock()
+            .unwrap()
+            .insert(session.id.clone(), "epoch-local runtime tail\n".into());
+
+        let replay = backend.replay_output(&session.id).unwrap();
+
+        assert_eq!(
+            replay.data,
+            "saved history\nold-grid output\n── restored session · scrollback recovered (2 lines) ──\nnew-grid output\n"
+        );
+        assert_eq!(replay.through_sequence, 2);
+        assert!(replay.covers_unsequenced);
+        assert_eq!((replay.cols, replay.rows), (80, 24));
+    }
+
+    #[test]
+    fn terminal_persistence_fallback_is_bounded_and_reports_omitted_output() {
+        let mut state = TerminalReplayState::default();
+        let line = b"synthetic fallback line\n";
+        let mut oversized = Vec::new();
+        while oversized.len() <= TERMINAL_FALLBACK_MAX_BYTES + line.len() {
+            oversized.extend_from_slice(line);
+        }
+        append_terminal_fallback(&mut state, &oversized);
+
+        assert!(state.fallback_output.len() <= TERMINAL_FALLBACK_MAX_BYTES);
+        assert!(state.fallback_truncated);
+        assert!(state.fallback_output.starts_with(line));
+    }
+
+    #[test]
     fn terminal_resume_emits_saved_scrollback_before_spawn() {
         #[derive(Default)]
         struct CaptureEvents(Mutex<Vec<String>>);
         impl BackendEvents for CaptureEvents {
-            fn pty_output(&self, _session_id: &str, data: &str) {
+            fn pty_output(
+                &self,
+                _session_id: &str,
+                data: &str,
+                _sequence: u64,
+                _grid_epoch: u64,
+                _cols: u16,
+                _rows: u16,
+            ) {
                 self.0.lock().unwrap().push(data.into());
             }
         }
@@ -2000,7 +2722,7 @@ mod tests {
             .create_folder(project.to_string_lossy().into(), None)
             .unwrap();
         let session = original
-            .launch_session(&folder.id, Tool::Terminal, None, None)
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
             .unwrap();
         original.stop_session(&session.id).unwrap();
         original
@@ -2019,7 +2741,7 @@ mod tests {
             runtime,
             events.clone(),
         );
-        backend.resume_session(&session.id).unwrap();
+        backend.resume_session(&session.id, 80, 24).unwrap();
         assert!(events.0.lock().unwrap()[0].contains("scrollback recovered (2 lines)"));
     }
 
@@ -2158,6 +2880,25 @@ mod tests {
             ),
             PathBuf::from(r"Z:\Synthetic\Project")
         );
+        assert_eq!(
+            windows_batch_working_directory_with_resolver(
+                Path::new(r"\\?\UNC\synthetic-server\shared\Synthetic\Project"),
+                resolve_unc,
+            ),
+            PathBuf::from(r"Z:\Synthetic\Project")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_batch_working_directory_removes_verbatim_prefix_from_local_folders() {
+        assert_eq!(
+            windows_batch_working_directory_with_resolver(
+                Path::new(r"\\?\C:\Synthetic\Project"),
+                |_| None,
+            ),
+            PathBuf::from(r"C:\Synthetic\Project")
+        );
     }
 
     #[cfg(windows)]
@@ -2228,8 +2969,7 @@ mod tests {
                 if let PtyEvent::Output { data, .. } = event {
                     output.push_str(&data);
                     // ConPTY starts cmd.exe by asking the terminal emulator for
-                    // its cursor position. In production xterm answers this;
-                    // the direct PTY test must provide the same response.
+                    // its cursor position. The direct PTY test emulates xterm.
                     if !answered_cursor_position_request && data.contains("\x1b[6n") {
                         manager.write("windows-npm-shim", b"\x1b[1;1R").unwrap();
                         answered_cursor_position_request = true;
@@ -2272,7 +3012,7 @@ mod tests {
             .create_folder(project.to_string_lossy().into(), None)
             .unwrap();
         let session = backend
-            .launch_session(&folder.id, Tool::Codex, None, None)
+            .launch_session(&folder.id, Tool::Codex, None, None, 80, 24)
             .unwrap();
 
         backend.handle_pty_event(PtyEvent::Status {
@@ -2317,7 +3057,7 @@ mod tests {
             .create_folder(project.to_string_lossy().into(), None)
             .unwrap();
         let session = backend
-            .launch_session(&folder.id, Tool::Codex, None, None)
+            .launch_session(&folder.id, Tool::Codex, None, None, 80, 24)
             .unwrap();
 
         let error = backend.set_codex_profile(&session.id, None).unwrap_err();
@@ -2356,7 +3096,7 @@ mod tests {
             stored.codex_profile = Some("synthetic-missing-profile".into());
             registry.save().unwrap();
         }
-        let error = backend.resume_session(&session.id).unwrap_err();
+        let error = backend.resume_session(&session.id, 80, 24).unwrap_err();
         assert!(error.starts_with("CODEX_PROFILE_NOT_FOUND:"));
         assert!(runtime.spawns.lock().unwrap().len() == 1);
     }
@@ -2372,7 +3112,7 @@ mod tests {
             .unwrap();
 
         let session = backend
-            .launch_session(&folder.id, Tool::Terminal, None, None)
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
             .unwrap();
 
         assert_eq!(session.status, Status::Stopped);
@@ -2407,6 +3147,8 @@ mod tests {
                 Tool::Terminal,
                 None,
                 Some(vec!["-c".into(), "exit 0".into()]),
+                80,
+                24,
             )
             .unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -2471,6 +3213,10 @@ mod tests {
         backend.handle_pty_event(PtyEvent::Output {
             session_id: session_id.clone(),
             data: "synthetic output".into(),
+            sequence: 1,
+            grid_epoch: 1,
+            cols: 80,
+            rows: 24,
         });
         backend.handle_pty_event(PtyEvent::Status {
             session_id: session_id.clone(),
@@ -2576,7 +3322,7 @@ mod tests {
             .create_folder(project.to_string_lossy().into(), None)
             .unwrap();
         let session = backend
-            .launch_session(&folder.id, Tool::Terminal, None, None)
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
             .unwrap();
 
         backend.start_discovery(
@@ -2626,13 +3372,13 @@ mod tests {
 
         for tool in [Tool::Codex, Tool::Opencode] {
             let session = backend
-                .launch_session(&folder.id, tool, None, None)
+                .launch_session(&folder.id, tool, None, None, 80, 24)
                 .unwrap();
             backend.stop_session(&session.id).unwrap();
             let spawn_count = runtime.spawns.lock().unwrap().len();
 
             assert!(backend
-                .resume_session(&session.id)
+                .resume_session(&session.id, 80, 24)
                 .unwrap_err()
                 .starts_with("SESSION_ID_UNAVAILABLE:"));
             assert_eq!(runtime.spawns.lock().unwrap().len(), spawn_count);
@@ -2642,6 +3388,92 @@ mod tests {
         let spawns = runtime.spawns.lock().unwrap();
         assert_eq!(spawns.len(), 2);
         assert_eq!(backend.discovery_starts.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn codex_fork_creates_a_new_persisted_session_without_launch_only_args() {
+        let (root, backend, runtime) = harness();
+        let project = root.path().join("fork-project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let source = add_stopped_codex_session(&backend, &folder.id);
+
+        let fork = backend.fork_codex_session(&source.id, 132, 41).unwrap();
+
+        assert_ne!(fork.id, source.id);
+        assert_eq!(fork.title, "Synthetic Codex conversation (fork)");
+        assert_eq!(fork.status, Status::Running);
+        assert!(fork.cli_session_id.is_none());
+        assert!(fork.extra_args.is_empty());
+        let spawns = runtime.spawns.lock().unwrap();
+        let (_, spec, cols, rows) = spawns.last().unwrap();
+        assert_eq!(
+            spec.args,
+            vec![
+                "fork".to_owned(),
+                "33333333-3333-4333-8333-333333333333".to_owned(),
+            ]
+        );
+        assert_eq!((*cols, *rows), (132, 41));
+        drop(spawns);
+        let persisted = Registry::load_from_backup_path(
+            expand_tilde(&backend.get_settings().unwrap().backup_path).unwrap(),
+        )
+        .unwrap();
+        assert!(persisted
+            .sessions
+            .iter()
+            .any(|session| session.id == fork.id));
+        assert_eq!(backend.discovery_starts.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn codex_active_writer_bootstrap_is_stopped_and_reported_once() {
+        let events = Arc::new(TestEvents::default());
+        let (root, backend, runtime) = harness_with_events(events.clone());
+        let project = root.path().join("active-writer-project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let source = add_stopped_codex_session(&backend, &folder.id);
+        backend.resume_session(&source.id, 132, 41).unwrap();
+        backend
+            .resume_bootstraps
+            .lock()
+            .unwrap()
+            .insert(source.id.clone(), ResumeBootstrapWatch::new(Tool::Codex));
+
+        for (sequence, data) in [
+            (1, "\u{1b}[?25l\u{1b}[2KError: thread/res"),
+            (
+                2,
+                "\u{1b}[31mume\u{1b}[0m failed during TUI bootstrap: conversation already has an\r\n active writer",
+            ),
+            (3, " thread/resume failed and already has an active writer"),
+        ] {
+            backend.handle_pty_event(PtyEvent::Output {
+                session_id: source.id.clone(),
+                data: data.into(),
+                sequence,
+                grid_epoch: 1,
+                cols: 132,
+                rows: 41,
+            });
+        }
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while runtime.is_live(&source.id) && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!runtime.is_live(&source.id));
+        let resume_errors = events.resume_errors.lock().unwrap();
+        assert_eq!(resume_errors.len(), 1);
+        assert_eq!(resume_errors[0].0, source.id);
+        assert_eq!(resume_errors[0].1, CODEX_ACTIVE_WRITER_CODE);
+        assert_eq!(resume_errors[0].2, CODEX_ACTIVE_WRITER_MESSAGE);
     }
 
     #[test]
@@ -2664,7 +3496,7 @@ mod tests {
                 .create_folder(project.to_string_lossy().into(), None)
                 .unwrap();
             let session = backend
-                .launch_session(&folder.id, Tool::Terminal, None, None)
+                .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
                 .unwrap();
             backend.handle_pty_event(PtyEvent::Status {
                 session_id: session.id.clone(),
@@ -2696,7 +3528,7 @@ mod tests {
             .create_folder(project.to_string_lossy().into(), None)
             .unwrap();
         let session = original
-            .launch_session(&folder.id, Tool::Terminal, None, None)
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
             .unwrap();
         original.stop_session(&session.id).unwrap();
         original.handle_pty_event(PtyEvent::Status {
@@ -2712,12 +3544,17 @@ mod tests {
             SettingsStore::new(root.path().join("config/settings.json")),
             settings,
             registry,
-            runtime,
+            runtime.clone(),
             events.clone(),
         );
 
-        backend.restore_open_sessions();
+        backend.restore_open_sessions(132, 41);
         assert!(backend.runtime.is_live(&session.id));
+        {
+            let spawns = runtime.spawns.lock().unwrap();
+            let restored = spawns.last().unwrap();
+            assert_eq!((restored.2, restored.3), (132, 41));
+        }
         backend.stop_session(&session.id).unwrap();
         {
             let mut registry = backend.registry.lock().unwrap();
@@ -2729,7 +3566,7 @@ mod tests {
             registry.sessions[0].status = Status::Stopped;
             registry.save().unwrap();
         }
-        backend.restore_open_sessions();
+        backend.restore_open_sessions(132, 41);
         assert!(events
             .errors
             .lock()
@@ -2738,9 +3575,66 @@ mod tests {
             .any(|error| error.starts_with("AUTO_RESTORE_FAILED:")));
         // Only the first ready call claims the guard, so a reload or a repeated
         // handshake cannot restore the same sessions twice.
-        assert!(backend.on_frontend_ready());
-        assert!(!backend.on_frontend_ready());
+        assert_eq!(backend.on_frontend_ready(132, 41), (true, 132, 41));
+        assert_eq!(backend.on_frontend_ready(132, 41), (false, 132, 41));
         assert!(backend.auto_restore_started.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn frontend_ready_waits_for_the_complete_serial_restore_pass() {
+        let (root, original, runtime) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = original
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let first = original
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
+            .unwrap();
+        let second = original
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
+            .unwrap();
+        original.stop_session(&first.id).unwrap();
+        original.stop_session(&second.id).unwrap();
+        let settings = original.get_settings().unwrap();
+        let registry =
+            Registry::load_from_backup_path(expand_tilde(&settings.backup_path).unwrap()).unwrap();
+        let backend = Backend::for_test(
+            SettingsStore::new(root.path().join("config/settings.json")),
+            settings,
+            registry,
+            runtime.clone(),
+            Arc::new(NoopEvents),
+        );
+        runtime.block_spawn.store(true, Ordering::Release);
+        let first_backend = Arc::clone(&backend);
+        let first_ready = thread::spawn(move || first_backend.on_frontend_ready(132, 41));
+        let wait_started = Instant::now();
+        while !runtime.spawn_entered.load(Ordering::Acquire) {
+            assert!(wait_started.elapsed() < Duration::from_secs(2));
+            thread::yield_now();
+        }
+
+        let (second_done, second_result) = std::sync::mpsc::channel();
+        let second_backend = Arc::clone(&backend);
+        thread::spawn(move || {
+            second_done
+                .send(second_backend.on_frontend_ready(90, 30))
+                .unwrap();
+        });
+        assert!(second_result
+            .recv_timeout(Duration::from_millis(50))
+            .is_err());
+        runtime.release_spawn.store(true, Ordering::Release);
+
+        assert_eq!(first_ready.join().unwrap(), (true, 132, 41));
+        assert_eq!(
+            second_result.recv_timeout(Duration::from_secs(2)).unwrap(),
+            (false, 132, 41)
+        );
+        assert!(runtime.is_live(&first.id));
+        assert!(runtime.is_live(&second.id));
+        assert_eq!(backend.on_frontend_ready(150, 50), (false, 150, 50));
     }
 
     #[test]
@@ -2752,7 +3646,7 @@ mod tests {
             .create_folder(project.to_string_lossy().into(), None)
             .unwrap();
         let session = backend
-            .launch_session(&folder.id, Tool::Terminal, None, None)
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
             .unwrap();
         backend.stop_session(&session.id).unwrap();
         backend
@@ -2807,7 +3701,7 @@ mod tests {
             .create_folder(project.to_string_lossy().into(), None)
             .unwrap();
         let session = backend
-            .launch_session(&folder.id, Tool::Terminal, None, None)
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
             .unwrap();
         backend.stop_session(&session.id).unwrap();
         backend
@@ -2887,7 +3781,7 @@ mod tests {
             .create_folder(project.to_string_lossy().into(), None)
             .unwrap();
         let session = backend
-            .launch_session(&folder.id, Tool::Terminal, None, None)
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
             .unwrap();
         runtime.fail_stop.store(true, Ordering::Release);
 
@@ -2927,7 +3821,7 @@ mod tests {
             .create_folder(project.to_string_lossy().into(), None)
             .unwrap();
         let session = backend
-            .launch_session(&folder.id, Tool::Terminal, None, None)
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
             .unwrap();
         backend.stop_session(&session.id).unwrap();
 
@@ -2937,7 +3831,7 @@ mod tests {
         let session_id = session.id.clone();
         let resume = thread::spawn(move || {
             resume_barrier.wait();
-            resume_backend.resume_session(&session_id)
+            resume_backend.resume_session(&session_id, 80, 24)
         });
         let delete_backend = Arc::clone(&backend);
         let delete_barrier = Arc::clone(&barrier);
@@ -2961,7 +3855,7 @@ mod tests {
         let launch_folder = second_folder.id.clone();
         let launch = thread::spawn(move || {
             launch_barrier.wait();
-            launch_backend.launch_session(&launch_folder, Tool::Terminal, None, None)
+            launch_backend.launch_session(&launch_folder, Tool::Terminal, None, None, 80, 24)
         });
         let remove_backend = Arc::clone(&backend);
         let remove_barrier = Arc::clone(&barrier);

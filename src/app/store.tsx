@@ -18,10 +18,11 @@ import { ipc } from "../ipc/commands";
 import {
   onAttentionCount,
   onPtyOutput,
+  onSessionResumeError,
   onSessionStatus,
   onSessionUpdated,
 } from "../ipc/events";
-import type { CliInfo, Folder, Session, Settings, Tool } from "../ipc/types";
+import type { CliInfo, Folder, PtyReplay, Session, Settings, Tool } from "../ipc/types";
 import { isOn } from "./selectors";
 import { applyTheme } from "./theme";
 import { TerminalManager } from "./terminals";
@@ -45,6 +46,7 @@ export interface LaunchError extends OperationError {
 
 interface State {
   loaded: boolean;
+  bootReady: boolean;
   folders: Folder[];
   sessions: Session[];
   settings: Settings;
@@ -94,6 +96,7 @@ const DEFAULT_SETTINGS: Settings = {
 
 const initialState: State = {
   loaded: false,
+  bootReady: false,
   folders: [],
   sessions: [],
   settings: DEFAULT_SETTINGS,
@@ -119,6 +122,7 @@ const initialState: State = {
 
 type Action =
   | { type: "HYDRATE"; folders: Folder[]; sessions: Session[]; settings: Settings; clis: CliInfo[]; codexProfiles: string[]; openTabs: string[]; activeId: string | null }
+  | { type: "RECONCILE_SESSIONS"; sessions: Session[] }
   | { type: "UPSERT_SESSION"; session: Session }
   | { type: "REMOVE_SESSION"; id: string }
   | { type: "SET_STATUS"; id: string; status: Session["status"] }
@@ -140,7 +144,24 @@ type Action =
   | { type: "SET_TOAST"; text: string | null }
   | { type: "SET_SETTINGS"; settings: Settings }
   | { type: "SET_WAITING"; count: number }
+  | { type: "BOOT_READY" }
   | { type: "FATAL"; message: string };
+
+type BootSessionAction =
+  | { type: "UPSERT_SESSION"; session: Session }
+  | { type: "SET_STATUS"; id: string; status: Session["status"] };
+
+function applyBootSessionAction(sessions: Session[], action: BootSessionAction): Session[] {
+  if (action.type === "UPSERT_SESSION") {
+    const exists = sessions.some((session) => session.id === action.session.id);
+    return exists
+      ? sessions.map((session) => session.id === action.session.id ? action.session : session)
+      : [...sessions, action.session];
+  }
+  return sessions.map((session) =>
+    session.id === action.id ? { ...session, status: action.status } : session,
+  );
+}
 
 /** Drop deleted sessions from the typed-order map so it can't grow unbounded. */
 function withoutIds(
@@ -174,6 +195,30 @@ function reducer(state: State, action: Action): State {
         openTabs: action.openTabs,
         activeId: action.activeId,
       };
+    case "RECONCILE_SESSIONS": {
+      const ids = new Set(action.sessions.map((session) => session.id));
+      const removedIds = state.sessions
+        .filter((session) => !ids.has(session.id))
+        .map((session) => session.id);
+      const openTabs = state.openTabs.filter((id) => ids.has(id));
+      const activeId = state.activeId && ids.has(state.activeId)
+        ? state.activeId
+        : openTabs[openTabs.length - 1] ?? null;
+      const resumeErrors = Object.fromEntries(
+        Object.entries(state.resumeErrors).filter(([id]) => ids.has(id)),
+      );
+      return {
+        ...state,
+        sessions: action.sessions,
+        openTabs,
+        activeId,
+        typedOrder: withoutIds(state.typedOrder, removedIds),
+        resumeErrors,
+        closeConfirmId: state.closeConfirmId && ids.has(state.closeConfirmId)
+          ? state.closeConfirmId
+          : null,
+      };
+    }
     case "UPSERT_SESSION": {
       const exists = state.sessions.some((s) => s.id === action.session.id);
       return {
@@ -296,6 +341,8 @@ function reducer(state: State, action: Action): State {
       return { ...state, settings: action.settings };
     case "SET_WAITING":
       return { ...state, waitingCount: action.count };
+    case "BOOT_READY":
+      return { ...state, bootReady: true };
     case "FATAL":
       return { ...state, fatalError: action.message };
     default:
@@ -315,17 +362,7 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const stateRef = useRef(state);
   stateRef.current = state;
-
-  const terminals = useMemo(
-    () =>
-      // This callback is xterm's onData — real user keystrokes only, never PTY
-      // output — so it is the right signal for activity-based sidebar order.
-      new TerminalManager((sessionId, data) => {
-        dispatch({ type: "SESSION_TYPED", id: sessionId });
-        void ipc.writePty(sessionId, data).catch(() => {});
-      }),
-    [],
-  );
+  const deletedSessionIds = useRef(new Set<string>());
 
   // Toast auto-dismiss.
   const toastTimer = useRef<number | undefined>(undefined);
@@ -335,20 +372,83 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
     toastTimer.current = window.setTimeout(() => dispatch({ type: "SET_TOAST", text: null }), 1600);
   }).current;
 
+  const terminals = useMemo(
+    () => {
+      // This callback is xterm's onData — real user keystrokes only, never PTY
+      // output — so it is the right signal for activity-based sidebar order.
+      const manager = new TerminalManager((sessionId, data) => {
+        dispatch({ type: "SESSION_TYPED", id: sessionId });
+        void ipc.writePty(sessionId, data).catch(() => {});
+      },
+      (sessionId, size) => ipc.resizePty(sessionId, size.cols, size.rows),
+      (_sessionId, error) => showToast(`Terminal resize failed: ${shortError(error)}`));
+      manager.beginReplayCapture();
+      return manager;
+    },
+    [showToast],
+  );
+
   // Boot: subscribe to events, load state/settings/clis, restore tabs, then
   // tell the backend the frontend is ready. Listeners come first so PTY output
   // and status emitted by auto-restore cannot be lost (SPEC.md §8), and
-  // `frontend_ready` comes last so restore never races hydration.
+  // `frontend_ready` comes after hydration and terminal viewport measurement.
   useEffect(() => {
     let unlisten: Array<() => void> = [];
     let cancelled = false;
+    let hydrated = false;
+    let bootSessions: Session[] = [];
+    let authoritativeIds: Set<string> | null = null;
+    let bootTracking = true;
+    const bootSessionActions: BootSessionAction[] = [];
+    const deliverSessionAction = (action: BootSessionAction) => {
+      const id = action.type === "UPSERT_SESSION" ? action.session.id : action.id;
+      if (authoritativeIds && !stateRef.current.bootReady && !authoritativeIds.has(id)) {
+        // Launch is blocked until boot completes. An unknown ID after the final
+        // registry read is therefore a delayed event for a deleted session.
+        deletedSessionIds.current.add(id);
+        terminals.ignoreOutput(id);
+        return;
+      }
+      if (bootTracking) bootSessionActions.push(action);
+      if (hydrated && bootTracking) {
+        bootSessions = applyBootSessionAction(bootSessions, action);
+        dispatch(action);
+      } else if (!bootTracking) {
+        dispatch(action);
+      }
+    };
 
     (async () => {
       try {
         const subs = await Promise.all([
-          onPtyOutput((p) => terminals.write(p.sessionId, p.data)),
-          onSessionStatus((p) => dispatch({ type: "SET_STATUS", id: p.sessionId, status: p.status })),
-          onSessionUpdated((s) => dispatch({ type: "UPSERT_SESSION", session: s })),
+          onPtyOutput((p) =>
+            terminals.write(p.sessionId, p.data, p.sequence, p.gridEpoch, p.cols, p.rows)
+          ),
+          onSessionStatus((p) => {
+            if (deletedSessionIds.current.has(p.sessionId)) return;
+            if (p.status === "running") terminals.commitSessionPreparation(p.sessionId);
+            deliverSessionAction({ type: "SET_STATUS", id: p.sessionId, status: p.status });
+          }),
+          onSessionUpdated((s) => {
+            if (!deletedSessionIds.current.has(s.id)) {
+              deliverSessionAction({ type: "UPSERT_SESSION", session: s });
+            }
+          }),
+          onSessionResumeError((p) => {
+            if (deletedSessionIds.current.has(p.sessionId)) return;
+            dispatch({
+              type: "SET_RESUME_ERROR",
+              id: p.sessionId,
+              error: {
+                operation: "resume",
+                tool: "codex",
+                code: p.code,
+                message: p.message,
+                isCliNotFound: false,
+              },
+            });
+            showToast(p.message);
+          }),
           onAttentionCount((p) => dispatch({ type: "SET_WAITING", count: p.waiting })),
         ]);
         if (cancelled) {
@@ -368,36 +468,100 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
 
         applyTheme(settings);
+        // The probe can exist before settings load. Update xterm itself, not
+        // only the CSS variable, before measuring the grid used for restore.
+        terminals.setFontSize(settings.fontSize);
+
+        let hydratedSessions = snapshot.sessions;
+        for (const action of bootSessionActions) {
+          hydratedSessions = applyBootSessionAction(hydratedSessions, action);
+        }
+        bootSessions = hydratedSessions;
 
         const restore = settings.autoRestore;
         const restoredTabs = restore
-          ? snapshot.sessions.filter((s) => s.wasOpenInTab).map((s) => s.id)
+          ? hydratedSessions.filter((s) => s.wasOpenInTab).map((s) => s.id)
           : [];
         dispatch({
           type: "HYDRATE",
           folders: snapshot.folders,
-          sessions: snapshot.sessions,
+          sessions: hydratedSessions,
           settings,
           clis,
           codexProfiles,
           openTabs: restoredTabs,
           activeId: restoredTabs[0] ?? null,
         });
-
-        // A page reload (dev HMR, ⌘R, webview recreation) destroys every xterm
-        // buffer while the PTYs keep running, so a still-live session would
-        // come back blank. The core holds the only other copy — ask it to
-        // resend (SPEC.md §8). Sessions started by auto-restore below have
-        // printed nothing yet and need no replay.
-        for (const session of snapshot.sessions) {
-          if (isOn(session.status) && terminals.claimReplay(session.id)) {
-            void ipc.replayOutput(session.id).catch(() => {});
-          }
-        }
+        hydrated = true;
 
         // HYDRATE is queued before any status event auto-restore can produce,
         // so restored `running` sessions are not overwritten by this snapshot.
-        await ipc.frontendReady();
+        // Auto-restore must not let a CLI draw at xterm's 80×24 default. The
+        // viewport probe uses the same host and font metrics as every slot.
+        const terminalSize = await terminals.waitForViewport();
+        if (cancelled) return;
+
+        // Keep all restore output raw until the backend completes its guarded
+        // restore pass. Each replay below supplies the live PTY's actual grid,
+        // including when this webview arrived just after that pass finished.
+        await ipc.frontendReady(terminalSize);
+        if (cancelled) return;
+
+        // Command completion and Tauri event delivery use independent queues.
+        // Re-read the registry after restore, then fold only events delivered
+        // during that read into the authoritative snapshot.
+        const actionBoundary = bootSessionActions.length;
+        const restoredSnapshot = await ipc.getState();
+        if (cancelled) return;
+        let reconciledSessions = restoredSnapshot.sessions;
+        const restoredIds = new Set(restoredSnapshot.sessions.map((session) => session.id));
+        for (const action of bootSessionActions.slice(actionBoundary)) {
+          const id = action.type === "UPSERT_SESSION" ? action.session.id : action.id;
+          if (restoredIds.has(id)) {
+            reconciledSessions = applyBootSessionAction(reconciledSessions, action);
+          } else {
+            deletedSessionIds.current.add(id);
+            terminals.ignoreOutput(id);
+          }
+        }
+        const reconciledIds = new Set(reconciledSessions.map((session) => session.id));
+        authoritativeIds = reconciledIds;
+        for (const session of bootSessions) {
+          if (!reconciledIds.has(session.id)) {
+            deletedSessionIds.current.add(session.id);
+            terminals.ignoreOutput(session.id);
+          }
+        }
+        bootSessions = reconciledSessions;
+        dispatch({ type: "RECONCILE_SESSIONS", sessions: reconciledSessions });
+
+        const liveSessions = bootSessions.filter((session) => isOn(session.status));
+        for (const session of bootSessions) {
+          if (!isOn(session.status)) terminals.ignoreOutput(session.id);
+        }
+
+        // A page reload destroys every xterm buffer while PTYs keep running.
+        for (const session of liveSessions) {
+          if (terminals.claimReplay(session.id)) {
+            try {
+              await applyReplayWithRefresh(terminals, session.id);
+            } catch (error) {
+              terminals.rejectReplay(session.id);
+              showToast(`Terminal replay failed: ${shortError(error)}`);
+            }
+          }
+        }
+        for (const id of terminals.reconcileCapturedOutput(reconciledIds)) {
+          deletedSessionIds.current.add(id);
+        }
+        terminals.finishReplayCapture();
+        for (const session of liveSessions) terminals.fit(session.id);
+        if (!cancelled) {
+          bootTracking = false;
+          bootSessionActions.length = 0;
+          bootSessions = [];
+          dispatch({ type: "BOOT_READY" });
+        }
       } catch (e) {
         if (!cancelled) dispatch({ type: "FATAL", message: String(e) });
       }
@@ -410,7 +574,7 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
   }, [terminals]);
 
   const actions = useMemo(
-    () => makeActions(dispatch, stateRef, terminals, showToast),
+    () => makeActions(dispatch, stateRef, terminals, deletedSessionIds.current, showToast),
     [terminals, showToast],
   );
 
@@ -434,6 +598,7 @@ export interface Actions {
   selectSession(id: string): void;
   launch(tool: Tool, folderId: string, codexProfile?: string | null): Promise<void>;
   resume(id: string): Promise<void>;
+  forkCodex(id: string): Promise<void>;
   closeTab(id: string): Promise<void>;
   confirmCloseTab(): Promise<void>;
   cancelCloseTab(): void;
@@ -463,16 +628,42 @@ function makeActions(
   dispatch: React.Dispatch<Action>,
   stateRef: React.MutableRefObject<State>,
   terminals: TerminalManager,
+  deletedSessionIds: Set<string>,
   showToast: (text: string) => void,
 ): Actions {
+  const tabStateWrites = new Map<string, Promise<void>>();
+  const setTabOpenOrdered = (id: string, open: boolean): Promise<void> => {
+    const previous = tabStateWrites.get(id);
+    const current = previous
+      ? previous.catch(() => {}).then(() => ipc.setTabOpen(id, open))
+      : ipc.setTabOpen(id, open);
+    tabStateWrites.set(id, current);
+    void current.then(
+      () => {
+        if (tabStateWrites.get(id) === current) tabStateWrites.delete(id);
+      },
+      () => {
+        if (tabStateWrites.get(id) === current) tabStateWrites.delete(id);
+      },
+    );
+    return current;
+  };
   const persistTabOpen = (id: string, open: boolean) => {
-    void ipc.setTabOpen(id, open).catch(() => {});
+    void setTabOpenOrdered(id, open).catch(() => {});
   };
 
   // Tabs with a close request still in flight, keyed to the token of the
   // request that owns them. Reopening a tab clears its token, so a close that
   // settles afterwards neither disposes the terminal nor undoes the reopen.
   const closingTabs = new Map<string, symbol>();
+  type ResumeOperation = {
+    token: symbol;
+    spawned: boolean;
+    done: Promise<void>;
+    resolveDone: () => void;
+  };
+  const resumingSessions = new Map<string, ResumeOperation>();
+  const forkingSessions = new Set<string>();
 
   // `set_tab_open(false)` is the sole close lifecycle command: with stopOnClose
   // the backend stops the PTY itself, so a second stop_session here would only
@@ -481,15 +672,23 @@ function makeActions(
   async function performClose(id: string): Promise<void> {
     const session = stateRef.current.sessions.find((candidate) => candidate.id === id);
     const stopOnClose = stateRef.current.settings.stopOnClose;
+    const resumeOperation = resumingSessions.get(id);
     const closeToken = Symbol(id);
     closingTabs.set(id, closeToken);
     dispatch({ type: "CLOSE_TAB", id });
 
     try {
-      await ipc.setTabOpen(id, false);
+      // Resume observes this close token at each preparation boundary. If its
+      // IPC is already inside the backend, wait for it and then send the sole
+      // close command so stopOnClose observes that new live PTY. Reopening can
+      // remove the close token without destroying ownership of that resume.
+      if (resumeOperation) await resumeOperation.done;
+      if (closingTabs.get(id) !== closeToken) return;
+      await setTabOpenOrdered(id, false);
       if (closingTabs.get(id) !== closeToken) return;
       closingTabs.delete(id);
-      if (session && (!isOn(session.status) || stopOnClose)) {
+      const resumedLive = resumeOperation?.spawned ?? false;
+      if (session && (stopOnClose || (!resumedLive && !isOn(session.status)))) {
         terminals.dispose(id);
       }
     } catch (e) {
@@ -509,11 +708,19 @@ function makeActions(
       if (!already) persistTabOpen(id, true);
     },
     async launch(tool, folderId, codexProfile) {
+      if (!stateRef.current.bootReady) {
+        showToast("Anchor is still restoring sessions.");
+        return;
+      }
       dispatch({ type: "SET_LAUNCH_ERROR", error: null });
+      // Settings unmounts the measurement surface. Restore the terminal view
+      // first so waitForViewport receives a current pane size.
+      dispatch({ type: "SET_VIEW", view: "terminal" });
       try {
+        const terminalSize = await terminals.waitForViewport();
         const session = codexProfile === undefined
-          ? await ipc.launchSession(folderId, tool)
-          : await ipc.launchSession(folderId, tool, undefined, undefined, codexProfile);
+          ? await ipc.launchSession(folderId, tool, terminalSize)
+          : await ipc.launchSession(folderId, tool, terminalSize, undefined, undefined, codexProfile);
         dispatch({ type: "SET_LAUNCH_ERROR", error: null });
         dispatch({ type: "UPSERT_SESSION", session });
         dispatch({ type: "OPEN_TAB", id: session.id });
@@ -526,6 +733,10 @@ function makeActions(
       }
     },
     async resume(id) {
+      if (!stateRef.current.bootReady) {
+        showToast("Anchor is still restoring sessions.");
+        return;
+      }
       const previous = stateRef.current.sessions.find((candidate) => candidate.id === id);
       if (!previous) return;
       dispatch({ type: "SET_RESUME_ERROR", id, error: null });
@@ -543,13 +754,69 @@ function makeActions(
         showToast(error.message);
         return;
       }
+      // Keyboard and pointer activation can arrive in the same render frame.
+      // One session may own only one resume preparation and IPC call at a time.
+      if (resumingSessions.has(id)) return;
+      const resumeToken = Symbol(id);
+      let resolveResume!: () => void;
+      const resumeOperation: ResumeOperation = {
+        token: resumeToken,
+        spawned: false,
+        done: new Promise<void>((resolve) => {
+          resolveResume = resolve;
+        }),
+        resolveDone: () => resolveResume(),
+      };
+      resumingSessions.set(id, resumeOperation);
+      dispatch({ type: "SET_VIEW", view: "terminal" });
+      let prepared = false;
       try {
-        const session = await ipc.resumeSession(id);
+        const terminalSize = await terminals.waitForViewport();
+        if (resumingSessions.get(id) !== resumeOperation || closingTabs.has(id)) return;
+        await terminals.prepareSession(id, terminalSize);
+        if (resumingSessions.get(id) !== resumeOperation || closingTabs.has(id)) return;
+        prepared = true;
+        const session = await ipc.resumeSession(id, terminalSize);
+        // The backend can finish spawning after Close cancels the frontend
+        // token. Record that result before the cancellation check so a close
+        // with stopOnClose disabled retains only a real live terminal.
+        resumeOperation.spawned = true;
+        if (resumingSessions.get(id) !== resumeOperation) return;
+        terminals.commitSessionPreparation(id);
         dispatch({ type: "UPSERT_SESSION", session });
       } catch (e) {
+        if (resumingSessions.get(id) !== resumeOperation) return;
+        if (prepared) terminals.cancelSessionPreparation(id);
         const error = operationError("resume", previous.tool, e);
         dispatch({ type: "SET_RESUME_ERROR", id, error });
         showToast(error.message);
+      } finally {
+        resumeOperation.resolveDone();
+        if (resumingSessions.get(id) === resumeOperation) resumingSessions.delete(id);
+      }
+    },
+    async forkCodex(id) {
+      if (!stateRef.current.bootReady) {
+        showToast("Anchor is still restoring sessions.");
+        return;
+      }
+      const source = stateRef.current.sessions.find((candidate) => candidate.id === id);
+      if (!source || source.tool !== "codex" || forkingSessions.has(id)) return;
+      forkingSessions.add(id);
+      dispatch({ type: "SET_VIEW", view: "terminal" });
+      try {
+        const terminalSize = await terminals.waitForViewport();
+        const session = await ipc.forkCodexSession(id, terminalSize);
+        dispatch({ type: "SET_RESUME_ERROR", id, error: null });
+        dispatch({ type: "UPSERT_SESSION", session });
+        dispatch({ type: "OPEN_TAB", id: session.id });
+        persistTabOpen(session.id, true);
+      } catch (e) {
+        const error = operationError("resume", "codex", e);
+        dispatch({ type: "SET_RESUME_ERROR", id, error });
+        showToast(error.message);
+      } finally {
+        forkingSessions.delete(id);
       }
     },
     // Closing a live session kills a running CLI, so `confirmClose` guards it.
@@ -580,10 +847,19 @@ function makeActions(
       }
     },
     async deleteSession(id) {
-      dispatch({ type: "REMOVE_SESSION", id });
-      terminals.dispose(id);
+      if (!stateRef.current.bootReady) {
+        showToast("Anchor is still restoring sessions.");
+        return;
+      }
       try {
         await ipc.deleteSession(id);
+        deletedSessionIds.add(id);
+        resumingSessions.delete(id);
+        // A permanent delete owns the final lifecycle state. Cancel an older
+        // close so its failure path cannot restore a tab for the removed ID.
+        closingTabs.delete(id);
+        dispatch({ type: "REMOVE_SESSION", id });
+        terminals.ignoreOutput(id);
       } catch (e) {
         showToast(shortError(e));
       }
@@ -636,11 +912,18 @@ function makeActions(
       }
     },
     async removeFolder(id) {
+      if (!stateRef.current.bootReady) {
+        showToast("Anchor is still restoring sessions.");
+        return;
+      }
       const ids = stateRef.current.sessions.filter((s) => s.folderId === id).map((s) => s.id);
-      dispatch({ type: "REMOVE_FOLDER", id });
-      ids.forEach((sid) => terminals.dispose(sid));
       try {
         await ipc.removeFolder(id);
+        ids.forEach((sid) => deletedSessionIds.add(sid));
+        ids.forEach((sid) => resumingSessions.delete(sid));
+        ids.forEach((sid) => closingTabs.delete(sid));
+        dispatch({ type: "REMOVE_FOLDER", id });
+        ids.forEach((sid) => terminals.ignoreOutput(sid));
       } catch (e) {
         showToast(shortError(e));
       }
@@ -701,6 +984,29 @@ function makeActions(
 
 function shortError(e: unknown): string {
   return operationError("resume", "terminal", e).message;
+}
+
+async function replayOutputWithRetry(sessionId: string): Promise<PtyReplay> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await ipc.replayOutput(sessionId);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) {
+        await new Promise((resolve) => window.setTimeout(resolve, 50 * 2 ** attempt));
+      }
+    }
+  }
+  throw lastError;
+}
+
+async function applyReplayWithRefresh(terminals: TerminalManager, sessionId: string): Promise<void> {
+  for (let refresh = 0; refresh < 3; refresh += 1) {
+    const replay = await replayOutputWithRetry(sessionId);
+    if (await terminals.applyReplay(sessionId, replay)) return;
+  }
+  throw new Error("REPLAY_OVERFLOW: live output changed too quickly to rebuild the terminal safely");
 }
 
 function operationError(

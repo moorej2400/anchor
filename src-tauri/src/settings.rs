@@ -149,6 +149,8 @@ fn parse_settings(bytes: &[u8]) -> Result<Settings, String> {
 }
 
 fn upgrade_legacy_windows_default_shell(settings: &mut Settings) -> bool {
+    #[cfg(not(windows))]
+    let _ = settings;
     #[cfg(windows)]
     {
         let preferred = crate::models::preferred_windows_shell();

@@ -7,6 +7,9 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
+
 use adapters::claude::ClaudeAdapter;
 use adapters::codex::{available_profiles_at, CodexAdapter};
 use adapters::copilot::CopilotAdapter;
@@ -168,6 +171,41 @@ fn codex_launch_appends_extra_args_but_resume_never_does() {
             CWD,
         )
     );
+    let (fork, capture) = adapter.fork(&session, Path::new(CWD), &settings).unwrap();
+    assert_eq!(
+        fork,
+        SpawnSpec::new(
+            "codex",
+            ["fork", "33333333-3333-4333-8333-333333333333"],
+            CWD,
+        )
+    );
+    assert_eq!(capture, IdCapture::Discover);
+}
+
+#[cfg(windows)]
+#[test]
+fn codex_resume_preflight_reports_an_exclusively_open_rollout() {
+    let root = tempdir().unwrap();
+    let cli_id = "33333333-3333-4333-8333-333333333333";
+    let rollout = root
+        .path()
+        .join("2026/08/24")
+        .join(format!("rollout-2026-08-24T12-00-00-{cli_id}.jsonl"));
+    write_rollout(&rollout, cli_id, Path::new(CWD));
+    let holder = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&rollout)
+        .unwrap();
+    let adapter = CodexAdapter::with_sessions_root(root.path());
+    let mut session = session(Tool::Codex);
+    session.cli_session_id = Some(cli_id.into());
+
+    let error = adapter.preflight_resume(&session).unwrap_err();
+    assert!(error.starts_with("CODEX_ACTIVE_WRITER:"));
+    drop(holder);
+    adapter.preflight_resume(&session).unwrap();
 }
 
 #[test]
@@ -201,6 +239,19 @@ fn codex_profile_precedes_launch_args_and_resume_subcommand() {
                 "--profile",
                 "synthetic-profile",
                 "resume",
+                "33333333-3333-4333-8333-333333333333",
+            ],
+            CWD,
+        )
+    );
+    assert_eq!(
+        adapter.fork(&session, Path::new(CWD), &settings).unwrap().0,
+        SpawnSpec::new(
+            "codex",
+            [
+                "--profile",
+                "synthetic-profile",
+                "fork",
                 "33333333-3333-4333-8333-333333333333",
             ],
             CWD,
@@ -662,7 +713,42 @@ fn codex_ignores_rollouts_written_after_a_recovery_window() {
 }
 
 #[test]
-fn codex_recovery_accepts_one_timed_rollout_when_cmd_lost_the_unc_cwd() {
+fn codex_discovery_rejects_a_new_rollout_when_cwd_metadata_is_wrong() {
+    let root = tempdir().unwrap();
+    let launch = utc_time(2026, 7, 21, 12);
+    let id = "aaaaaaaa-6666-4666-8666-666666666666";
+    let rollout = root
+        .path()
+        .join("2026/07/21")
+        .join(format!("rollout-live-cwd-mismatch-{id}.jsonl"));
+    let started_at =
+        chrono::DateTime::<chrono::Utc>::from(launch + Duration::from_secs(10)).to_rfc3339();
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    fs::write(
+        &rollout,
+        format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"timestamp\":{timestamp},\"cwd\":\"C:\\\\Windows\"}}}}\n",
+            timestamp = serde_json::to_string(&started_at).unwrap()
+        ),
+    )
+    .unwrap();
+    filetime::set_file_mtime(
+        &rollout,
+        filetime::FileTime::from_system_time(launch + Duration::from_secs(10)),
+    )
+    .unwrap();
+    let adapter = CodexAdapter::with_sessions_root(root.path());
+
+    assert_eq!(
+        adapter
+            .discover_session_id_at(Path::new(CWD), launch, launch + Duration::from_secs(15),)
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn codex_recovery_rejects_one_timed_rollout_when_cwd_does_not_match() {
     let root = tempdir().unwrap();
     let launch = utc_time(2026, 7, 21, 12);
     let window_end = launch + Duration::from_secs(30);
@@ -683,7 +769,125 @@ fn codex_recovery_accepts_one_timed_rollout_when_cmd_lost_the_unc_cwd() {
         adapter
             .recover_session_id_at(Path::new(CWD), launch, window_end)
             .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn codex_recovery_uses_session_metadata_after_rollout_mtime_advances() {
+    let root = tempdir().unwrap();
+    let launch = utc_time(2026, 7, 21, 12);
+    let window_end = launch + Duration::from_secs(30);
+    let id = "aaaaaaaa-3333-4333-8333-333333333333";
+    let rollout = root
+        .path()
+        .join("2026/07/21")
+        .join(format!("rollout-long-running-{id}.jsonl"));
+    let started_at =
+        chrono::DateTime::<chrono::Utc>::from(launch + Duration::from_secs(10)).to_rfc3339();
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    fs::write(
+        &rollout,
+        format!(
+            "{{\"timestamp\":{timestamp},\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"timestamp\":{timestamp},\"cwd\":{cwd}}}}}\n",
+            timestamp = serde_json::to_string(&started_at).unwrap(),
+            cwd = serde_json::to_string(CWD).unwrap()
+        ),
+    )
+    .unwrap();
+    filetime::set_file_mtime(
+        &rollout,
+        filetime::FileTime::from_system_time(window_end + Duration::from_secs(86_400)),
+    )
+    .unwrap();
+    let adapter = CodexAdapter::with_sessions_root(root.path());
+
+    assert_eq!(
+        adapter
+            .recover_session_id_at(Path::new(CWD), launch, window_end)
+            .unwrap(),
         Some(id.into())
+    );
+}
+
+#[test]
+fn codex_recovery_uses_rollout_timestamp_instead_of_original_thread_timestamp() {
+    let root = tempdir().unwrap();
+    let launch = utc_time(2026, 7, 21, 12);
+    let window_end = launch + Duration::from_secs(30);
+    let id = "aaaaaaaa-7777-4777-8777-777777777777";
+    let rollout = root
+        .path()
+        .join("2026/07/21")
+        .join(format!("rollout-resumed-thread-{id}.jsonl"));
+    let rollout_started =
+        chrono::DateTime::<chrono::Utc>::from(launch + Duration::from_secs(10)).to_rfc3339();
+    let thread_started =
+        chrono::DateTime::<chrono::Utc>::from(launch - Duration::from_secs(86_400)).to_rfc3339();
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    fs::write(
+        &rollout,
+        format!(
+            "{{\"timestamp\":{rollout_started},\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"timestamp\":{thread_started},\"cwd\":{cwd}}}}}\n",
+            rollout_started = serde_json::to_string(&rollout_started).unwrap(),
+            thread_started = serde_json::to_string(&thread_started).unwrap(),
+            cwd = serde_json::to_string(CWD).unwrap()
+        ),
+    )
+    .unwrap();
+    filetime::set_file_mtime(
+        &rollout,
+        filetime::FileTime::from_system_time(window_end + Duration::from_secs(86_400)),
+    )
+    .unwrap();
+    let adapter = CodexAdapter::with_sessions_root(root.path());
+
+    assert_eq!(
+        adapter
+            .recover_session_id_at(Path::new(CWD), launch, window_end)
+            .unwrap(),
+        Some(id.into())
+    );
+}
+
+#[test]
+fn codex_recovery_rejects_ambiguous_metadata_session_starts() {
+    let root = tempdir().unwrap();
+    let launch = utc_time(2026, 7, 21, 12);
+    let window_end = launch + Duration::from_secs(30);
+    for (offset, id) in [
+        (10, "aaaaaaaa-4444-4444-8444-444444444444"),
+        (20, "aaaaaaaa-5555-4555-8555-555555555555"),
+    ] {
+        let rollout = root
+            .path()
+            .join("2026/07/21")
+            .join(format!("rollout-ambiguous-{id}.jsonl"));
+        let started_at =
+            chrono::DateTime::<chrono::Utc>::from(launch + Duration::from_secs(offset))
+                .to_rfc3339();
+        fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        fs::write(
+            &rollout,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"timestamp\":{timestamp},\"cwd\":\"C:\\\\Windows\"}}}}\n",
+                timestamp = serde_json::to_string(&started_at).unwrap()
+            ),
+        )
+        .unwrap();
+        filetime::set_file_mtime(
+            &rollout,
+            filetime::FileTime::from_system_time(window_end + Duration::from_secs(86_400)),
+        )
+        .unwrap();
+    }
+    let adapter = CodexAdapter::with_sessions_root(root.path());
+
+    assert_eq!(
+        adapter
+            .recover_session_id_at(Path::new(CWD), launch, window_end)
+            .unwrap(),
+        None
     );
 }
 

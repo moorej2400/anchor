@@ -28,13 +28,22 @@ pub fn get_state(backend: State<'_, Arc<Backend>>) -> Result<AppState, String> {
     backend.get_state()
 }
 
-/// Frontend readiness handshake: sent once after the frontend has installed its
-/// event listeners and hydrated, and the sole trigger for auto-restore.
+/// Frontend readiness handshake: sent once after event listeners, hydration,
+/// and terminal viewport measurement, and the sole trigger for auto-restore.
 #[tauri::command]
-pub fn frontend_ready(backend: State<'_, Arc<Backend>>) {
-    // The guard's return value only reports which call won the race; the
-    // frontend has nothing to do with it either way.
-    let _started = backend.inner().on_frontend_ready();
+pub async fn frontend_ready(
+    backend: State<'_, Arc<Backend>>,
+    cols: u16,
+    rows: u16,
+) -> Result<TerminalSize, String> {
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || {
+        // The guard's bool only reports which call won; completion is the
+        // frontend contract for both the first call and harmless reloads.
+        let (_started, cols, rows) = backend.on_frontend_ready(cols, rows);
+        Ok(TerminalSize { cols, rows })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -104,10 +113,23 @@ pub fn launch_session(
     title: Option<String>,
     extra_args: Option<Vec<String>>,
     codex_profile: Option<String>,
+    cols: u16,
+    rows: u16,
 ) -> Result<Session, String> {
-    backend
-        .inner()
-        .launch_session_with_profile(&folder_id, tool, title, extra_args, codex_profile)
+    match codex_profile {
+        Some(profile) => backend.inner().launch_session_with_profile(
+            &folder_id,
+            tool,
+            title,
+            extra_args,
+            Some(profile),
+            cols,
+            rows,
+        ),
+        None => backend
+            .inner()
+            .launch_session(&folder_id, tool, title, extra_args, cols, rows),
+    }
 }
 
 #[tauri::command]
@@ -128,8 +150,20 @@ pub fn set_codex_profile(
 pub fn resume_session(
     backend: State<'_, Arc<Backend>>,
     session_id: String,
+    cols: u16,
+    rows: u16,
 ) -> Result<Session, String> {
-    backend.inner().resume_session(&session_id)
+    backend.inner().resume_session(&session_id, cols, rows)
+}
+
+#[tauri::command]
+pub fn fork_codex_session(
+    backend: State<'_, Arc<Backend>>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<Session, String> {
+    backend.inner().fork_codex_session(&session_id, cols, rows)
 }
 
 #[tauri::command]
@@ -184,12 +218,15 @@ pub fn resize_pty(
     session_id: String,
     cols: u16,
     rows: u16,
-) -> Result<(), String> {
+) -> Result<crate::models::PtyResize, String> {
     backend.resize_pty(&session_id, cols, rows)
 }
 
 #[tauri::command]
-pub fn replay_output(backend: State<'_, Arc<Backend>>, session_id: String) -> Result<(), String> {
+pub fn replay_output(
+    backend: State<'_, Arc<Backend>>,
+    session_id: String,
+) -> Result<PtyReplay, String> {
     backend.replay_output(&session_id)
 }
 

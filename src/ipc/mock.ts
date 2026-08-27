@@ -108,11 +108,37 @@ function setWaitingCount(): void {
   mockEmit(EVENT.attentionCount, { waiting });
 }
 
+const outputSequences = new Map<string, number>();
+const terminalGrids = new Map<string, { cols: number; rows: number; epoch: number }>();
+
+function terminalGrid(id: string) {
+  let grid = terminalGrids.get(id);
+  if (!grid) {
+    grid = { cols: 132, rows: 41, epoch: 1 };
+    terminalGrids.set(id, grid);
+  }
+  return grid;
+}
+
+function nextOutputSequence(id: string): number {
+  const sequence = (outputSequences.get(id) ?? 0) + 1;
+  outputSequences.set(id, sequence);
+  return sequence;
+}
+
 function emitOutput(id: string, lines: string[]): void {
   let i = 0;
   const tick = () => {
     if (i >= lines.length) return;
-    mockEmit(EVENT.ptyOutput, { sessionId: id, data: lines[i] + "\r\n" });
+    const grid = terminalGrid(id);
+    mockEmit(EVENT.ptyOutput, {
+      sessionId: id,
+      data: lines[i] + "\r\n",
+      sequence: nextOutputSequence(id),
+      gridEpoch: grid.epoch,
+      cols: grid.cols,
+      rows: grid.rows,
+    });
     i++;
     window.setTimeout(tick, 90);
   };
@@ -154,7 +180,7 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
       return Promise.resolve({ folders: [...folders], sessions: sessions.map((s) => ({ ...s })) } as T);
     case "frontend_ready":
       // Browser mock: sessions are already seeded, so readiness is a no-op.
-      return Promise.resolve(undefined as T);
+      return Promise.resolve({ cols: a.cols, rows: a.rows } as T);
     case "get_settings":
       return Promise.resolve({ ...settings } as T);
     case "set_settings": {
@@ -187,6 +213,27 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
       if (!s) return Promise.reject("SESSION_NOT_FOUND: unknown id");
       goRunning(s);
       return Promise.resolve({ ...s } as T);
+    }
+    case "fork_codex_session": {
+      const source = find(a.sessionId as string);
+      if (!source) return Promise.reject("SESSION_NOT_FOUND: unknown id");
+      if (source.tool !== "codex") {
+        return Promise.reject("SESSION_FORK_UNSUPPORTED: only Codex sessions can be forked");
+      }
+      const id = `n${(seq += 1)}`;
+      const fork = mk(
+        id,
+        source.folderId,
+        "codex",
+        `${source.title} (fork)`,
+        "running",
+        genId(),
+        source.model,
+      );
+      fork.codexProfile = source.codexProfile;
+      sessions.push(fork);
+      goRunning(fork);
+      return Promise.resolve({ ...fork } as T);
     }
     case "stop_session": {
       const s = find(a.sessionId as string);
@@ -270,13 +317,45 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
     }
     case "write_pty": {
       // Local echo so typing is visible in the demo.
-      mockEmit(EVENT.ptyOutput, { sessionId: a.sessionId as string, data: a.data as string });
+      const id = a.sessionId as string;
+      const grid = terminalGrid(id);
+      mockEmit(EVENT.ptyOutput, {
+        sessionId: id,
+        data: a.data as string,
+        sequence: nextOutputSequence(id),
+        gridEpoch: grid.epoch,
+        cols: grid.cols,
+        rows: grid.rows,
+      });
       return Promise.resolve(undefined as T);
     }
-    case "resize_pty":
-      return Promise.resolve(undefined as T);
-    case "replay_output":
-      return Promise.resolve(undefined as T);
+    case "resize_pty": {
+      const id = a.sessionId as string;
+      const grid = terminalGrid(id);
+      const cols = a.cols as number;
+      const rows = a.rows as number;
+      if (grid.cols !== cols || grid.rows !== rows) {
+        grid.cols = cols;
+        grid.rows = rows;
+        grid.epoch += 1;
+      }
+      return Promise.resolve({
+        throughSequence: outputSequences.get(id) ?? 0,
+        gridEpoch: grid.epoch,
+      } as T);
+    }
+    case "replay_output": {
+      const id = a.sessionId as string;
+      const grid = terminalGrid(id);
+      return Promise.resolve({
+        data: "",
+        throughSequence: outputSequences.get(id) ?? 0,
+        cols: grid.cols,
+        rows: grid.rows,
+        coversUnsequenced: false,
+        gridEpoch: grid.epoch,
+      } as T);
+    }
     case "get_scrollback":
       return Promise.resolve("" as T);
     case "export_sessions":

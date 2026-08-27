@@ -4,6 +4,9 @@ import { render } from "@testing-library/react";
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: class {
     fit() {}
+    proposeDimensions() {
+      return { cols: 132, rows: 41 };
+    }
   },
 }));
 
@@ -22,6 +25,7 @@ vi.mock("@xterm/xterm", () => ({
 
     loadAddon() {}
     onData() {}
+    attachCustomKeyEventHandler() {}
     open() {}
     write() {}
     focus() {}
@@ -29,15 +33,9 @@ vi.mock("@xterm/xterm", () => ({
   },
 }));
 
-const resizePty = vi.fn((..._args: [string, number, number] | never[]) => Promise.resolve());
-const getScrollback = vi.fn(() => Promise.resolve(""));
-
-vi.mock("../ipc/commands", () => ({
-  ipc: {
-    resizePty: (...args: unknown[]) => resizePty(...(args as [])),
-    getScrollback: (...args: unknown[]) => getScrollback(...(args as [])),
-  },
-}));
+const resizePty = vi.fn((..._args: [string, number, number] | never[]) =>
+  Promise.resolve({ throughSequence: 0, gridEpoch: 2 })
+);
 
 import { TerminalManager } from "../app/terminals";
 import type { Session } from "../ipc/types";
@@ -60,6 +58,13 @@ function syntheticSession(id: string): Session {
   };
 }
 
+function terminalManager() {
+  return new TerminalManager(
+    () => {},
+    (id, size) => resizePty(id, size.cols, size.rows),
+  );
+}
+
 /** Captures the observer callbacks so a test can fire them on demand. */
 let observers: Array<() => void> = [];
 /** Queued animation-frame callbacks, flushed explicitly by `flushFrame`. */
@@ -72,10 +77,10 @@ function flushFrame() {
 }
 
 beforeEach(() => {
+  vi.useRealTimers();
   observers = [];
   frames = [];
   resizePty.mockClear();
-  getScrollback.mockClear();
 
   vi.stubGlobal(
     "ResizeObserver",
@@ -103,7 +108,7 @@ afterEach(() => {
 
 describe("TerminalDeck", () => {
   it("shows only the selected session while preserving both mounted terminals", () => {
-    const terminals = new TerminalManager(() => {});
+    const terminals = terminalManager();
     const sessions = [syntheticSession("session-a"), syntheticSession("session-b")];
     const { container, rerender } = render(
       <TerminalDeck sessions={sessions} activeId="session-a" terminals={terminals} />,
@@ -126,7 +131,7 @@ describe("TerminalDeck", () => {
   });
 
   it("keeps exactly one visible slot across fifty alternating selections", () => {
-    const terminals = new TerminalManager(() => {});
+    const terminals = terminalManager();
     const sessions = [syntheticSession("session-a"), syntheticSession("session-b")];
     const { container, rerender } = render(
       <TerminalDeck sessions={sessions} activeId="session-a" terminals={terminals} />,
@@ -145,7 +150,7 @@ describe("TerminalDeck", () => {
   });
 
   it("gives each session its own terminal node so buffers cannot be shared", () => {
-    const terminals = new TerminalManager(() => {});
+    const terminals = terminalManager();
     const sessions = [syntheticSession("session-a"), syntheticSession("session-b")];
     const { container } = render(
       <TerminalDeck sessions={sessions} activeId="session-a" terminals={terminals} />,
@@ -162,7 +167,7 @@ describe("TerminalDeck", () => {
     // never fitted, its CLI wraps that output for xterm's default 80 columns
     // while the pane is far wider, and the pane only looks right once a window
     // resize reflows it.
-    const terminals = new TerminalManager(() => {});
+    const terminals = terminalManager();
     const sessions = [syntheticSession("session-a"), syntheticSession("session-b")];
     render(<TerminalDeck sessions={sessions} activeId="session-a" terminals={terminals} />);
 
@@ -173,7 +178,7 @@ describe("TerminalDeck", () => {
   });
 
   it("keeps focus on the active session when a background slot is resized", () => {
-    const terminals = new TerminalManager(() => {});
+    const terminals = terminalManager();
     const focus = vi.spyOn(terminals, "focus");
     const sessions = [syntheticSession("session-a"), syntheticSession("session-b")];
     render(<TerminalDeck sessions={sessions} activeId="session-a" terminals={terminals} />);
@@ -189,7 +194,7 @@ describe("TerminalDeck", () => {
   });
 
   it("issues one resize per activation frame and none when dimensions are unchanged", () => {
-    const terminals = new TerminalManager(() => {});
+    const terminals = terminalManager();
     const sessions = [syntheticSession("session-a")];
     render(<TerminalDeck sessions={sessions} activeId="session-a" terminals={terminals} />);
 
@@ -199,12 +204,27 @@ describe("TerminalDeck", () => {
     flushFrame();
 
     expect(resizePty).toHaveBeenCalledTimes(1);
-    expect(resizePty).toHaveBeenCalledWith("session-a", 80, 24);
+    expect(resizePty).toHaveBeenCalledWith("session-a", 132, 41);
 
     // A further frame with unchanged xterm dimensions must not resize again.
     observers.forEach((notify) => notify());
     flushFrame();
 
     expect(resizePty).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries rejected dimensions without another observer notification", async () => {
+    vi.useFakeTimers();
+    resizePty.mockRejectedValueOnce("PTY_NOT_FOUND: no live PTY for session");
+    const terminals = terminalManager();
+    const sessions = [syntheticSession("session-a")];
+    render(<TerminalDeck sessions={sessions} activeId="session-a" terminals={terminals} />);
+
+    flushFrame();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(resizePty).toHaveBeenCalledTimes(2);
+    expect(resizePty.mock.calls[1]).toEqual(["session-a", 132, 41]);
   });
 });

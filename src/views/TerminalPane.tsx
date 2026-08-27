@@ -9,7 +9,6 @@
  */
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { Badge, Button } from "../components/lib";
-import { ipc } from "../ipc/commands";
 import type { Session } from "../ipc/types";
 import type { LaunchError } from "../app/store";
 import { useAnchor } from "../app/store";
@@ -20,10 +19,15 @@ import { ResumeCard } from "./ResumeCard";
 
 export function TerminalPane({ active }: { active: Session | null }) {
   const { state, terminals } = useAnchor();
-  const liveTabs = state.openTabs
-    .map((id) => state.sessions.find((session) => session.id === id))
-    .filter((session): session is Session => Boolean(session && isOn(session.status)));
-  const activeLiveId = active && isOn(active.status) ? active.id : null;
+  // Until replay has been applied at the backend-claimed restore grid, keep
+  // only the viewport probe mounted. A session slot would run its fit observer
+  // at the current webview width and could change the parser grid too early.
+  const liveTabs = state.bootReady
+    ? state.openTabs
+        .map((id) => state.sessions.find((session) => session.id === id))
+        .filter((session): session is Session => Boolean(session && isOn(session.status)))
+    : [];
+  const activeLiveId = state.bootReady && active && isOn(active.status) ? active.id : null;
 
   return (
     <div className="terminal-stage">
@@ -31,7 +35,6 @@ export function TerminalPane({ active }: { active: Session | null }) {
         sessions={liveTabs}
         activeId={activeLiveId}
         terminals={terminals}
-        restoreScrollback={state.settings.restoreScrollback}
       />
       {state.launchError ? <LaunchErrorCard error={state.launchError} /> : !active ? <EmptyState /> : !isOn(active.status) ? <ResumeCard session={active} /> : null}
     </div>
@@ -70,41 +73,68 @@ interface TerminalDeckProps {
   sessions: Session[];
   activeId: string | null;
   terminals: TerminalManager;
-  /** Prime a terminal session's saved scrollback on its first mount. */
-  restoreScrollback?: boolean;
 }
 
 export function TerminalDeck({
   sessions,
   activeId,
   terminals,
-  restoreScrollback = false,
 }: TerminalDeckProps) {
   return (
     <div className="terminal-deck">
+      <TerminalViewport terminals={terminals} />
       {sessions.map((session) => (
         <TerminalSlot
           key={session.id}
           session={session}
           active={session.id === activeId}
           terminals={terminals}
-          restoreScrollback={restoreScrollback}
         />
       ))}
     </div>
   );
 }
 
+function TerminalViewport({ terminals }: { terminals: TerminalManager }) {
+  const hostRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    terminals.mountViewport(host);
+    return () => terminals.unmountViewport(host);
+  }, [terminals]);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    let frame = 0;
+    const sync = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        terminals.measureViewport();
+      });
+    };
+    sync();
+    const observer = new ResizeObserver(sync);
+    observer.observe(host);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [terminals]);
+
+  return <div ref={hostRef} className="terminal-slot" aria-hidden="true" data-terminal-viewport />;
+}
+
 function TerminalSlot({
   session,
   active,
   terminals,
-  restoreScrollback,
 }: {
   session: Session;
   active: boolean;
   terminals: TerminalManager;
-  restoreScrollback: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
 
@@ -113,26 +143,9 @@ function TerminalSlot({
   useLayoutEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    const justOpened = terminals.mount(session.id, host);
-
-    if (justOpened && session.tool === "terminal" && restoreScrollback) {
-      void ipc
-        .getScrollback(session.id)
-        .then((text) => {
-          if (!text) return;
-          const lines = text.split("\n").length;
-          terminals.write(
-            session.id,
-            `\x1b[2m── restored session · scrollback recovered (${lines.toLocaleString()} lines) ──\x1b[0m\r\n${text}`,
-          );
-        })
-        .catch(() => {});
-    }
+    terminals.mount(session.id, host);
 
     return () => terminals.unmount(session.id, host);
-    // `restoreScrollback` is read only on the mount that opens the terminal;
-    // re-running for a settings change would not re-prime anything.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.id, session.tool, terminals]);
 
   // Every slot is sized, not just the visible one. A live session in a
@@ -151,10 +164,7 @@ function TerminalSlot({
     const sync = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        const dims = terminals.fit(session.id);
-        if (dims) {
-          void ipc.resizePty(session.id, dims.cols, dims.rows).catch(() => {});
-        }
+        terminals.fit(session.id);
       });
     };
     sync();

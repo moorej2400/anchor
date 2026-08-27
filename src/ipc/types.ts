@@ -59,6 +59,18 @@ export interface CliInfo {
   path: string | null;
 }
 
+/** Measured xterm grid used for the initial PTY spawn and later resizes. */
+export interface TerminalSize {
+  cols: number;
+  rows: number;
+}
+
+export interface PtyResize {
+  /** Last output sequence produced before the PTY accepted the new grid. */
+  throughSequence: number;
+  gridEpoch: number;
+}
+
 export interface AppState {
   folders: Folder[];
   sessions: Session[];
@@ -69,12 +81,32 @@ export interface AppState {
 export interface PtyOutputPayload {
   sessionId: string;
   data: string;
+  sequence: number;
+  gridEpoch: number;
+  cols: number;
+  rows: number;
+}
+
+export interface PtyReplay {
+  data: string;
+  throughSequence: number;
+  cols: number;
+  rows: number;
+  /** True when the snapshot includes saved output emitted outside live sequencing. */
+  coversUnsequenced: boolean;
+  gridEpoch: number;
 }
 
 export interface SessionStatusPayload {
   sessionId: string;
   status: Status;
   exitCode: number | null;
+}
+
+export interface SessionResumeErrorPayload {
+  sessionId: string;
+  code: string;
+  message: string;
 }
 
 export interface AttentionCountPayload {
@@ -85,5 +117,6 @@ export const EVENT = {
   ptyOutput: "pty:output",
   sessionStatus: "session:status",
   sessionUpdated: "session:updated",
+  sessionResumeError: "session:resume-error",
   attentionCount: "attention:count",
 } as const;

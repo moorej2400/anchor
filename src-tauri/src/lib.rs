@@ -15,7 +15,8 @@ use std::sync::Arc;
 
 use backend::{Backend, BackendEvents};
 use models::{
-    events, AttentionCountPayload, PtyOutputPayload, Session, SessionStatusPayload, Status,
+    events, AttentionCountPayload, PtyOutputPayload, Session, SessionResumeErrorPayload,
+    SessionStatusPayload, Status,
 };
 use tauri::{Emitter, Manager, UserAttentionType};
 use tauri_plugin_notification::NotificationExt;
@@ -23,12 +24,24 @@ use tauri_plugin_notification::NotificationExt;
 struct TauriEvents(tauri::AppHandle);
 
 impl BackendEvents for TauriEvents {
-    fn pty_output(&self, session_id: &str, data: &str) {
+    fn pty_output(
+        &self,
+        session_id: &str,
+        data: &str,
+        sequence: u64,
+        grid_epoch: u64,
+        cols: u16,
+        rows: u16,
+    ) {
         let _ = self.0.emit(
             events::PTY_OUTPUT,
             PtyOutputPayload {
                 session_id: session_id.to_owned(),
                 data: data.to_owned(),
+                sequence,
+                grid_epoch,
+                cols,
+                rows,
             },
         );
     }
@@ -46,6 +59,17 @@ impl BackendEvents for TauriEvents {
 
     fn session_updated(&self, session: &Session) {
         let _ = self.0.emit(events::SESSION_UPDATED, session);
+    }
+
+    fn session_resume_error(&self, session_id: &str, code: &str, message: &str) {
+        let _ = self.0.emit(
+            events::SESSION_RESUME_ERROR,
+            SessionResumeErrorPayload {
+                session_id: session_id.to_owned(),
+                code: code.to_owned(),
+                message: message.to_owned(),
+            },
+        );
     }
 
     fn attention_count(&self, waiting: u32, notify: bool) {
@@ -131,7 +155,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         // Auto-restore is not started here: page load says nothing about
         // whether the frontend has installed its event listeners. The frontend
-        // calls `frontend_ready` once it has (SPEC.md §8).
+        // calls `frontend_ready` once it has listeners, state, and a measured
+        // terminal grid for initial PTY spawns (SPEC.md §8).
         .setup(move |app| {
             let events: Arc<dyn BackendEvents> = Arc::new(TauriEvents(app.handle().clone()));
             let backend = Backend::platform(events).map_err(|error| {
@@ -150,6 +175,7 @@ pub fn run() {
             commands::remove_folder,
             commands::launch_session,
             commands::resume_session,
+            commands::fork_codex_session,
             commands::get_codex_profiles,
             commands::set_codex_profile,
             commands::stop_session,

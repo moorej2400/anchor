@@ -4,7 +4,7 @@
  * Set VITE_IPC=mock to run against src/ipc/mock.ts in a plain browser.
  */
 import { invoke } from "@tauri-apps/api/core";
-import type { AppState, CliInfo, Folder, Session, Settings, Tool } from "./types";
+import type { AppState, CliInfo, Folder, PtyReplay, PtyResize, Session, Settings, TerminalSize, Tool } from "./types";
 import { mockInvoke } from "./mock";
 
 const useMock = import.meta.env.VITE_IPC === "mock";
@@ -15,8 +15,9 @@ function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
 
 export const ipc = {
   getState: () => call<AppState>("get_state"),
-  /** Sent once after event listeners are installed and state is hydrated. */
-  frontendReady: () => call<void>("frontend_ready"),
+  /** Sent after listeners, hydration, and terminal viewport measurement. */
+  frontendReady: (size: TerminalSize) =>
+    call<TerminalSize>("frontend_ready", { cols: size.cols, rows: size.rows }),
 
   createFolder: (path: string, name?: string) =>
     call<Folder>("create_folder", { path, name }),
@@ -30,12 +31,24 @@ export const ipc = {
   launchSession: (
     folderId: string,
     tool: Tool,
+    size: TerminalSize,
     title?: string,
     extraArgs?: string[],
     codexProfile?: string | null,
-  ) => call<Session>("launch_session", { folderId, tool, title, extraArgs, codexProfile }),
-  resumeSession: (sessionId: string) =>
-    call<Session>("resume_session", { sessionId }),
+  ) => call<Session>("launch_session", {
+    folderId,
+    tool,
+    cols: size.cols,
+    rows: size.rows,
+    title,
+    extraArgs,
+    codexProfile,
+  }),
+  resumeSession: (sessionId: string, size: TerminalSize) =>
+    call<Session>("resume_session", { sessionId, cols: size.cols, rows: size.rows }),
+  /** Forks a Codex transcript into a new persisted Anchor session. */
+  forkCodexSession: (sessionId: string, size: TerminalSize) =>
+    call<Session>("fork_codex_session", { sessionId, cols: size.cols, rows: size.rows }),
   stopSession: (sessionId: string) => call<void>("stop_session", { sessionId }),
   deleteSession: (sessionId: string) =>
     call<void>("delete_session", { sessionId }),
@@ -50,9 +63,9 @@ export const ipc = {
   writePty: (sessionId: string, data: string) =>
     call<void>("write_pty", { sessionId, data }),
   resizePty: (sessionId: string, cols: number, rows: number) =>
-    call<void>("resize_pty", { sessionId, cols, rows }),
-  /** Ask the core to re-emit a live session's recent output as `pty_output`. */
-  replayOutput: (sessionId: string) => call<void>("replay_output", { sessionId }),
+    call<PtyResize>("resize_pty", { sessionId, cols, rows }),
+  /** Read a live session's retained output and the sequence it includes. */
+  replayOutput: (sessionId: string) => call<PtyReplay>("replay_output", { sessionId }),
   getScrollback: (sessionId: string) =>
     call<string>("get_scrollback", { sessionId }),
 

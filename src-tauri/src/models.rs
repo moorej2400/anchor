@@ -158,6 +158,7 @@ pub mod events {
     pub const PTY_OUTPUT: &str = "pty:output";
     pub const SESSION_STATUS: &str = "session:status";
     pub const SESSION_UPDATED: &str = "session:updated";
+    pub const SESSION_RESUME_ERROR: &str = "session:resume-error";
     pub const ATTENTION_COUNT: &str = "attention:count";
 }
 
@@ -166,6 +167,36 @@ pub mod events {
 pub struct PtyOutputPayload {
     pub session_id: String,
     pub data: String,
+    pub sequence: u64,
+    pub grid_epoch: u64,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyReplay {
+    pub data: String,
+    pub through_sequence: u64,
+    pub cols: u16,
+    pub rows: u16,
+    pub covers_unsequenced: bool,
+    pub grid_epoch: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSize {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtyResize {
+    /// Last output sequence produced before the PTY accepted this grid.
+    pub through_sequence: u64,
+    pub grid_epoch: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -174,6 +205,14 @@ pub struct SessionStatusPayload {
     pub session_id: String,
     pub status: Status,
     pub exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionResumeErrorPayload {
+    pub session_id: String,
+    pub code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
