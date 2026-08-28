@@ -146,7 +146,6 @@ function FolderGroup(props: {
   const renameRef = useRef<HTMLInputElement>(null);
 
   const expanded = !collapsed && folder.sessions.length > 0;
-  const chevron = collapsed || folder.sessions.length === 0 ? "▸" : "▾";
   const renaming = ui.folderRename === folder.id;
   const showMore = (hover || ui.folderMore === folder.id) && !renaming;
   // Quick-launch stays visible while its own menu is open, so moving the
@@ -170,7 +169,6 @@ function FolderGroup(props: {
   return (
     <div className="folder" onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
       <div className="folder__head">
-        <button className="folder__chevron" onClick={onToggle}>{chevron}</button>
         {renaming ? (
           <TextInput
             ref={renameRef}
@@ -183,10 +181,17 @@ function FolderGroup(props: {
             }}
             onBlur={commitRename}
             onClick={(e) => e.stopPropagation()}
-            style={{ fontWeight: 600 }}
+            style={{ fontSize: 14.5, fontWeight: 600 }}
           />
         ) : (
-          <span className="folder__name">{folder.name}</span>
+          <button
+            className="folder__name"
+            aria-expanded={expanded}
+            aria-controls={`folder-sessions-${folder.id}`}
+            onClick={onToggle}
+          >
+            {folder.name}
+          </button>
         )}
         <span className="folder__count">{folder.sessions.length}</span>
         {/* Both stay laid out (hidden, not unmounted) so revealing them on
@@ -251,10 +256,9 @@ function FolderGroup(props: {
           </Menu>
         )}
       </div>
-      <div className="folder__path">{folder.path}</div>
 
       {expanded && (
-        <div className="folder__sessions">
+        <div id={`folder-sessions-${folder.id}`} className="folder__sessions">
           {folder.sessions.map((session) => (
             <SessionRow
               key={session.id}

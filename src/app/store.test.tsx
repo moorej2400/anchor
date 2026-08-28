@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: class {
@@ -425,7 +425,7 @@ describe("AnchorProvider boot order", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "New session" }));
-    fireEvent.click(screen.getByRole("button", { name: /synthetic/i }));
+    fireEvent.click(within(document.querySelector(".a-modal")!).getByRole("button", { name: /synthetic/i }));
     fireEvent.click(screen.getByRole("button", { name: /Codex$/ }));
 
     expect(launchSessionMock).not.toHaveBeenCalled();
@@ -706,6 +706,22 @@ describe("closeTab", () => {
       expect(document.querySelectorAll("[data-terminal-session-id]")).toHaveLength(1),
     );
     expect(screen.getByRole("button", { name: "Close tab" })).toBeInTheDocument();
+  });
+});
+
+describe("sidebar folder groups", () => {
+  it("hides the path and collapse marker while the folder name toggles its sessions", async () => {
+    const view = await renderRunningSessionApp();
+
+    expect(view.container.querySelector(".folder__chevron")).toBeNull();
+    const folderName = screen.getByRole("button", { name: FOLDER.name });
+    expect(folderName.closest(".folder")).not.toHaveTextContent(FOLDER.path);
+    expect(folderName).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(folderName);
+
+    expect(folderName).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("synthetic-session", { selector: ".a-row__title" })).toBeNull();
   });
 });
 
@@ -1040,7 +1056,7 @@ describe("launch and resume failures", () => {
     await renderStoppedAiSession("synthetic-session-id");
 
     fireEvent.click(screen.getByRole("button", { name: "New session" }));
-    fireEvent.click(screen.getByRole("button", { name: /synthetic/i }));
+    fireEvent.click(within(document.querySelector(".a-modal")!).getByRole("button", { name: /synthetic/i }));
     fireEvent.click(screen.getByRole("button", { name: /Codex$/ }));
 
     const error = await screen.findByRole("alert");
@@ -1069,7 +1085,7 @@ describe("launch and resume failures", () => {
     await screen.findByRole("button", { name: /resume session/i });
 
     fireEvent.click(screen.getByRole("button", { name: "New session" }));
-    fireEvent.click(screen.getByRole("button", { name: /synthetic/i }));
+    fireEvent.click(within(document.querySelector(".a-modal")!).getByRole("button", { name: /synthetic/i }));
     fireEvent.click(screen.getByRole("button", { name: /Codex$/ }));
     await screen.findByRole("alert");
 
@@ -1097,7 +1113,7 @@ describe("Codex profiles", () => {
     launchSessionMock.mockResolvedValue({ ...session, id: "new-codex-session", status: "running", codexProfile: "beta" });
 
     fireEvent.click(screen.getByRole("button", { name: "New session" }));
-    fireEvent.click(screen.getByRole("button", { name: /synthetic/i }));
+    fireEvent.click(within(document.querySelector(".a-modal")!).getByRole("button", { name: /synthetic/i }));
     expect(screen.getByRole("button", { name: /Codex · alpha/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Codex · beta/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Codex · beta/ }));
