@@ -1004,6 +1004,23 @@ describe("launch and resume failures", () => {
     expect(screen.queryByText("codex-session", { selector: ".a-row__title" })).toBeNull();
   });
 
+  it("removes a closed session after one delete click while Windows cleanup is pending", async () => {
+    const deletion = deferred<void>();
+    deleteSessionMock.mockReturnValue(deletion.promise);
+    await renderStoppedAiSession("synthetic-session-id");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close tab" }));
+    await waitFor(() => expect(setTabOpenMock).toHaveBeenCalledWith("codex-session", false));
+    const row = screen.getByText("codex-session", { selector: ".a-row__title" }).closest(".a-row")!;
+    fireEvent.mouseEnter(row);
+    fireEvent.click(screen.getByRole("button", { name: "Delete session" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(screen.queryByText("codex-session", { selector: ".a-row__title" })).toBeNull();
+    expect(deleteSessionMock).toHaveBeenCalledTimes(1);
+    deletion.resolve();
+  });
+
   it("keeps a session usable when permanent deletion fails", async () => {
     deleteSessionMock.mockRejectedValue("SESSION_DELETE_FAILED: synthetic failure");
     await renderStoppedAiSession("synthetic-session-id");

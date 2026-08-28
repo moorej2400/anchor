@@ -1,7 +1,7 @@
 /** Top tab strip for open sessions + new-session button. */
 import { Badge, StatusDot, Tab } from "../components/lib";
 import { useAnchor } from "../app/store";
-import { sessionById } from "../app/selectors";
+import { sessionById, sessionDisplayTitle } from "../app/selectors";
 
 export function TabStrip() {
   const { state, actions } = useAnchor();
@@ -20,7 +20,7 @@ export function TabStrip() {
         {tabs.map((s) => (
           <Tab key={s.id} active={s.id === state.activeId} onSelect={() => actions.selectSession(s.id)}>
             <Badge tool={s.tool} />
-            <span className="a-tab__title">{s.title}</span>
+            <span className="a-tab__title">{sessionDisplayTitle(s, state.sessions)}</span>
             <StatusDot status={s.status} />
             <button
               className="a-iconbtn"

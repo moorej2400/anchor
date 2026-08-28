@@ -534,7 +534,11 @@ impl Backend {
         let now = Utc::now().to_rfc3339();
         let title = match title {
             Some(title) => nonempty_name(&title, "session")?,
-            None => default_title(tool, &settings),
+            None => {
+                let base = default_title(tool, &settings);
+                let registry = self.registry.lock().map_err(lock_error)?;
+                next_default_title(&registry, folder_id, &base)
+            }
         };
         let session = Session {
             id: uuid::Uuid::new_v4().hyphenated().to_string(),
@@ -1584,6 +1588,33 @@ fn default_title(tool: Tool, settings: &Settings) -> String {
     }
 }
 
+/// Default titles are user-facing identifiers in tabs and the sidebar. Keep
+/// them unique within a folder so closing or deleting one record cannot look
+/// like the same record immediately reappeared.
+fn next_default_title(registry: &Registry, folder_id: &str, base: &str) -> String {
+    let matching_base_count = registry
+        .sessions
+        .iter()
+        .filter(|session| session.folder_id == folder_id && session.title == base)
+        .count();
+    if matching_base_count == 0 {
+        return base.to_owned();
+    }
+
+    let mut ordinal = matching_base_count + 1;
+    loop {
+        let candidate = format!("{base} ({ordinal})");
+        if !registry
+            .sessions
+            .iter()
+            .any(|session| session.folder_id == folder_id && session.title == candidate)
+        {
+            return candidate;
+        }
+        ordinal += 1;
+    }
+}
+
 fn tool_display_name(tool: Tool) -> &'static str {
     match tool {
         Tool::Claude => "claude",
@@ -2394,6 +2425,30 @@ mod tests {
             spawns[1].1.args,
             vec!["--session-id", launched.cli_session_id.as_ref().unwrap()]
         );
+    }
+
+    #[test]
+    fn launch_numbers_repeated_default_titles_within_a_folder() {
+        let (root, backend, _) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+
+        let first = backend
+            .launch_session(&folder.id, Tool::Claude, None, None, 80, 24)
+            .unwrap();
+        let second = backend
+            .launch_session(&folder.id, Tool::Claude, None, None, 80, 24)
+            .unwrap();
+        let third = backend
+            .launch_session(&folder.id, Tool::Claude, None, None, 80, 24)
+            .unwrap();
+
+        assert_eq!(first.title, "new Claude session");
+        assert_eq!(second.title, "new Claude session (2)");
+        assert_eq!(third.title, "new Claude session (3)");
     }
 
     #[test]

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Modal, StatusDot, TextInput } from "../components/lib";
 import { useAnchor } from "../app/store";
 import { folderOf, toolName } from "../app/display";
+import { sessionDisplayTitle } from "../app/selectors";
 
 export function CommandPalette() {
   const { state, actions } = useAnchor();
@@ -47,7 +48,7 @@ export function CommandPalette() {
           <button key={s.id} className="palette__item" onClick={() => { actions.selectSession(s.id); actions.closePalette(); }}>
             <Badge tool={s.tool} />
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.title}</div>
+              <div style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sessionDisplayTitle(s, state.sessions)}</div>
               <div className="palette__meta">{folder?.name ?? "—"} · {s.cliSessionId ?? "no id"}</div>
             </div>
             <StatusDot status={s.status} />

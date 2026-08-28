@@ -19,7 +19,7 @@ import {
 } from "../components/lib";
 import type { Folder, Session } from "../ipc/types";
 import { useAnchor } from "../app/store";
-import { foldersWithSessions, statusCounts } from "../app/selectors";
+import { foldersWithSessions, sessionDisplayTitle, statusCounts } from "../app/selectors";
 import { LAUNCHABLE, toolName } from "../app/display";
 
 interface SidebarProps {
@@ -289,6 +289,7 @@ function SessionRow(props: {
   const confirming = ui.confirmDelete === session.id;
   const showActions = (hover || menuOpen || confirming) && !renaming;
   const showDot = !hover && !menuOpen && !renaming && !confirming;
+  const displayTitle = sessionDisplayTitle(session, state.sessions);
 
   useEffect(() => {
     if (renaming) {
@@ -327,7 +328,7 @@ function SessionRow(props: {
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <div className="a-row__title">{session.title}</div>
+          <div className="a-row__title">{displayTitle}</div>
         )}
       </div>
 

@@ -656,6 +656,7 @@ function makeActions(
   // request that owns them. Reopening a tab clears its token, so a close that
   // settles afterwards neither disposes the terminal nor undoes the reopen.
   const closingTabs = new Map<string, symbol>();
+  const deletingSessions = new Set<string>();
   type ResumeOperation = {
     token: symbol;
     spawned: boolean;
@@ -851,17 +852,43 @@ function makeActions(
         showToast("Anchor is still restoring sessions.");
         return;
       }
+      if (deletingSessions.has(id)) return;
+      const previous = stateRef.current.sessions.find((session) => session.id === id);
+      if (!previous) return;
+      const wasOpen = stateRef.current.openTabs.includes(id);
+      const wasActive = stateRef.current.activeId === id;
+
+      // Windows can spend several seconds stopping ConPTY before the delete
+      // command returns. Remove the record immediately and tombstone its event
+      // stream so one click has visible, single-shot behavior during that wait.
+      deletingSessions.add(id);
+      deletedSessionIds.add(id);
+      resumingSessions.delete(id);
+      closingTabs.delete(id);
+      dispatch({ type: "REMOVE_SESSION", id });
+      terminals.ignoreOutput(id);
       try {
         await ipc.deleteSession(id);
-        deletedSessionIds.add(id);
-        resumingSessions.delete(id);
-        // A permanent delete owns the final lifecycle state. Cancel an older
-        // close so its failure path cannot restore a tab for the removed ID.
-        closingTabs.delete(id);
-        dispatch({ type: "REMOVE_SESSION", id });
-        terminals.ignoreOutput(id);
       } catch (e) {
+        deletedSessionIds.delete(id);
+        terminals.allowOutput(id);
+        const authoritative = await ipc.getState().catch(() => null);
+        const restored = authoritative
+          ? authoritative.sessions.find((session) => session.id === id)
+          : previous;
+        if (restored) {
+          dispatch({ type: "UPSERT_SESSION", session: restored });
+          if (wasOpen) dispatch({ type: "RESTORE_TAB", id });
+          if (wasActive) dispatch({ type: "SET_ACTIVE", id });
+        } else {
+          // The delete command failed after another actor removed the record.
+          // Keep the authoritative absence instead of reviving stale events.
+          deletedSessionIds.add(id);
+          terminals.ignoreOutput(id);
+        }
         showToast(shortError(e));
+      } finally {
+        deletingSessions.delete(id);
       }
     },
     async renameSession(id, title) {

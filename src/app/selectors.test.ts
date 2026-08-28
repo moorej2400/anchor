@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Folder, Session, Status, Tool } from "../ipc/types";
-import { foldersWithSessions, sessionMatches, statusCounts } from "./selectors";
+import {
+  foldersWithSessions,
+  sessionDisplayTitle,
+  sessionMatches,
+  statusCounts,
+} from "./selectors";
 
 const folders: Folder[] = [
   { id: "f1", name: "acme-web", path: "~/dev/acme-web" },
@@ -112,6 +117,19 @@ describe("sessionMatches", () => {
     expect(sessionMatches(sess, folders[0], "Claude Code")).toBe(true);
     expect(sessionMatches(sess, folders[0], "a-sid")).toBe(true);
     expect(sessionMatches(sess, folders[0], "nope")).toBe(false);
+  });
+});
+
+describe("sessionDisplayTitle", () => {
+  it("numbers duplicate titles in stable creation and id order", () => {
+    const first = s("a", "f1", "codex", "new Codex session", "stopped");
+    const second = s("b", "f1", "codex", "new Codex session", "stopped");
+    const unique = s("c", "f1", "claude", "new Claude session", "stopped");
+    const sessions = [second, unique, first];
+
+    expect(sessionDisplayTitle(first, sessions)).toBe("new Codex session (1)");
+    expect(sessionDisplayTitle(second, sessions)).toBe("new Codex session (2)");
+    expect(sessionDisplayTitle(unique, sessions)).toBe("new Claude session");
   });
 });
 

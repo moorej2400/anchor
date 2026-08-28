@@ -7,7 +7,7 @@
  */
 import { Modal } from "../components/lib";
 import { useAnchor } from "../app/store";
-import { sessionById } from "../app/selectors";
+import { sessionById, sessionDisplayTitle } from "../app/selectors";
 
 export function CloseSessionModal() {
   const { state, actions } = useAnchor();
@@ -19,7 +19,9 @@ export function CloseSessionModal() {
       <div className="remove-modal">
         <div className="remove-modal__head">
           <div className="remove-modal__icon">⚠</div>
-          <div style={{ fontSize: 16, fontWeight: 700 }}>Close “{session.title}”?</div>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>
+            Close “{sessionDisplayTitle(session, state.sessions)}”?
+          </div>
         </div>
         <div style={{ fontSize: 13, lineHeight: 1.55, color: "var(--text-2)", marginBottom: 18 }}>
           {state.settings.stopOnClose

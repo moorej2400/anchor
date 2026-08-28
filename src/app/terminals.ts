@@ -897,6 +897,11 @@ export class TerminalManager {
     this.ignoredOutputIds.add(id);
   }
 
+  /** Undo a deletion tombstone when the backend rejects the delete request. */
+  allowOutput(id: string): void {
+    this.ignoredOutputIds.delete(id);
+  }
+
   /** Remove every boot-captured ID absent from the authoritative registry. */
   reconcileCapturedOutput(allowedIds: ReadonlySet<string>): string[] {
     const owned = new Set([

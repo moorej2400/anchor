@@ -12,6 +12,22 @@ export interface FolderWithSessions extends Folder {
  */
 export type TypedOrder = Record<string, number>;
 
+/**
+ * Keep separate saved sessions identifiable when older registries contain the
+ * same default title more than once. The stable creation/id order avoids row
+ * labels changing when activity sorting moves a session in the sidebar.
+ */
+export function sessionDisplayTitle(session: Session, sessions: Session[]): string {
+  const matches = sessions
+    .filter((candidate) => candidate.title === session.title)
+    .sort((left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+    );
+  if (matches.length < 2) return session.title;
+  const index = matches.findIndex((candidate) => candidate.id === session.id);
+  return index < 0 ? session.title : `${session.title} (${index + 1})`;
+}
+
 /** Does a session match the filter query (title, folder, tool name, session id)? */
 export function sessionMatches(session: Session, folder: Folder, query: string): boolean {
   const q = query.trim().toLowerCase();

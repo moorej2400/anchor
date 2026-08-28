@@ -3,6 +3,7 @@ import { Badge, Button } from "../components/lib";
 import type { Session } from "../ipc/types";
 import { useAnchor } from "../app/store";
 import { displayModel, folderPathOf, relativeTime } from "../app/display";
+import { sessionDisplayTitle } from "../app/selectors";
 
 export function ResumeCard({ session }: { session: Session }) {
   const { state, actions } = useAnchor();
@@ -10,6 +11,7 @@ export function ResumeCard({ session }: { session: Session }) {
   const canResume = session.tool === "terminal" || Boolean(session.cliSessionId);
   const error = state.resumeErrors[session.id];
   const activeWriter = session.tool === "codex" && error?.code === "CODEX_ACTIVE_WRITER";
+  const displayTitle = sessionDisplayTitle(session, state.sessions);
 
   return (
     <div className="resume-wrap">
@@ -17,7 +19,7 @@ export function ResumeCard({ session }: { session: Session }) {
         <div className="resume-card__head">
           <Badge tool={session.tool} scale={1.35} />
           <div>
-            <div className="resume-card__title">{session.title}</div>
+            <div className="resume-card__title">{displayTitle}</div>
             <div className="resume-card__path">{path}</div>
           </div>
         </div>
@@ -48,7 +50,7 @@ export function ResumeCard({ session }: { session: Session }) {
         )}
         {error && (
           <div className="operation-error operation-error--compact" role="alert">
-            <div className="operation-error__title">Unable to resume {session.title}</div>
+            <div className="operation-error__title">Unable to resume {displayTitle}</div>
             <div>{error.message}</div>
             {error.isCliNotFound && <div className="operation-error__guidance">Install {session.tool} and ensure it is available on PATH, then retry.</div>}
             {activeWriter && <div className="operation-error__guidance">Codex permits only one writer per conversation. Forking preserves the transcript under a new session ID.</div>}

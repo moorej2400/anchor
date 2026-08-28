@@ -2,7 +2,7 @@
 import { Badge, Button, StatusDot } from "../components/lib";
 import type { Session } from "../ipc/types";
 import { useAnchor } from "../app/store";
-import { statusCounts } from "../app/selectors";
+import { sessionDisplayTitle, statusCounts } from "../app/selectors";
 import { displayModel, toolName } from "../app/display";
 import { STATUS_LABEL } from "../components/lib/tokens";
 
@@ -19,7 +19,7 @@ export function StatusBar({ active }: { active: Session | null }) {
           <Badge tool={active.tool} />
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.25, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 210 }}>
-              {active.title}
+              {sessionDisplayTitle(active, state.sessions)}
             </div>
             <div className="statusbar__mono" style={{ color: "var(--text-3)" }}>
               {toolName(active.tool)} · {displayModel(active)}
