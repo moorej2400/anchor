@@ -786,7 +786,7 @@ impl Backend {
     pub fn delete_session(&self, session_id: &str) -> Result<(), String> {
         let _operation = self.operations.lock().map_err(lock_error)?;
         self.session(session_id)?;
-        self.stop_if_live(session_id)?;
+        self.stop_for_delete(session_id)?;
         let _transition = self.mutation.lock().map_err(lock_error)?;
         let waiting_before_removal = self.waiting_count();
         let mut registry = self.registry.lock().map_err(lock_error)?;
@@ -1450,6 +1450,20 @@ impl Backend {
         Ok(())
     }
 
+    fn stop_for_delete(&self, session_id: &str) -> Result<(), String> {
+        if !self.runtime.is_live(session_id) {
+            return Ok(());
+        }
+        match self.runtime.stop(session_id) {
+            Ok(()) => Ok(()),
+            // Windows may report that its stopped callback missed the timeout
+            // after ConPTY is already dead. That callback only updates the
+            // registry record this operation is about to remove.
+            Err(_) if !self.runtime.is_live(session_id) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     fn waiting_count(&self) -> u32 {
         self.registry
             .lock()
@@ -2084,6 +2098,7 @@ mod tests {
         saw_persisted_identity: Mutex<bool>,
         exit_immediately: AtomicBool,
         fail_stop: AtomicBool,
+        fail_stop_after_exit: AtomicBool,
         fail_spawn: AtomicBool,
         block_spawn: AtomicBool,
         spawn_entered: AtomicBool,
@@ -2165,6 +2180,9 @@ mod tests {
             }
             self.live.lock().unwrap().remove(session_id);
             self.sizes.lock().unwrap().remove(session_id);
+            if self.fail_stop_after_exit.load(Ordering::Acquire) {
+                return Err("PTY_STOP_FAILED: stopped event did not complete".into());
+            }
             Ok(())
         }
         fn replay_output(&self, session_id: &str) -> Result<PtyReplay, String> {
@@ -2577,6 +2595,46 @@ mod tests {
         backend.delete_session(&session.id).unwrap();
         assert!(backend.stop_session(&session.id).is_err());
         assert!(backend.delete_session(&session.id).is_err());
+    }
+
+    #[test]
+    fn delete_continues_after_a_late_stop_completion_error() {
+        let (root, backend, runtime) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let session = backend
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
+            .unwrap();
+        runtime.fail_stop_after_exit.store(true, Ordering::Release);
+
+        backend.delete_session(&session.id).unwrap();
+
+        assert!(!runtime.is_live(&session.id));
+        assert!(backend.session(&session.id).is_err());
+        assert_eq!(runtime.stop_calls.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn delete_keeps_the_record_when_stop_fails_while_the_process_is_live() {
+        let (root, backend, runtime) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let session = backend
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
+            .unwrap();
+        runtime.fail_stop.store(true, Ordering::Release);
+
+        assert!(backend.delete_session(&session.id).is_err());
+
+        assert!(runtime.is_live(&session.id));
+        assert!(backend.session(&session.id).is_ok());
+        assert_eq!(runtime.stop_calls.load(Ordering::Acquire), 1);
     }
 
     #[test]
