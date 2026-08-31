@@ -313,6 +313,17 @@ function SessionRow(props: {
     <SidebarRow
       active={active}
       onClick={() => actions.selectSession(session.id)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setUi((u) => ({
+          ...u,
+          folderMenu: null,
+          folderMore: null,
+          sessionMenu: session.id,
+          confirmDelete: null,
+        }));
+      }}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >

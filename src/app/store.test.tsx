@@ -723,6 +723,16 @@ describe("sidebar folder groups", () => {
     expect(folderName).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("synthetic-session", { selector: ".a-row__title" })).toBeNull();
   });
+
+  it("opens the session options menu on right-click", async () => {
+    await renderRunningSessionApp();
+    const row = screen.getByText("synthetic-session", { selector: ".a-row__title" }).closest(".a-row")!;
+
+    fireEvent.contextMenu(row);
+
+    expect(screen.getByRole("button", { name: /Rename session$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Copy session ID$/ })).toBeInTheDocument();
+  });
 });
 
 describe("settings exposure", () => {
@@ -730,7 +740,7 @@ describe("settings exposure", () => {
     await renderRunningSessionApp();
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
 
-    expect(screen.getByText("Anchor v0.1.3")).toBeInTheDocument();
+    expect(screen.getByText("Anchor v0.1.4")).toBeInTheDocument();
   });
 
   it("lets the user turn on waiting notifications", async () => {
