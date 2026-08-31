@@ -2446,6 +2446,32 @@ mod tests {
     }
 
     #[test]
+    fn copilot_launch_creates_a_new_identity_and_resume_targets_it() {
+        let (root, backend, runtime) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+
+        let launched = backend
+            .launch_session(&folder.id, Tool::Copilot, None, None, 80, 24)
+            .unwrap();
+        let cli_id = launched.cli_session_id.as_ref().unwrap();
+        assert_eq!(
+            runtime.spawns.lock().unwrap()[0].1.args,
+            vec!["--session-id", cli_id]
+        );
+
+        backend.stop_session(&launched.id).unwrap();
+        backend.resume_session(&launched.id, 80, 24).unwrap();
+        assert_eq!(
+            runtime.spawns.lock().unwrap()[1].1.args,
+            vec!["--resume", cli_id]
+        );
+    }
+
+    #[test]
     fn launch_numbers_repeated_default_titles_within_a_folder() {
         let (root, backend, _) = harness();
         let project = root.path().join("project");

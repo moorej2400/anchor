@@ -186,7 +186,7 @@ Each adapter answers: how to **launch**, how to **capture the CLI's session ID**
 | tool | Launch command | Session-ID capture | Resume command |
 |---|---|---|---|
 | `claude` | `claude --session-id <uuid>` (Anchor generates the UUID) | **Pre-assigned** — known before spawn | `claude --resume <uuid>` once a Claude transcript exists; otherwise `claude --session-id <uuid>` reopens the same saved empty identity, never the picker |
-| `copilot` | `copilot --resume <uuid>` (with a fresh UUID this *starts a new* session having that ID) | **Pre-assigned** | `copilot --resume <uuid>` |
+| `copilot` | `copilot --session-id <uuid>` (Anchor generates the UUID) | **Pre-assigned** | `copilot --resume <uuid>` |
 | `codex` | `codex [--profile <name>]` | **Discovered:** watch `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`; a new file whose first-line JSON metadata has `cwd` == session folder and mtime ≥ launch time → extract its session UUID (in the filename and metadata) | Resume: `codex [--profile <name>] resume <uuid>`; explicit parallel recovery: `codex [--profile <name>] fork <uuid>` |
 | `opencode` | `opencode` (run in cwd) | **Discovered:** read `~/.local/share/opencode/opencode.db` (SQLite, **read-only**, open with `immutable`/read-only flags to avoid locking): newest session row whose directory == folder path and created ≥ launch time. (macOS/Linux path shown; resolve per-platform data dir.) | `opencode --session <id>` run in cwd |
 | `terminal` | user's default shell (settings `shell`, default `$SHELL` / platform default) | n/a — persistence = scrollback file | respawn shell in cwd; if `restoreScrollback` on, prepend saved scrollback to the xterm buffer with a `── restored session · scrollback recovered (N lines) ──` divider line (see mock) |

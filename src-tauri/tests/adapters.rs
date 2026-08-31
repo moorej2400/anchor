@@ -127,7 +127,7 @@ fn copilot_launch_preassigns_uuid_and_resume_requires_saved_identity() {
         launch,
         SpawnSpec::new(
             "copilot",
-            ["--resume", &cli_id, "--synthetic-flag", "value"],
+            ["--session-id", &cli_id, "--synthetic-flag", "value"],
             CWD,
         )
     );
@@ -399,6 +399,11 @@ fn adapter_owned_extra_args_are_rejected_without_echoing_values() {
             Box::new(ClaudeAdapter::default()),
             Tool::Claude,
             vec!["--session-id", "secret-claude"],
+        ),
+        (
+            Box::new(CopilotAdapter),
+            Tool::Copilot,
+            vec!["--session-id=secret-copilot"],
         ),
         (
             Box::new(CopilotAdapter),
