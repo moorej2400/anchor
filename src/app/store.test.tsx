@@ -726,6 +726,13 @@ describe("sidebar folder groups", () => {
 });
 
 describe("settings exposure", () => {
+  it("shows the packaged app version", async () => {
+    await renderRunningSessionApp();
+    fireEvent.click(screen.getByRole("button", { name: /settings/i }));
+
+    expect(screen.getByText("Anchor v0.1.2")).toBeInTheDocument();
+  });
+
   it("lets the user turn on waiting notifications", async () => {
     // The backend already gates its OS notification on notifyOnWaiting, but for
     // a while nothing in Settings could change it, so it was stuck off forever.

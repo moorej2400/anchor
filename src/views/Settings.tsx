@@ -11,6 +11,7 @@ import { ipc } from "../ipc/commands";
 import { useAnchor } from "../app/store";
 import { statusCounts } from "../app/selectors";
 import type { SettingsSection } from "../app/store";
+import packageJson from "../../package.json";
 
 const NAV: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" },
@@ -48,6 +49,7 @@ export function Settings() {
         <button className="settings__navbtn" style={{ marginTop: 14, border: "1px solid var(--hairline)" }} onClick={() => actions.closeSettings()}>
           <span className="settings__navtext" style={{ color: "var(--text-2)" }}>← Back to sessions</span>
         </button>
+        <div className="settings__version">Anchor v{packageJson.version}</div>
       </nav>
 
       <div className="settings__body">
