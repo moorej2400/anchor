@@ -717,6 +717,7 @@ describe("sidebar folder groups", () => {
     const folderName = screen.getByRole("button", { name: FOLDER.name });
     expect(folderName.closest(".folder")).not.toHaveTextContent(FOLDER.path);
     expect(folderName).toHaveAttribute("aria-expanded", "true");
+    expect(getComputedStyle(folderName).fontWeight).toBe("normal");
 
     fireEvent.click(folderName);
 
@@ -740,7 +741,7 @@ describe("settings exposure", () => {
     await renderRunningSessionApp();
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
 
-    expect(screen.getByText("Anchor v0.1.6")).toBeInTheDocument();
+    expect(screen.getByText("Anchor v0.1.7")).toBeInTheDocument();
   });
 
   it("lets the user turn on waiting notifications", async () => {

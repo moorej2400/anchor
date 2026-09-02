@@ -1,6 +1,6 @@
 [package]
 name = "anchor"
-version = "0.1.6"
+version = "0.1.7"
 description = "Anchor — managed terminal sessions for AI CLIs with persist & resume"
 authors = ["Anchor contributors"]
 license = "MIT"

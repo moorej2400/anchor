@@ -92,7 +92,7 @@ body {
 .folder__head { display: flex; align-items: center; gap: 7px; padding: 8px 14px 4px var(--sp-2); }
 .folder__name {
   flex: 1; min-width: 0; padding: 0; background: transparent; border: none;
-  color: var(--text-1); font-size: 14.5px; font-weight: 650; text-align: left; cursor: pointer;
+  color: var(--text-1); font-size: 14.5px; font-weight: 400; text-align: left; cursor: pointer;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .folder__count { flex: none; font-family: var(--font-mono); font-size: 10px; color: rgba(255, 255, 255, 0.34); }

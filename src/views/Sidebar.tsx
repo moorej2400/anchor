@@ -181,7 +181,7 @@ function FolderGroup(props: {
             }}
             onBlur={commitRename}
             onClick={(e) => e.stopPropagation()}
-            style={{ fontSize: 14.5, fontWeight: 600 }}
+            style={{ fontSize: 14.5, fontWeight: 400 }}
           />
         ) : (
           <button
