@@ -1460,7 +1460,14 @@ impl Backend {
             // after ConPTY is already dead. That callback only updates the
             // registry record this operation is about to remove.
             Err(_) if !self.runtime.is_live(session_id) => Ok(()),
-            Err(error) => Err(error),
+            // A ConPTY teardown can also report failure just before its live
+            // state settles. Retry once so one Delete action completes the
+            // shutdown that previously required a second user click.
+            Err(_) => match self.runtime.stop(session_id) {
+                Ok(()) => Ok(()),
+                Err(_) if !self.runtime.is_live(session_id) => Ok(()),
+                Err(error) => Err(error),
+            },
         }
     }
 
@@ -2098,6 +2105,7 @@ mod tests {
         saw_persisted_identity: Mutex<bool>,
         exit_immediately: AtomicBool,
         fail_stop: AtomicBool,
+        fail_stop_once: AtomicBool,
         fail_stop_after_exit: AtomicBool,
         fail_spawn: AtomicBool,
         block_spawn: AtomicBool,
@@ -2177,6 +2185,9 @@ mod tests {
             }
             if self.fail_stop.load(Ordering::Acquire) {
                 return Err("PTY_STOP_FAILED: synthetic stop failure".into());
+            }
+            if self.fail_stop_once.swap(false, Ordering::AcqRel) {
+                return Err("PTY_STOP_FAILED: synthetic first stop failure".into());
             }
             self.live.lock().unwrap().remove(session_id);
             self.sizes.lock().unwrap().remove(session_id);
@@ -2644,6 +2655,26 @@ mod tests {
     }
 
     #[test]
+    fn delete_retries_a_live_pty_after_the_first_stop_error() {
+        let (root, backend, runtime) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let session = backend
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
+            .unwrap();
+        runtime.fail_stop_once.store(true, Ordering::Release);
+
+        backend.delete_session(&session.id).unwrap();
+
+        assert!(!runtime.is_live(&session.id));
+        assert!(backend.session(&session.id).is_err());
+        assert_eq!(runtime.stop_calls.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
     fn delete_keeps_the_record_when_stop_fails_while_the_process_is_live() {
         let (root, backend, runtime) = harness();
         let project = root.path().join("project");
@@ -2660,7 +2691,7 @@ mod tests {
 
         assert!(runtime.is_live(&session.id));
         assert!(backend.session(&session.id).is_ok());
-        assert_eq!(runtime.stop_calls.load(Ordering::Acquire), 1);
+        assert_eq!(runtime.stop_calls.load(Ordering::Acquire), 2);
     }
 
     #[test]

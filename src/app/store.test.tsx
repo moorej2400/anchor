@@ -740,7 +740,7 @@ describe("settings exposure", () => {
     await renderRunningSessionApp();
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
 
-    expect(screen.getByText("Anchor v0.1.5")).toBeInTheDocument();
+    expect(screen.getByText("Anchor v0.1.6")).toBeInTheDocument();
   });
 
   it("lets the user turn on waiting notifications", async () => {
