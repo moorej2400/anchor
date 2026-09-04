@@ -46,6 +46,9 @@ export const ipc = {
   }),
   resumeSession: (sessionId: string, size: TerminalSize) =>
     call<Session>("resume_session", { sessionId, cols: size.cols, rows: size.rows }),
+  /** Starts a new provider chat inside an existing record that has no provider ID. */
+  repairSessionIdentity: (sessionId: string, size: TerminalSize) =>
+    call<Session>("repair_session_identity", { sessionId, cols: size.cols, rows: size.rows }),
   /** Forks a Codex transcript into a new persisted Anchor session. */
   forkCodexSession: (sessionId: string, size: TerminalSize) =>
     call<Session>("fork_codex_session", { sessionId, cols: size.cols, rows: size.rows }),
@@ -54,6 +57,11 @@ export const ipc = {
     call<void>("delete_session", { sessionId }),
   renameSession: (sessionId: string, title: string) =>
     call<Session>("rename_session", { sessionId, title }),
+  setSessionId: (sessionId: string, cliSessionId: string) =>
+    call<Session>("set_session_id", { sessionId, cliSessionId }),
+  /** Uses one hidden reusable provider chat to name a visible session. */
+  generateSessionTitle: (sessionId: string, message: string) =>
+    call<Session>("generate_session_title", { sessionId, message }),
   /** Persists the profile that a Codex record will use when it next starts. */
   setCodexProfile: (sessionId: string, codexProfile: string | null) =>
     call<Session>("set_codex_profile", { sessionId, codexProfile }),

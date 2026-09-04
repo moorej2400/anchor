@@ -72,6 +72,7 @@ const detectClisMock = vi.fn();
 const frontendReadyMock = vi.fn();
 const launchSessionMock = vi.fn();
 const resumeSessionMock = vi.fn();
+const repairSessionIdentityMock = vi.fn();
 const forkCodexSessionMock = vi.fn();
 const setTabOpenMock = vi.fn();
 const stopSessionMock = vi.fn();
@@ -81,6 +82,8 @@ const replayOutputMock = vi.fn();
 const setSettingsMock = vi.fn();
 const getCodexProfilesMock = vi.fn();
 const setCodexProfileMock = vi.fn();
+const setSessionIdMock = vi.fn();
+const generateSessionTitleMock = vi.fn();
 
 vi.mock("../ipc/commands", () => ({
   ipc: {
@@ -90,6 +93,7 @@ vi.mock("../ipc/commands", () => ({
     frontendReady: (...a: unknown[]) => frontendReadyMock(...a),
     launchSession: (...a: unknown[]) => launchSessionMock(...a),
     resumeSession: (...a: unknown[]) => resumeSessionMock(...a),
+    repairSessionIdentity: (...a: unknown[]) => repairSessionIdentityMock(...a),
     forkCodexSession: (...a: unknown[]) => forkCodexSessionMock(...a),
     setTabOpen: (...a: unknown[]) => setTabOpenMock(...a),
     stopSession: (...a: unknown[]) => stopSessionMock(...a),
@@ -99,6 +103,8 @@ vi.mock("../ipc/commands", () => ({
     setSettings: (...a: unknown[]) => setSettingsMock(...a),
     getCodexProfiles: (...a: unknown[]) => getCodexProfilesMock(...a),
     setCodexProfile: (...a: unknown[]) => setCodexProfileMock(...a),
+    setSessionId: (...a: unknown[]) => setSessionIdMock(...a),
+    generateSessionTitle: (...a: unknown[]) => generateSessionTitleMock(...a),
   },
 }));
 
@@ -223,6 +229,7 @@ beforeEach(() => {
   frontendReadyMock.mockImplementation(async (size) => size);
   launchSessionMock.mockResolvedValue(undefined);
   resumeSessionMock.mockResolvedValue(undefined);
+  repairSessionIdentityMock.mockResolvedValue(undefined);
   forkCodexSessionMock.mockResolvedValue(undefined);
   setTabOpenMock.mockResolvedValue(undefined);
   stopSessionMock.mockResolvedValue(undefined);
@@ -239,6 +246,8 @@ beforeEach(() => {
   setSettingsMock.mockImplementation(async (settings: Settings) => settings);
   getCodexProfilesMock.mockResolvedValue([]);
   setCodexProfileMock.mockResolvedValue(undefined);
+  setSessionIdMock.mockResolvedValue(undefined);
+  generateSessionTitleMock.mockResolvedValue(undefined);
 
   vi.stubGlobal(
     "ResizeObserver",
@@ -741,7 +750,7 @@ describe("settings exposure", () => {
     await renderRunningSessionApp();
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
 
-    expect(screen.getByText("Anchor v0.1.7")).toBeInTheDocument();
+    expect(screen.getByText("Anchor v0.1.8")).toBeInTheDocument();
   });
 
   it("lets the user turn on waiting notifications", async () => {
@@ -777,22 +786,48 @@ describe("launch and resume failures", () => {
         <App />
       </AnchorProvider>,
     );
-    const resume = await screen.findByRole("button", { name: /resume session/i });
+    const resume = await screen.findByRole("button", { name: /resume session|start new chat in this session/i });
     await waitFor(() => expect(frontendReadyMock).toHaveBeenCalled());
     if (cliSessionId) await waitFor(() => expect(resume).toBeEnabled());
   }
 
-  it("marks an AI session without a saved ID as unavailable and does not call resume", async () => {
+  it("starts a new provider chat inside the existing record when its ID is missing", async () => {
+    repairSessionIdentityMock.mockResolvedValue({
+      ...stoppedAiSession("codex-session", "synthetic-repaired-id"),
+      status: "running",
+    });
     await renderStoppedAiSession(null);
 
     expect(screen.getByText("Unavailable", { selector: ".resume-card__grid .v" })).toBeInTheDocument();
-    expect(screen.getByText(/will not open a provider session picker/i)).toBeInTheDocument();
-    const resume = screen.getByRole("button", { name: /resume session/i });
-    expect(resume).toBeDisabled();
+    expect(screen.getByText(/inside this existing session/i)).toBeInTheDocument();
+    const repair = screen.getByRole("button", { name: /start new chat in this session/i });
 
-    fireEvent.keyDown(window, { key: "Enter", metaKey: true });
+    fireEvent.click(repair);
+    await waitFor(() => expect(repairSessionIdentityMock).toHaveBeenCalledWith(
+      "codex-session",
+      { cols: 132, rows: 41 },
+    ));
     expect(resumeSessionMock).not.toHaveBeenCalled();
-    expect(await screen.findByRole("alert")).toHaveTextContent("no saved CLI session ID");
+    expect(launchSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("sets a provider session ID from the stopped-session context menu", async () => {
+    const updated = stoppedAiSession("codex-session", "manual-synthetic-id");
+    setSessionIdMock.mockResolvedValue(updated);
+    await renderStoppedAiSession("old-synthetic-id");
+
+    const row = screen.getByText("codex-session", { selector: ".a-row__title" }).closest(".a-row")!;
+    fireEvent.contextMenu(row);
+    fireEvent.click(screen.getByRole("button", { name: /Set session ID/ }));
+    const input = screen.getByRole("textbox", { name: "Provider session ID" });
+    fireEvent.change(input, { target: { value: "manual-synthetic-id" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save session ID" }));
+
+    await waitFor(() => expect(setSessionIdMock).toHaveBeenCalledWith(
+      "codex-session",
+      "manual-synthetic-id",
+    ));
+    expect(screen.queryByText("Set session ID", { selector: ".dialog__title" })).not.toBeInTheDocument();
   });
 
   it("accepts late identity discovery for a stopped boot session", async () => {

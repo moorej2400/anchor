@@ -85,6 +85,8 @@ Root data directory: **`~/.anchor/`** by default (the "Backup location" setting,
 | `~/.anchor/sessions/scrollback/<session-uuid>.txt` | Raw terminal scrollback for `terminal`-type sessions (and optionally others). Pruned per the retention setting (days). |
 | `settings.json` | User settings (schema §7), stored in the platform configuration directory outside the installed application. |
 | `settings.last-good.json` | Checksummed recovery envelope for settings, including the path that locates the session registry. |
+| `<platform-config>/anchor/internal/title-agents/state.json` | Private IDs for hidden title-generation sessions, one per harness and per selected Codex profile. These IDs never enter the visible session registry. |
+| `<platform-config>/anchor/internal/title-agents/workspaces/<tool>/` | Dedicated working directories for hidden title generation, isolated from user projects. |
 
 `registry.json` schema (serde JSON, camelCase):
 
@@ -210,6 +212,10 @@ return `CODEX_PROFILE_NOT_FOUND` and do not fall back to the base config.
 
 **Resume identity invariant:** every AI resume command must include the record's exact persisted `cliSessionId`. If an imported, corrupt, or undiscovered record has no ID, return `SESSION_ID_UNAVAILABLE` without spawning a process. Never launch a provider's interactive picker: manual selection can attach the Anchor record to the wrong conversation and defeats one-click resume. A fork is a separate, explicit user action that preserves the source transcript under a new provider ID; Anchor never substitutes it silently for Resume.
 
+When a visible AI record has no provider ID, the explicit repair action starts a new provider conversation **inside that existing Anchor record** and attaches its pre-assigned or discovered ID. It must not append another visible record. A stopped AI record can also accept a manually supplied provider ID after validating it as one bounded, command-safe identifier.
+
+After the first real user message is submitted to a newly launched AI session, Anchor asks that same harness for a 3–5 word title. Title generation uses one hidden, reusable provider session per harness (and per Codex profile where identities differ), persists its ID before another request can start, and runs in the dedicated private workspace above. Hidden title sessions are never included in `registry.sessions`. Requests are serialized, use non-interactive output, disable tools where supported, and accept only a sanitized 3–5 word response. Manual session names are never overwritten.
+
 **Version fragility:** store layouts and flags above were verified 2026-07 against current CLI versions. Adapters must treat parsing failures as "discovery pending", never crash, and are covered by fixture tests (§9). A `detect_clis` command reports which CLIs are installed (`which`/`where` + `--version`).
 
 ---
@@ -278,12 +284,15 @@ export interface PtyReplay { data: string; throughSequence: number; cols: number
 | `remove_folder` | `{ folderId: string }` | `void` | Stops + deletes all its sessions (UI shows the ack modal first). Async + `spawn_blocking`: it can wait on several PTY shutdowns. |
 | `launch_session` | `{ folderId: string; tool: Tool; cols: number; rows: number; title?: string; extraArgs?: string[]; codexProfile?: string }` | `Session` | Creates record (persisted before spawn), spawns the PTY at the measured xterm size, and starts discovery. Status `running`. `codexProfile` is valid only for Codex. |
 | `resume_session` | `{ sessionId: string; cols: number; rows: number }` | `Session` | Spawns the exact saved AI session by `cliSessionId`, or shell+scrollback for `terminal`, at the measured xterm size. Missing AI IDs return `SESSION_ID_UNAVAILABLE`; provider pickers are never opened. On Windows, Codex rollout sharing is checked before spawn and an existing writer returns `CODEX_ACTIVE_WRITER` without opening a fallback TUI. |
+| `repair_session_identity` | `{ sessionId: string; cols: number; rows: number }` | `Session` | For a stopped AI record with no `cliSessionId`, starts a new provider conversation in the same record, persists a pre-assigned ID before spawn or starts normal discovery, and returns the now-running record. It never creates a second Anchor session. |
 | `fork_codex_session` | `{ sessionId: string; cols: number; rows: number }` | `Session` | Creates and persists a new Anchor record, then runs `codex fork <sourceCliSessionId>` at the measured xterm size and discovers the fork's new ID. The source must be a stopped Codex record with a saved ID. No picker and no automatic resume fallback. |
 | `get_codex_profiles` | — | `string[]` | Safe profile names only; immediate `$CODEX_HOME/*.config.toml` files. Never returns profile file contents or paths. |
 | `set_codex_profile` | `{ sessionId: string; codexProfile: string \| null }` | `Session` | Persists the selected profile for future Codex launch/resume; `null` selects base config. Requires a stopped Codex session. Errors: `CODEX_PROFILE_CHANGE_REQUIRES_STOPPED`, `CODEX_PROFILE_NOT_FOUND`, `CODEX_PROFILE_INVALID`, `CODEX_PROFILE_UNSUPPORTED`. |
 | `stop_session` | `{ sessionId: string }` | `void` | Graceful kill (SIGTERM → SIGKILL after 5 s; ConPTY close on Windows). Async + `spawn_blocking` so the graceful wait never blocks the native UI thread. |
 | `delete_session` | `{ sessionId: string }` | `void` | Stops if ON; removes record + scrollback file. If shutdown reports a late completion error after the PTY is confirmed dead, deletion still completes. If the PTY remains live after the first shutdown error, Anchor retries shutdown once so one Delete action can finish an in-progress ConPTY teardown. Async + `spawn_blocking`. |
 | `rename_session` | `{ sessionId: string; title: string }` | `Session` | |
+| `set_session_id` | `{ sessionId: string; cliSessionId: string }` | `Session` | Replaces the provider ID on a stopped AI record after bounded command-safe validation. Terminal and live-session changes are rejected. |
+| `generate_session_title` | `{ sessionId: string; message: string }` | `Session` | Blocking-worker request to the harness's hidden reusable title session. Renames only a still-default visible title and emits `session:updated`; title-agent IDs stay outside the visible registry. |
 | `set_tab_open` | `{ sessionId: string; open: boolean }` | `void` | Frontend reports tab open/close so `wasOpenInTab` persists for auto-restore. The sole close lifecycle command: with `stopOnClose` it also stops the PTY, so the frontend must not additionally call `stop_session`. Async + `spawn_blocking`. |
 | `write_pty` | `{ sessionId: string; data: string }` | `void` | Keystrokes (UTF-8). |
 | `resize_pty` | `{ sessionId: string; cols: number; rows: number }` | `PtyResize` | Returns the old-grid output boundary and the accepted grid epoch so xterm changes grids without parsing in-flight output at the wrong width. |
@@ -324,7 +333,7 @@ Errors: commands reject with a string error code + message, e.g. `"CLI_NOT_FOUND
 **The mock `docs/Anchor.dc.html` is the authoritative UI spec** — layout, spacing, colors, typography, interactions, empty states, menus, modals, and copy must match it. Open it in a browser to see live behavior (it is a self-contained interactive prototype; its inline JS shows exact intended interaction logic, including the status model comment block). Key inventory:
 
 - **Window chrome bar** (38 px): app mark + "Anchor", centered active folder path (JetBrains Mono), traffic-light placeholders (use native window controls per-platform; overlay/hidden-title-bar style).
-- **Sidebar** (298 px): filter input with ⌘K chip; folder groups — enlarged clickable name for collapse (renamable inline), session count, no visible folder path or collapse marker, hover `⋯` menu (Rename group / Copy folder path / Remove group → ack-checkbox modal), `+` quick-launch menu (the 4 AI CLIs + Generic terminal, "Launch in <folder>"); indented session rows — tool badge, title (renamable inline), status dot, hover actions (✕ delete with confirm popover: "Delete this session? Its saved session ID will be removed.", `⋯` menu: Rename session / Copy session ID); right-clicking a session row opens that same `⋯` menu; footer — running/waiting/stopped counts + Settings button.
+- **Sidebar** (298 px): filter input with ⌘K chip; folder groups — enlarged clickable name for collapse (renamable inline), session count, no visible folder path or collapse marker, hover `⋯` menu (Rename group / Copy folder path / Remove group → ack-checkbox modal), `+` quick-launch menu (the 4 AI CLIs + Generic terminal, "Launch in <folder>"); indented session rows — tool badge, title (renamable inline), status dot, hover actions (✕ delete with confirm popover: "Delete this session? Its saved session ID will be removed.", `⋯` menu: Rename session / Copy session ID / Set session ID for stopped AI sessions); right-clicking a session row opens that same `⋯` menu; footer — running/waiting/stopped counts + Settings button.
 - **Tab strip:** open sessions, badge + title + dot + ×, `+` opens the New-session wizard.
 - **New-session wizard** (three steps). Opening from a folder's quick-launch `+`
   jumps straight to `tool`; opening from the tab strip or ⌘O starts at `folder`,
@@ -341,7 +350,7 @@ Errors: commands reject with a string error code + message, e.g. `"CLI_NOT_FOUND
   reused instead of being added twice.
   (The mock draws an in-app browser for this step; the native picker was chosen
   deliberately over it — less code and the dialog users already know.)
-- **Main pane:** live terminal (xterm.js, JetBrains Mono, `fontSize` setting) for ON sessions; **Resume card** for stopped ones — badge, title, folder path, "Saved session — ready to resume" panel (session id / model / last active), gradient "↻ Resume session" button, "Restored from <backupPath>" footnote; empty state when no tabs ("No session open · Press ⌘K …").
+- **Main pane:** live terminal (xterm.js, JetBrains Mono, `fontSize` setting) for ON sessions; **Resume card** for stopped ones — badge, title, folder path, "Saved session — ready to resume" panel (session id / model / last active), gradient "↻ Resume session" button, "Restored from <backupPath>" footnote. A missing AI ID replaces Resume with "Start new chat in this session", which repairs that same record instead of opening a picker or creating another record. Empty state when no tabs: "No session open · Press ⌘K …".
 - **Status bar:** active session badge/title/tool·model, session-id chip with copy, status chip, Stop button (only when `stopOnClose` is off and session is ON), right side: counts + shortcut hints.
 - **Command palette (⌘K):** fuzzy filter over sessions (title, folder, tool); Enter jumps/opens tab.
 - **Toasts:** "Session ID copied" / "Folder path copied" style, bottom-center.
@@ -519,7 +528,7 @@ Frontend architecture requirements:
 **Errors (all surfaced in-UI, never silent):**
 - CLI not installed → inline message in the terminal pane with install hint (`detect_clis`).
 - Resume rejected / CLI errors on resume → keep record and show an error state. A Codex `CODEX_ACTIVE_WRITER` conflict is rejected before PTY spawn when Windows exposes the rollout sharing violation; a post-spawn provider rejection is also stopped. Both paths offer **Fork conversation and continue**, which preserves the transcript under a new ID; retry remains available after the other writer closes. Other failures offer "Start fresh session in this folder".
-- Discovery timeout → session works normally, but resume is blocked with `SESSION_ID_UNAVAILABLE` rather than opening a provider picker.
+- Discovery timeout → direct resume is blocked with `SESSION_ID_UNAVAILABLE`; the Resume card can repair that same record by starting a new provider chat, or the context menu can attach a known provider ID. Neither path opens a provider picker.
 - PTY unexpected exit → `session:status` with exitCode; UI shows it on the Resume card.
 - Registry write failure → blocking toast (persistence is the core promise).
 

@@ -45,7 +45,7 @@ export function ResumeCard({ session }: { session: Session }) {
         </div>
         {!canResume && (
           <div className="resume-card__unavailable" role="status">
-            This AI session has no saved CLI session ID. Anchor cannot resume it and will not open a provider session picker.
+            This AI session has no saved CLI session ID. Start a new provider chat inside this existing session to attach one.
           </div>
         )}
         {error && (
@@ -61,8 +61,8 @@ export function ResumeCard({ session }: { session: Session }) {
             ↻ Resume session
           </Button>
         ) : (
-          <Button variant="primary" block disabled style={{ padding: 13, fontSize: 14 }}>
-            ↻ Resume session
+          <Button variant="primary" block disabled={!state.bootReady} onClick={() => void actions.repairIdentity(session.id)} style={{ padding: 13, fontSize: 14 }}>
+            Start new chat in this session
           </Button>
         )}
         {activeWriter && (
@@ -75,7 +75,7 @@ export function ResumeCard({ session }: { session: Session }) {
             Fork conversation and continue
           </Button>
         )}
-        {(!canResume || error) && (
+        {canResume && error && (
           <Button
             variant="subtle"
             block

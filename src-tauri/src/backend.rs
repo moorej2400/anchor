@@ -29,6 +29,7 @@ use crate::pty::{PtyEvent, PtyManager};
 use crate::registry::Registry;
 use crate::scrollback::{format_restored_scrollback, ScrollbackStore};
 use crate::settings::{expand_tilde, SettingsStore};
+use crate::title_agent::{self, TitleAgentStore};
 
 const TERMINAL_FALLBACK_MAX_BYTES: usize = 2 * 1024 * 1024;
 const TERMINAL_FALLBACK_GAP: &str =
@@ -123,6 +124,9 @@ pub struct Backend {
     auto_restore_complete: Condvar,
     mutation: Mutex<()>,
     operations: Mutex<()>,
+    /// Each provider reuses one hidden title conversation. Serialize requests
+    /// so two first messages cannot race the same provider session ID.
+    title_generation: Mutex<()>,
     terminal_replay: Mutex<HashMap<String, TerminalReplayState>>,
     resume_bootstraps: Mutex<HashMap<String, ResumeBootstrapWatch>>,
     #[cfg(test)]
@@ -295,6 +299,7 @@ impl Backend {
                 auto_restore_complete: Condvar::new(),
                 mutation: Mutex::new(()),
                 operations: Mutex::new(()),
+                title_generation: Mutex::new(()),
                 terminal_replay: Mutex::new(HashMap::new()),
                 resume_bootstraps: Mutex::new(HashMap::new()),
                 #[cfg(test)]
@@ -325,6 +330,7 @@ impl Backend {
             auto_restore_complete: Condvar::new(),
             mutation: Mutex::new(()),
             operations: Mutex::new(()),
+            title_generation: Mutex::new(()),
             terminal_replay: Mutex::new(HashMap::new()),
             resume_bootstraps: Mutex::new(HashMap::new()),
             discovery_starts: AtomicUsize::new(0),
@@ -358,6 +364,7 @@ impl Backend {
                 auto_restore_complete: Condvar::new(),
                 mutation: Mutex::new(()),
                 operations: Mutex::new(()),
+                title_generation: Mutex::new(()),
                 terminal_replay: Mutex::new(HashMap::new()),
                 resume_bootstraps: Mutex::new(HashMap::new()),
                 discovery_starts: AtomicUsize::new(0),
@@ -742,6 +749,149 @@ impl Backend {
         self.session(session_id)
     }
 
+    /// Start a new provider conversation inside an existing Anchor record that
+    /// never acquired a provider ID. This repairs the record instead of adding
+    /// a second sidebar session with the same folder and title.
+    pub fn repair_session_identity(
+        self: &Arc<Self>,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Session, String> {
+        let _operation = self.operations.lock().map_err(lock_error)?;
+        let session = self.session(session_id)?;
+        if session.tool == Tool::Terminal {
+            return Err(
+                "SESSION_ID_REPAIR_UNSUPPORTED: terminal sessions do not use provider IDs".into(),
+            );
+        }
+        if session.status != Status::Stopped || self.runtime.is_live(session_id) {
+            return Err("SESSION_ID_REPAIR_REQUIRES_STOPPED: stop the session before repairing its identity".into());
+        }
+        if session.cli_session_id.is_some() {
+            return Err(
+                "SESSION_ID_ALREADY_AVAILABLE: this session already has a provider ID".into(),
+            );
+        }
+        let _profile =
+            self.validate_codex_profile_for_tool(session.tool, session.codex_profile.clone())?;
+        let folder_path = self.folder_path(&session.folder_id)?;
+        let settings = self.get_settings()?;
+        let adapter = adapter_for(session.tool);
+        let launched_at = SystemTime::now();
+        let (spec, capture) = adapter.launch(&session, &folder_path, &settings)?;
+        let spec = self.resolve_spawn_spec(session.tool, spec, &settings)?;
+
+        if let IdCapture::PreAssigned(id) = &capture {
+            self.replace_session_id(session_id, Some(id.clone()))?;
+        }
+        if let Err(error) = self.runtime.spawn(session_id, spec, cols, rows, &settings) {
+            if matches!(capture, IdCapture::PreAssigned(_)) {
+                self.replace_session_id(session_id, None)?;
+            }
+            return Err(error);
+        }
+        if let Err(error) = self.ensure_running_after_spawn(session_id) {
+            let _ = self.runtime.stop(session_id);
+            if matches!(capture, IdCapture::PreAssigned(_)) {
+                self.replace_session_id(session_id, None)?;
+            }
+            return Err(error);
+        }
+        if capture == IdCapture::Discover {
+            self.start_discovery(session_id.to_owned(), folder_path, launched_at, adapter);
+        }
+        self.session(session_id)
+    }
+
+    pub fn set_session_id(
+        &self,
+        session_id: &str,
+        cli_session_id: String,
+    ) -> Result<Session, String> {
+        let cli_session_id = cli_session_id.trim();
+        if !title_agent::valid_provider_session_id(cli_session_id) {
+            return Err("SESSION_ID_INVALID: use only letters, numbers, dots, colons, dashes, or underscores".into());
+        }
+        let _operation = self.operations.lock().map_err(lock_error)?;
+        let session = self.session(session_id)?;
+        if session.tool == Tool::Terminal {
+            return Err("SESSION_ID_UNSUPPORTED: terminal sessions do not use provider IDs".into());
+        }
+        if session.status != Status::Stopped || self.runtime.is_live(session_id) {
+            return Err("SESSION_ID_CHANGE_REQUIRES_STOPPED: stop the session before changing its provider ID".into());
+        }
+        self.replace_session_id(session_id, Some(cli_session_id.to_owned()))
+    }
+
+    /// Generate a title through a provider-owned hidden conversation and keep
+    /// that conversation's ID outside the visible Anchor session registry.
+    pub fn generate_session_title(
+        &self,
+        session_id: &str,
+        message: String,
+    ) -> Result<Session, String> {
+        let _generation = self.title_generation.lock().map_err(lock_error)?;
+        let original = self.session(session_id)?;
+        if original.tool == Tool::Terminal {
+            return Ok(original);
+        }
+        let settings = self.get_settings()?;
+        if !is_default_title(&original.title, original.tool, &settings) {
+            return Ok(original);
+        }
+
+        let store = TitleAgentStore::new(self.settings_store.internal_data_dir()?);
+        let workspace = store.workspace(original.tool)?;
+        let key = title_agent::session_key(original.tool, original.codex_profile.as_deref());
+        let prior_id = store.session_id(&key)?;
+        let request = title_agent::build_request(
+            original.tool,
+            original.codex_profile.as_deref(),
+            prior_id.as_deref(),
+            &message,
+            &workspace,
+        )?;
+        // Pre-assigned providers can safely retry an ID even when process
+        // startup fails, so commit it before launch to avoid orphaned title
+        // conversations after an app crash.
+        if prior_id.is_none() {
+            if let Some(id) = request.preassigned_id.clone() {
+                store.save_session_id(request.state_key.clone(), id)?;
+            }
+        }
+        let spec = self.resolve_spawn_spec(original.tool, request.spec, &settings)?;
+        let execution = title_agent::execute(&spec, &settings)?;
+        if prior_id.is_none() && request.preassigned_id.is_none() {
+            if let Some(id) = title_agent::discover_session_id(&execution.raw) {
+                store.save_session_id(request.state_key, id)?;
+            }
+        }
+        if let Some(error) = execution.failure {
+            return Err(error.into());
+        }
+        let response = title_agent::parse_response(&execution.raw)?;
+
+        let _transition = self.mutation.lock().map_err(lock_error)?;
+        let mut registry = self.registry.lock().map_err(lock_error)?;
+        let index = session_index(&registry, session_id)?;
+        if registry.sessions[index].title != original.title
+            || !is_default_title(&registry.sessions[index].title, original.tool, &settings)
+        {
+            return Ok(registry.sessions[index].clone());
+        }
+        let previous = registry.sessions[index].title.clone();
+        registry.sessions[index].title = response.title;
+        if let Err(error) = registry.save() {
+            registry.sessions[index].title = previous;
+            return Err(error);
+        }
+        let updated = registry.sessions[index].clone();
+        drop(registry);
+        self.events.session_updated(&updated);
+        Ok(updated)
+    }
+
     pub fn codex_profiles(&self) -> Vec<String> {
         self.available_codex_profiles()
     }
@@ -826,6 +976,26 @@ impl Backend {
             return Err(error);
         }
         Ok(registry.sessions[index].clone())
+    }
+
+    fn replace_session_id(
+        &self,
+        session_id: &str,
+        cli_session_id: Option<String>,
+    ) -> Result<Session, String> {
+        let _transition = self.mutation.lock().map_err(lock_error)?;
+        let mut registry = self.registry.lock().map_err(lock_error)?;
+        let index = session_index(&registry, session_id)?;
+        let previous = registry.sessions[index].cli_session_id.clone();
+        registry.sessions[index].cli_session_id = cli_session_id;
+        if let Err(error) = registry.save() {
+            registry.sessions[index].cli_session_id = previous;
+            return Err(error);
+        }
+        let updated = registry.sessions[index].clone();
+        drop(registry);
+        self.events.session_updated(&updated);
+        Ok(updated)
     }
 
     pub fn set_tab_open(&self, session_id: &str, open: bool) -> Result<(), String> {
@@ -1607,6 +1777,15 @@ fn default_title(tool: Tool, settings: &Settings) -> String {
             .unwrap_or("terminal")
             .to_owned(),
     }
+}
+
+fn is_default_title(title: &str, tool: Tool, settings: &Settings) -> bool {
+    let base = default_title(tool, settings);
+    title == base
+        || title
+            .strip_prefix(&format!("{base} ("))
+            .and_then(|suffix| suffix.strip_suffix(')'))
+            .is_some_and(|ordinal| ordinal.parse::<usize>().is_ok())
 }
 
 /// Default titles are user-facing identifiers in tabs and the sidebar. Keep
@@ -2453,6 +2632,80 @@ mod tests {
         assert_eq!(
             spawns[1].1.args,
             vec!["--session-id", launched.cli_session_id.as_ref().unwrap()]
+        );
+    }
+
+    #[test]
+    fn missing_identity_repair_reuses_the_anchor_record() {
+        let (root, backend, runtime) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let launched = backend
+            .launch_session(&folder.id, Tool::Claude, None, None, 80, 24)
+            .unwrap();
+        backend.stop_session(&launched.id).unwrap();
+        {
+            let mut registry = backend.registry.lock().unwrap();
+            registry.sessions[0].cli_session_id = None;
+            registry.sessions[0].status = Status::Stopped;
+            registry.save().unwrap();
+        }
+        *runtime.saw_persisted_identity.lock().unwrap() = false;
+
+        let repaired = backend
+            .repair_session_identity(&launched.id, 132, 41)
+            .unwrap();
+
+        assert_eq!(repaired.id, launched.id);
+        assert!(repaired.cli_session_id.is_some());
+        assert_eq!(backend.get_state().unwrap().sessions.len(), 1);
+        assert!(*runtime.saw_persisted_identity.lock().unwrap());
+        let spawns = runtime.spawns.lock().unwrap();
+        assert_eq!(spawns.len(), 2);
+        assert_eq!(spawns[1].0, launched.id);
+        assert_eq!(spawns[1].2, 132);
+        assert_eq!(spawns[1].3, 41);
+    }
+
+    #[test]
+    fn manual_session_id_requires_a_stopped_ai_record_and_safe_text() {
+        let (root, backend, _) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let launched = backend
+            .launch_session(&folder.id, Tool::Claude, None, None, 80, 24)
+            .unwrap();
+
+        assert!(backend
+            .set_session_id(&launched.id, "replacement-id".into())
+            .unwrap_err()
+            .starts_with("SESSION_ID_CHANGE_REQUIRES_STOPPED:"));
+        backend.stop_session(&launched.id).unwrap();
+        {
+            let mut registry = backend.registry.lock().unwrap();
+            registry.sessions[0].status = Status::Stopped;
+            registry.save().unwrap();
+        }
+        assert!(backend
+            .set_session_id(&launched.id, "bad&id".into())
+            .unwrap_err()
+            .starts_with("SESSION_ID_INVALID:"));
+
+        let updated = backend
+            .set_session_id(&launched.id, "replacement-id_2".into())
+            .unwrap();
+        assert_eq!(updated.cli_session_id.as_deref(), Some("replacement-id_2"));
+        assert_eq!(
+            backend.get_state().unwrap().sessions[0]
+                .cli_session_id
+                .as_deref(),
+            Some("replacement-id_2")
         );
     }
 

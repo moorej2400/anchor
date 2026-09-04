@@ -157,6 +157,18 @@ pub fn resume_session(
 }
 
 #[tauri::command]
+pub fn repair_session_identity(
+    backend: State<'_, Arc<Backend>>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<Session, String> {
+    backend
+        .inner()
+        .repair_session_identity(&session_id, cols, rows)
+}
+
+#[tauri::command]
 pub fn fork_codex_session(
     backend: State<'_, Arc<Backend>>,
     session_id: String,
@@ -191,6 +203,25 @@ pub fn rename_session(
     title: String,
 ) -> Result<Session, String> {
     backend.rename_session(&session_id, title)
+}
+
+#[tauri::command]
+pub fn set_session_id(
+    backend: State<'_, Arc<Backend>>,
+    session_id: String,
+    cli_session_id: String,
+) -> Result<Session, String> {
+    backend.set_session_id(&session_id, cli_session_id)
+}
+
+#[tauri::command]
+pub async fn generate_session_title(
+    backend: State<'_, Arc<Backend>>,
+    session_id: String,
+    message: String,
+) -> Result<Session, String> {
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || backend.generate_session_title(&session_id, message)).await
 }
 
 #[tauri::command]

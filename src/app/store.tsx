@@ -26,6 +26,7 @@ import type { CliInfo, Folder, PtyReplay, Session, Settings, Tool } from "../ipc
 import { isOn } from "./selectors";
 import { applyTheme } from "./theme";
 import { TerminalManager } from "./terminals";
+import { SubmittedPromptCapture } from "./titleInput";
 
 export type SettingsSection = "general" | "persistence" | "appearance" | "shortcuts";
 export type View = "terminal" | "settings";
@@ -363,6 +364,7 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
   const stateRef = useRef(state);
   stateRef.current = state;
   const deletedSessionIds = useRef(new Set<string>());
+  const titleInput = useRef(new SubmittedPromptCapture()).current;
 
   // Toast auto-dismiss.
   const toastTimer = useRef<number | undefined>(undefined);
@@ -379,13 +381,22 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
       const manager = new TerminalManager((sessionId, data) => {
         dispatch({ type: "SESSION_TYPED", id: sessionId });
         void ipc.writePty(sessionId, data).catch(() => {});
+        const message = titleInput.observe(sessionId, data);
+        const session = stateRef.current.sessions.find((candidate) => candidate.id === sessionId);
+        if (message && session && session.tool !== "terminal") {
+          void ipc.generateSessionTitle(sessionId, message).then((updated) => {
+            if (!deletedSessionIds.current.has(updated.id)) {
+              dispatch({ type: "UPSERT_SESSION", session: updated });
+            }
+          }).catch((error) => showToast(shortError(error)));
+        }
       },
       (sessionId, size) => ipc.resizePty(sessionId, size.cols, size.rows),
       (_sessionId, error) => showToast(`Terminal resize failed: ${shortError(error)}`));
       manager.beginReplayCapture();
       return manager;
     },
-    [showToast],
+    [showToast, titleInput],
   );
 
   // Boot: subscribe to events, load state/settings/clis, restore tabs, then
@@ -574,8 +585,8 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
   }, [terminals]);
 
   const actions = useMemo(
-    () => makeActions(dispatch, stateRef, terminals, deletedSessionIds.current, showToast),
-    [terminals, showToast],
+    () => makeActions(dispatch, stateRef, terminals, deletedSessionIds.current, showToast, titleInput),
+    [terminals, showToast, titleInput],
   );
 
   const value = useMemo<AnchorContextValue>(
@@ -598,6 +609,7 @@ export interface Actions {
   selectSession(id: string): void;
   launch(tool: Tool, folderId: string, codexProfile?: string | null): Promise<void>;
   resume(id: string): Promise<void>;
+  repairIdentity(id: string): Promise<void>;
   forkCodex(id: string): Promise<void>;
   closeTab(id: string): Promise<void>;
   confirmCloseTab(): Promise<void>;
@@ -605,6 +617,7 @@ export interface Actions {
   stop(id: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
   renameSession(id: string, title: string): Promise<void>;
+  setSessionId(id: string, cliSessionId: string): Promise<boolean>;
   setCodexProfile(id: string, codexProfile: string | null): Promise<boolean>;
   addFolder(path: string): Promise<Folder | null>;
   createProject(name: string): Promise<Folder | null>;
@@ -630,6 +643,7 @@ function makeActions(
   terminals: TerminalManager,
   deletedSessionIds: Set<string>,
   showToast: (text: string) => void,
+  titleInput: SubmittedPromptCapture,
 ): Actions {
   const tabStateWrites = new Map<string, Promise<void>>();
   const setTabOpenOrdered = (id: string, open: boolean): Promise<void> => {
@@ -701,6 +715,51 @@ function makeActions(
     }
   }
 
+  async function performIdentityRepair(id: string): Promise<void> {
+    if (!stateRef.current.bootReady) {
+      showToast("Anchor is still restoring sessions.");
+      return;
+    }
+    const previous = stateRef.current.sessions.find((candidate) => candidate.id === id);
+    if (!previous || previous.tool === "terminal" || previous.cliSessionId) return;
+    if (resumingSessions.has(id)) return;
+    dispatch({ type: "SET_RESUME_ERROR", id, error: null });
+    const resumeToken = Symbol(id);
+    let resolveResume!: () => void;
+    const resumeOperation: ResumeOperation = {
+      token: resumeToken,
+      spawned: false,
+      done: new Promise<void>((resolve) => {
+        resolveResume = resolve;
+      }),
+      resolveDone: () => resolveResume(),
+    };
+    resumingSessions.set(id, resumeOperation);
+    dispatch({ type: "SET_VIEW", view: "terminal" });
+    let prepared = false;
+    try {
+      const terminalSize = await terminals.waitForViewport();
+      if (resumingSessions.get(id) !== resumeOperation || closingTabs.has(id)) return;
+      await terminals.prepareSession(id, terminalSize);
+      if (resumingSessions.get(id) !== resumeOperation || closingTabs.has(id)) return;
+      prepared = true;
+      const session = await ipc.repairSessionIdentity(id, terminalSize);
+      resumeOperation.spawned = true;
+      if (resumingSessions.get(id) !== resumeOperation) return;
+      terminals.commitSessionPreparation(id);
+      dispatch({ type: "UPSERT_SESSION", session });
+    } catch (error) {
+      if (resumingSessions.get(id) !== resumeOperation) return;
+      if (prepared) terminals.cancelSessionPreparation(id);
+      const operation = operationError("resume", previous.tool, error);
+      dispatch({ type: "SET_RESUME_ERROR", id, error: operation });
+      showToast(operation.message);
+    } finally {
+      resumeOperation.resolveDone();
+      if (resumingSessions.get(id) === resumeOperation) resumingSessions.delete(id);
+    }
+  }
+
   return {
     selectSession(id) {
       closingTabs.delete(id);
@@ -744,15 +803,7 @@ function makeActions(
       // AI CLIs can only resume their saved provider ID. Opening a provider
       // picker here would resume an unrelated conversation and violate §1.
       if (previous.tool !== "terminal" && !previous.cliSessionId) {
-        const error: OperationError = {
-          operation: "resume",
-          tool: previous.tool,
-          code: "SESSION_ID_UNAVAILABLE",
-          message: "This session has no saved CLI session ID.",
-          isCliNotFound: false,
-        };
-        dispatch({ type: "SET_RESUME_ERROR", id, error });
-        showToast(error.message);
+        await performIdentityRepair(id);
         return;
       }
       // Keyboard and pointer activation can arrive in the same render frame.
@@ -795,6 +846,9 @@ function makeActions(
         resumeOperation.resolveDone();
         if (resumingSessions.get(id) === resumeOperation) resumingSessions.delete(id);
       }
+    },
+    async repairIdentity(id) {
+      await performIdentityRepair(id);
     },
     async forkCodex(id) {
       if (!stateRef.current.bootReady) {
@@ -869,6 +923,7 @@ function makeActions(
       terminals.ignoreOutput(id);
       try {
         await ipc.deleteSession(id);
+        titleInput.forget(id);
       } catch (e) {
         deletedSessionIds.delete(id);
         terminals.allowOutput(id);
@@ -897,6 +952,18 @@ function makeActions(
         dispatch({ type: "UPSERT_SESSION", session });
       } catch (e) {
         showToast(shortError(e));
+      }
+    },
+    async setSessionId(id, cliSessionId) {
+      try {
+        const session = await ipc.setSessionId(id, cliSessionId);
+        dispatch({ type: "UPSERT_SESSION", session });
+        dispatch({ type: "SET_RESUME_ERROR", id, error: null });
+        showToast("Session ID saved");
+        return true;
+      } catch (error) {
+        showToast(shortError(error));
+        return false;
       }
     },
     async setCodexProfile(id, codexProfile) {
@@ -950,6 +1017,7 @@ function makeActions(
         ids.forEach((sid) => resumingSessions.delete(sid));
         ids.forEach((sid) => closingTabs.delete(sid));
         dispatch({ type: "REMOVE_FOLDER", id });
+        ids.forEach((sid) => titleInput.forget(sid));
         ids.forEach((sid) => terminals.ignoreOutput(sid));
       } catch (e) {
         showToast(shortError(e));

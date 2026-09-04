@@ -76,6 +76,15 @@ impl SettingsStore {
         Ok(())
     }
 
+    /// Private app data that must stay beside settings instead of moving with
+    /// the user-selected session backup directory.
+    pub(crate) fn internal_data_dir(&self) -> Result<PathBuf, String> {
+        self.path
+            .parent()
+            .map(|parent| parent.join("internal"))
+            .ok_or_else(|| "SETTINGS_PATH_INVALID: settings path has no parent".to_string())
+    }
+
     fn recovery_path(&self) -> Result<PathBuf, String> {
         let parent = self
             .path

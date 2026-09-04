@@ -25,9 +25,10 @@ import { LAUNCHABLE, toolName } from "../app/display";
 interface SidebarProps {
   onRemoveFolder: (folder: Folder) => void;
   onSetCodexProfile: (sessionId: string) => void;
+  onSetSessionId: (sessionId: string) => void;
 }
 
-export function Sidebar({ onRemoveFolder, onSetCodexProfile }: SidebarProps) {
+export function Sidebar({ onRemoveFolder, onSetCodexProfile, onSetSessionId }: SidebarProps) {
   const { state, actions } = useAnchor();
   // Selecting a tab changes `activeId` only. Without memoizing, every selection
   // would re-filter and re-sort every session before the terminal can paint.
@@ -88,6 +89,7 @@ export function Sidebar({ onRemoveFolder, onSetCodexProfile }: SidebarProps) {
             onToggle={() => setCollapsed((c) => ({ ...c, [folder.id]: !c[folder.id] }))}
             onRemoveFolder={onRemoveFolder}
             onSetCodexProfile={onSetCodexProfile}
+            onSetSessionId={onSetSessionId}
           />
         ))}
       </div>
@@ -138,8 +140,9 @@ function FolderGroup(props: {
   onToggle: () => void;
   onRemoveFolder: (folder: Folder) => void;
   onSetCodexProfile: (sessionId: string) => void;
+  onSetSessionId: (sessionId: string) => void;
 }) {
-  const { folder, activeId, collapsed, ui, setUi, onToggle, onRemoveFolder, onSetCodexProfile } = props;
+  const { folder, activeId, collapsed, ui, setUi, onToggle, onRemoveFolder, onSetCodexProfile, onSetSessionId } = props;
   const { state, actions } = useAnchor();
   const [hover, setHover] = useState(false);
   const [renameDraft, setRenameDraft] = useState(folder.name);
@@ -267,6 +270,7 @@ function FolderGroup(props: {
               ui={ui}
               setUi={setUi}
               onSetCodexProfile={onSetCodexProfile}
+              onSetSessionId={onSetSessionId}
             />
           ))}
         </div>
@@ -281,8 +285,9 @@ function SessionRow(props: {
   ui: Ui;
   setUi: SetUi;
   onSetCodexProfile: (sessionId: string) => void;
+  onSetSessionId: (sessionId: string) => void;
 }) {
-  const { session, active, ui, setUi, onSetCodexProfile } = props;
+  const { session, active, ui, setUi, onSetCodexProfile, onSetSessionId } = props;
   const { state, actions } = useAnchor();
   const [hover, setHover] = useState(false);
   const [renameDraft, setRenameDraft] = useState(session.title);
@@ -373,6 +378,9 @@ function SessionRow(props: {
         <Menu width={194} style={{ top: 33, right: 6 }}>
           <MenuItem icon="✎" onClick={() => setUi((u) => ({ ...u, sessionRename: session.id, sessionMenu: null }))}>Rename session</MenuItem>
           <MenuItem icon="⧉" onClick={() => { if (session.cliSessionId) actions.copy(session.cliSessionId, "Session ID copied"); setUi((u) => ({ ...u, sessionMenu: null })); }}>Copy session ID</MenuItem>
+          {session.tool !== "terminal" && session.status === "stopped" && (
+            <MenuItem icon="⌁" onClick={() => { setUi((u) => ({ ...u, sessionMenu: null })); onSetSessionId(session.id); }}>Set session ID</MenuItem>
+          )}
           {session.tool === "codex" && session.status === "stopped" && (
             state.codexProfiles.length > 1
             || Boolean(session.codexProfile && !state.codexProfiles.includes(session.codexProfile))

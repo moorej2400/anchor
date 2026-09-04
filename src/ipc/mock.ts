@@ -214,6 +214,14 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
       goRunning(s);
       return Promise.resolve({ ...s } as T);
     }
+    case "repair_session_identity": {
+      const s = find(a.sessionId as string);
+      if (!s) return Promise.reject("SESSION_NOT_FOUND: unknown id");
+      if (s.cliSessionId) return Promise.reject("SESSION_ID_ALREADY_AVAILABLE: provider ID exists");
+      s.cliSessionId = genId();
+      goRunning(s);
+      return Promise.resolve({ ...s } as T);
+    }
     case "fork_codex_session": {
       const source = find(a.sessionId as string);
       if (!source) return Promise.reject("SESSION_NOT_FOUND: unknown id");
@@ -253,6 +261,19 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
       const s = find(a.sessionId as string);
       if (!s) return Promise.reject("SESSION_NOT_FOUND: unknown id");
       s.title = (a.title as string) || "untitled";
+      return Promise.resolve({ ...s } as T);
+    }
+    case "set_session_id": {
+      const s = find(a.sessionId as string);
+      if (!s) return Promise.reject("SESSION_NOT_FOUND: unknown id");
+      s.cliSessionId = String(a.cliSessionId ?? "");
+      return Promise.resolve({ ...s } as T);
+    }
+    case "generate_session_title": {
+      const s = find(a.sessionId as string);
+      if (!s) return Promise.reject("SESSION_NOT_FOUND: unknown id");
+      s.title = "Generated Synthetic Chat Title";
+      mockEmit(EVENT.sessionUpdated, { ...s });
       return Promise.resolve({ ...s } as T);
     }
     case "set_codex_profile": {

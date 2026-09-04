@@ -10,6 +10,7 @@ mod registry;
 mod scrollback;
 mod settings;
 mod status;
+mod title_agent;
 
 use std::sync::Arc;
 
@@ -175,12 +176,15 @@ pub fn run() {
             commands::remove_folder,
             commands::launch_session,
             commands::resume_session,
+            commands::repair_session_identity,
             commands::fork_codex_session,
             commands::get_codex_profiles,
             commands::set_codex_profile,
             commands::stop_session,
             commands::delete_session,
             commands::rename_session,
+            commands::set_session_id,
+            commands::generate_session_title,
             commands::set_tab_open,
             commands::write_pty,
             commands::resize_pty,

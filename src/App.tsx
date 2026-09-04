@@ -20,13 +20,16 @@ import { NewSessionDialog } from "./views/NewSessionDialog";
 import { RemoveFolderModal } from "./views/RemoveFolderModal";
 import { CloseSessionModal } from "./views/CloseSessionModal";
 import { CodexProfileModal } from "./views/CodexProfileModal";
+import { SessionIdModal } from "./views/SessionIdModal";
 
 export default function App() {
   const { state, actions } = useAnchor();
   const [removeTarget, setRemoveTarget] = useState<Folder | null>(null);
   const [codexProfileTarget, setCodexProfileTarget] = useState<string | null>(null);
+  const [sessionIdTarget, setSessionIdTarget] = useState<string | null>(null);
   const active = sessionById(state.sessions, state.activeId);
   const profileTarget = sessionById(state.sessions, codexProfileTarget);
+  const idTarget = sessionById(state.sessions, sessionIdTarget);
 
   const onKey = useCallback(
     (e: KeyboardEvent) => {
@@ -76,7 +79,7 @@ export default function App() {
     <div className="app">
       <WindowChrome activePath={active ? folderPathOf(active, state.folders) : null} />
       <div className="app__body">
-        <Sidebar onRemoveFolder={setRemoveTarget} onSetCodexProfile={setCodexProfileTarget} />
+        <Sidebar onRemoveFolder={setRemoveTarget} onSetCodexProfile={setCodexProfileTarget} onSetSessionId={setSessionIdTarget} />
         <main className="main">
           {state.view === "terminal" ? (
             <div className="term-view">
@@ -99,6 +102,7 @@ export default function App() {
       {removeTarget && <RemoveFolderModal folder={removeTarget} onClose={() => setRemoveTarget(null)} />}
       {state.closeConfirmId && <CloseSessionModal />}
       {profileTarget && <CodexProfileModal session={profileTarget} onClose={() => setCodexProfileTarget(null)} />}
+      {idTarget && <SessionIdModal session={idTarget} onClose={() => setSessionIdTarget(null)} />}
       {state.toast && <Toast text={state.toast} />}
     </div>
   );
