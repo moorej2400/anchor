@@ -1,14 +1,19 @@
 /**
- * Reconstructs the first submitted terminal message from xterm's user-input
- * stream. PTY output never enters this parser.
+ * Reconstructs submitted terminal input from xterm's user-input stream. PTY
+ * output never enters this parser. Every submission can drive sidebar order;
+ * only the first non-command message can drive automatic title generation.
  */
+export interface SubmittedPrompt {
+  message: string;
+  titleMessage: string | null;
+}
+
 export class SubmittedPromptCapture {
   private buffers = new Map<string, string>();
-  private completed = new Set<string>();
+  private titleCaptured = new Set<string>();
   private bracketedPaste = new Set<string>();
 
-  observe(sessionId: string, data: string): string | null {
-    if (this.completed.has(sessionId)) return null;
+  observe(sessionId: string, data: string): SubmittedPrompt | null {
     let buffer = this.buffers.get(sessionId) ?? "";
     let paste = this.bracketedPaste.has(sessionId);
 
@@ -50,10 +55,13 @@ export class SubmittedPromptCapture {
         const submitted = buffer.trim().replace(/\s+/g, " ");
         buffer = "";
         this.buffers.set(sessionId, buffer);
-        if (!submitted || submitted.startsWith("/")) continue;
-        this.completed.add(sessionId);
+        if (!submitted) continue;
+        const titleMessage = !submitted.startsWith("/") && !this.titleCaptured.has(sessionId)
+          ? submitted
+          : null;
+        if (titleMessage) this.titleCaptured.add(sessionId);
         this.bracketedPaste.delete(sessionId);
-        return submitted;
+        return { message: submitted, titleMessage };
       }
       if (character === "\t" || character >= " ") {
         if (buffer.length < 16 * 1024) buffer += character;
@@ -69,7 +77,7 @@ export class SubmittedPromptCapture {
 
   forget(sessionId: string): void {
     this.buffers.delete(sessionId);
-    this.completed.delete(sessionId);
+    this.titleCaptured.delete(sessionId);
     this.bracketedPaste.delete(sessionId);
   }
 }

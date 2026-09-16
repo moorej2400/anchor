@@ -1,0 +1,1132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Anchor desktop interface concepts with working sample navigation.">
+  <title>Anchor — desktop interface concepts</title>
+  <style>
+    /* Preserve Carbon Ledger's original styles independently of the new previews. */
+    .app-frame {
+      position: relative;
+      min-height: 720px;
+      overflow: hidden;
+      border: 1px solid var(--frame-border);
+      border-radius: var(--frame-radius);
+      background: var(--canvas);
+      box-shadow: 0 32px 80px var(--frame-shadow);
+      font-family: var(--ui-font);
+    }
+    .app-frame::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      border: 1px solid rgba(255,255,255,.025);
+      border-radius: inherit;
+    }
+    .app-titlebar {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      height: 48px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--hairline);
+      background: var(--chrome);
+    }
+    .window-controls { display: flex; gap: 7px; }
+    .window-controls i {
+      display: block;
+      width: 9px;
+      height: 9px;
+      border: 1px solid var(--control-border);
+      border-radius: 50%;
+      background: var(--control);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin-left: 20px;
+      font-size: 13px;
+      font-weight: 610;
+      letter-spacing: -.01em;
+    }
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border: 1px solid var(--accent);
+      border-radius: var(--control-radius);
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .workspace-path {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      color: var(--quiet);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+    .title-actions { display: flex; gap: 7px; margin-left: auto; }
+    .icon-button,
+    .plain-button,
+    .new-tab {
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--button-border);
+      border-radius: var(--control-radius);
+      background: var(--button);
+      color: var(--muted);
+    }
+    .icon-button { width: 27px; height: 27px; font-size: 13px; }
+    .plain-button { height: 30px; padding: 0 10px; font-size: 11px; }
+
+    .app-body {
+      display: grid;
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      min-height: 671px;
+    }
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      border-right: 1px solid var(--hairline);
+      background: var(--sidebar);
+    }
+    .sidebar-tools { padding: 18px 14px 10px; }
+    .search {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 34px;
+      padding: 0 10px;
+      border: 1px solid var(--input-border);
+      border-radius: var(--control-radius);
+      background: var(--input);
+      color: var(--quiet);
+      font-size: 11px;
+    }
+    .search kbd {
+      margin-left: auto;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 9px;
+    }
+    .sidebar-scroll { flex: 1; padding: 8px 10px 18px; }
+    .section-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 15px 7px 7px;
+      color: var(--quiet);
+      font-size: 10px;
+      font-weight: 590;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .section-label::after { content: ""; flex: 1; height: 1px; background: var(--hairline); }
+    .chat-row {
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+      min-height: 38px;
+      padding: 5px 8px;
+      border-radius: var(--row-radius);
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .chat-row.active { background: var(--row-active); color: var(--text); }
+    .tool-badge {
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border: 1px solid var(--badge-border);
+      border-radius: var(--badge-radius);
+      background: var(--badge);
+      color: var(--badge-text);
+      font-family: var(--mono);
+      font-size: 8px;
+      font-weight: 700;
+    }
+    .chat-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .unread-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--notice); box-shadow: 0 0 0 3px var(--notice-ring); }
+    .project { margin-top: 10px; }
+    .project-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 30px;
+      padding: 0 8px;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 570;
+    }
+    .project-title .count {
+      margin-left: auto;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 9px;
+    }
+    .project .chat-row { padding-left: 15px; }
+    .sidebar-footer {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      height: 48px;
+      padding: 0 15px;
+      border-top: 1px solid var(--hairline);
+      color: var(--quiet);
+      font-size: 10px;
+    }
+    .sidebar-footer .settings-link { margin-left: auto; color: var(--muted); }
+
+    .workspace {
+      display: grid;
+      grid-template-rows: 52px minmax(0, 1fr) 38px;
+      min-width: 0;
+      padding: 0 var(--workspace-gutter);
+      background: var(--workspace);
+    }
+    .tabs {
+      display: flex;
+      align-items: end;
+      gap: var(--tab-gap);
+      min-width: 0;
+      overflow: hidden;
+    }
+    .tab {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 186px;
+      height: 38px;
+      padding: 0 10px;
+      border: 1px solid transparent;
+      border-radius: var(--tab-radius);
+      color: var(--quiet);
+      font-size: 10.5px;
+    }
+    .tab.active {
+      border-color: var(--tab-border);
+      background: var(--tab-active);
+      color: var(--text);
+    }
+    .tab.active::before {
+      content: "";
+      position: absolute;
+      background: var(--accent);
+    }
+    .tab .close { margin-left: auto; color: var(--faint); font-size: 13px; }
+    .new-tab { flex: none; width: 28px; height: 28px; margin: 0 0 5px 2px; }
+
+    .terminal-wrap {
+      display: flex;
+      min-height: 0;
+      padding-bottom: var(--terminal-offset);
+    }
+    .terminal {
+      display: grid;
+      grid-template-rows: 38px minmax(0, 1fr);
+      width: 100%;
+      min-height: 0;
+      overflow: hidden;
+      border: 1px solid var(--terminal-border);
+      border-radius: var(--terminal-radius);
+      background: var(--terminal);
+      box-shadow: var(--terminal-shadow);
+    }
+    .terminal-bar {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--terminal-line);
+      color: var(--quiet);
+      font-size: 10px;
+    }
+    .terminal-bar strong { color: var(--muted); font-weight: 560; }
+    .terminal-bar .branch { margin-left: auto; color: var(--faint); font-family: var(--mono); }
+    .terminal-content {
+      padding: 22px 24px 28px;
+      color: var(--terminal-text);
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.74;
+    }
+    .terminal-content p { margin: 0; white-space: pre-wrap; }
+    .prompt { color: var(--accent); }
+    .command { color: var(--terminal-bright); }
+    .dim { color: var(--terminal-dim); }
+    .success { color: var(--success); }
+    .caret { display: inline-block; width: 7px; height: 13px; margin-left: 2px; vertical-align: -2px; background: var(--accent); }
+    .statusbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 9px;
+    }
+    .statusbar .online { color: var(--success); }
+    .statusbar .spacer { flex: 1; }
+
+    /* 01 — restrained product UI with clear surface steps and calm green. */
+    .carbon {
+      --ui-font: "Segoe UI Variable", "Aptos", sans-serif;
+      --mono: "Cascadia Code", "JetBrains Mono", monospace;
+      --frame-radius: 14px;
+      --control-radius: 6px;
+      --row-radius: 5px;
+      --badge-radius: 5px;
+      --tab-radius: 7px 7px 0 0;
+      --terminal-radius: 9px;
+      --sidebar-width: 252px;
+      --workspace-gutter: 16px;
+      --terminal-offset: 14px;
+      --tab-gap: 3px;
+      --canvas: #0b0d10;
+      --chrome: #0f1215;
+      --sidebar: #0e1114;
+      --workspace: #0a0c0f;
+      --terminal: #161a1e;
+      --terminal-border: #252b31;
+      --terminal-line: #252a2f;
+      --terminal-shadow: 0 16px 46px rgba(0,0,0,.28);
+      --frame-border: #2a3036;
+      --frame-shadow: rgba(0,0,0,.45);
+      --hairline: #20252a;
+      --text: #e9ece8;
+      --muted: #aab1ad;
+      --quiet: #747d79;
+      --faint: #505956;
+      --accent: #a3bd8f;
+      --notice: #7fa9c2;
+      --notice-ring: rgba(127,169,194,.13);
+      --success: #93b680;
+      --control: #15191d;
+      --control-border: #373d43;
+      --button: #15191d;
+      --button-border: #292f34;
+      --input: #111519;
+      --input-border: #272d32;
+      --row-active: #1a201e;
+      --badge: #171c1d;
+      --badge-border: #30383a;
+      --badge-text: #b7c6be;
+      --tab-active: #161a1e;
+      --tab-border: #252b31;
+      --terminal-text: #bcc3bf;
+      --terminal-bright: #eef1ed;
+      --terminal-dim: #626b67;
+    }
+    .carbon .tab.active { border-bottom-color: var(--terminal); }
+    .carbon .tab.active::before { left: 10px; right: 10px; top: -1px; height: 2px; }
+
+
+
+    :root { color-scheme:dark; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#0b0c0e; color:#e7e9ed; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-width:360px; }
+    button,input,select { font:inherit; }
+    button { cursor:pointer; }
+    button:focus-visible,input:focus-visible,select:focus-visible { outline:2px solid #8caacc; outline-offset:2px; }
+    [hidden] { display:none!important; }
+    .review-bar { height:60px; display:flex; align-items:center; gap:24px; padding:0 24px; border-bottom:1px solid #272a2f; background:#141619; }
+    .review-brand { font-size:13px; white-space:nowrap; }
+    .review-brand span { margin-left:8px; color:#8d929b; font-size:12px; }
+    .review-nav { display:flex; align-items:center; gap:5px; }
+    .review-nav button { height:34px; padding:0 13px; border:1px solid transparent; border-radius:6px; background:transparent; color:#9bA1ab; font-size:12px; white-space:nowrap; }
+    .review-nav button[aria-selected="true"] { background:#292c31; border-color:#3c4149; color:#f1f2f4; }
+    .review-nav button:hover { color:white; background:#24272d; }
+    .review-nav b { font-size:10px; font-weight:400; color:#767d89; margin-right:6px; font-variant-numeric:tabular-nums; }
+    .review-note { margin-left:auto; color:#858c97; font-size:11px; white-space:nowrap; }
+    .review-copy { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:15px 24px; color:#9ca2ad; font-size:12px; min-height:48px; }
+    .review-copy strong { color:#d9dde4; font-weight:500; margin-right:10px; }
+    .review-copy span:last-child { white-space:nowrap; color:#717987; font-size:11px; }
+    .concept { padding:0 20px 18px; }
+    .concept > .app-frame { min-height:640px; height:calc(100dvh - 130px); }
+    .concept > .carbon .app-body { height:calc(100% - 48px); min-height:590px; }
+    .demo { --canvas:#101113; --panel:#16181b; --surface:#202226; --line:#2d3035; --muted:#9aa1ac; --text:#dfe3e9; --selection:#30343b; display:flex; flex-direction:column; position:relative; height:calc(100dvh - 130px); min-height:640px; border:1px solid #34383e; border-radius:10px; overflow:hidden; background:var(--canvas); color:var(--text); font-size:13px; }
+    .demo button { display:inline-flex; align-items:center; justify-content:center; gap:8px; border:0; color:inherit; background:transparent; border-radius:5px; }
+    .demo button:hover { background:#ffffff0b; }
+    .ico { width:16px; height:16px; flex-shrink:0; stroke:currentColor; fill:none; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+    .d-icon { width:28px; height:28px; color:var(--muted)!important; flex-shrink:0; padding:0; }
+    .d-brand { display:flex; align-items:center; gap:9px; font-size:14px; font-weight:600; color:#eef0f4; }
+    .d-brand .ico { width:21px; height:21px; color:#bec6d1; }
+    .d-top { height:49px; flex-shrink:0; display:flex; align-items:center; gap:20px; padding:0 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+    .d-top .d-brand { width:224px; }
+    .d-crumb { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:12px; }
+    .d-crumb strong { color:#dce1e8; font-weight:500; }
+    .d-top-actions { margin-left:auto; display:flex; align-items:center; gap:7px; }
+    .d-key { font-family:inherit; font-size:10px; color:#7f8794; border:1px solid #383e48; border-radius:3px; padding:2px 4px; }
+    .d-btn { padding:0 11px; height:31px; font-size:12px; }
+    .demo .d-primary { background:#d3dbe6; color:#19202b; font-weight:500; }
+    .demo .d-primary:hover { background:#e4ebf3; }
+    .d-body { flex:1; display:flex; min-height:0; }
+    .d-browser { flex:0 0 256px; min-width:0; display:flex; flex-direction:column; border-right:1px solid var(--line); background:var(--panel); }
+    .d-search { display:flex; align-items:center; gap:8px; margin:14px 13px 10px; height:33px; padding:0 9px; border:1px solid #343840; border-radius:5px; color:#8c95a3; background:#14161a; flex-shrink:0; }
+    .d-search input { background:none; border:0; outline:none; color:#dce1e8; width:100%; min-width:0; font-size:12px; }
+    .d-search input::placeholder { color:#828a96; }
+    .d-lists { flex:1; overflow:auto; padding:0 9px 20px; scrollbar-width:thin; scrollbar-color:#353a43 transparent; }
+    .d-section-label { display:flex; align-items:center; gap:8px; margin:19px 9px 8px; color:#939ca9; font-size:11px; font-weight:500; }
+    .d-section-label::after { content:""; flex:1; height:1px; background:var(--line); }
+    .d-folder { margin-bottom:11px; }
+    .d-group { display:flex; align-items:center; width:100%; height:34px; padding:0 8px; gap:7px; }
+    .d-group .d-name { font-size:13px; font-weight:400; flex:1; text-align:left; color:#c2c9d3; }
+    .d-group .d-count { font-size:10px; color:#7c8491; }
+    .d-group .ico { width:13px; height:13px; color:#7d8694; }
+    .d-row { position:relative; display:flex; align-items:center; min-height:35px; margin-bottom:2px; border-radius:5px; }
+    .d-row.selected { background:var(--selection); }
+    .d-row:hover { background:#ffffff07; }
+    .d-row.selected:hover { background:var(--selection); }
+    .d-row .d-select { flex:1; min-width:0; height:35px; padding:0 7px 0 17px; justify-content:flex-start; gap:9px; font-size:12px; }
+    .d-row .d-select:hover { background:transparent; }
+    .d-row .d-select span.d-title { text-overflow:ellipsis; overflow:hidden; white-space:nowrap; }
+    .d-provider { font-family:ui-monospace,"Cascadia Code","SFMono-Regular",monospace; color:#929daa; font-size:9px; letter-spacing:-.02em; min-width:18px; flex-shrink:0; }
+    .d-row.selected .d-provider { color:#becbdf; }
+    .d-row-actions { display:flex; padding-right:3px; }
+    .d-row-actions .d-icon { width:23px; height:27px; opacity:0; }
+    .d-row:hover .d-row-actions .d-icon,.d-row:focus-within .d-row-actions .d-icon { opacity:1; }
+    .d-notice { width:6px; height:6px; border-radius:50%; background:#85b1e2; flex-shrink:0; }
+    .d-row > .d-notice { position:absolute; right:13px; pointer-events:none; }
+    .d-row:hover > .d-notice,.d-row:focus-within > .d-notice { visibility:hidden; }
+    .d-browser-foot { display:flex; align-items:center; justify-content:space-between; height:45px; padding:0 16px; border-top:1px solid var(--line); color:#7e8895; font-size:11px; flex-shrink:0; }
+    .d-main { min-width:0; flex:1; display:flex; flex-direction:column; background:var(--canvas); }
+    .d-tabs { display:flex; align-items:center; height:43px; flex-shrink:0; padding:0 12px; gap:4px; border-bottom:1px solid var(--line); overflow:auto; scrollbar-width:thin; }
+    .d-tab { display:flex; align-items:center; flex-shrink:0; height:32px; min-width:160px; max-width:225px; color:#8993a0; border-radius:5px; }
+    .d-tab.selected { color:#ebedf2; background:#292d34; }
+    .d-tab button.d-tab-title { min-width:0; justify-content:flex-start; gap:8px; height:100%; padding:0 10px; font-size:12px; }
+    .d-tab-title .d-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .d-tab .d-icon { width:23px; height:24px; margin:0 4px 0 auto; }
+    .d-tab .d-icon .ico { width:13px; height:13px; }
+    .d-terminal { flex:1; display:flex; flex-direction:column; min-height:0; margin:14px 15px 0; border:1px solid #30343a; border-radius:8px; overflow:hidden; background:var(--surface); }
+    .d-terminal-head { display:flex; align-items:center; height:41px; gap:10px; padding:0 16px; border-bottom:1px solid #30343a; color:#939da9; font-size:11px; flex-shrink:0; }
+    .d-terminal-head strong { color:#d9dfe7; font-weight:500; }
+    .d-terminal-head .d-terminal-tools { margin-left:auto; display:flex; gap:6px; align-items:center; }
+    .d-terminal-tools span { margin-right:6px; color:#7f8996; }
+    .d-output { flex:1; padding:26px 28px 12px; overflow:auto; font:12.5px/1.8 ui-monospace,"Cascadia Code","SFMono-Regular",Consolas,monospace; color:#bbc3ce; scrollbar-width:thin; scrollbar-color:#464b55 transparent; }
+    .d-output p { margin:0 0 16px; white-space:pre-wrap; }
+    .d-output .d-welcome { color:#dfe4eb; font-weight:600; }
+    .d-output .d-muted { color:#929dab; }
+    .d-output .d-command { padding:9px 12px; border-left:2px solid #78869b; background:#ffffff04; color:#e0e4ec; }
+    .d-output .d-result { color:#b1c4b5; }
+    .d-output .d-output-rule { border-top:1px solid #ffffff09; padding-top:14px; }
+    .d-prompt-form { display:flex; align-items:center; margin:10px 20px 17px; padding:11px 3px 0; gap:11px; border-top:1px solid #383d45; color:#b1bed0; flex-shrink:0; }
+    .d-prompt-form input { font:12.5px/1.5 ui-monospace,"Cascadia Code",Consolas,monospace; width:100%; min-width:0; padding:3px 0; color:#e1e5ec; background:none; border:0; outline:none; }
+    .d-prompt-form input::placeholder { color:#8a95a4; }
+    .d-prompt-form button { width:27px; height:27px; background:#353c47; }
+    .d-bottom { display:flex; gap:14px; height:33px; align-items:center; padding:0 17px; color:#7e8997; font-size:10px; flex-shrink:0; }
+    .d-bottom span:last-child { margin-left:auto; }
+    .d-empty { margin:auto; padding:35px; text-align:center; color:#a2adbb; line-height:1.7; }
+    .d-empty strong { color:#dbe2eb; font-size:16px; font-weight:500; }
+    .d-project-switcher { height:51px; display:flex; align-items:stretch; gap:22px; padding:0 19px; border-bottom:1px solid var(--line); flex-shrink:0; background:#151618; }
+    .d-project-switcher button { font-size:12px; border-radius:0; padding:0 2px; color:#8f98a6; gap:9px; border-bottom:2px solid transparent; }
+    .d-project-switcher button.active { border-bottom-color:#bdc8d9; color:#e1e7ef; }
+    .d-project-switcher small { color:#7e8897; font-size:10px; }
+    .d-details { flex:0 0 216px; border-left:1px solid var(--line); padding:20px 18px; background:var(--panel); overflow:auto; font-size:11px; }
+    .d-details h3 { display:flex; align-items:center; justify-content:space-between; margin:0 0 23px; font-size:12px; font-weight:500; color:#d1d8e1; }
+    .d-details label { display:block; color:#7d899a; margin:18px 0 6px; font-size:10px; }
+    .d-details p { margin:0; color:#bcc6d3; line-height:1.7; overflow-wrap:anywhere; }
+    .d-details .d-file { display:flex; align-items:center; gap:8px; color:#8f9dad; font-size:10px; margin-top:9px; }
+    .d-details .d-divider { margin:25px 0; border-top:1px solid var(--line); }
+    .d-details .d-session-link { justify-content:flex-start; width:100%; text-align:left; font-size:11px; padding:8px 0; color:#c6d0e0; }
+    .projects { --canvas:#0c1015; --panel:#13181f; --surface:#1c232c; --line:#2a323d; --selection:#2b3745; }
+    .projects .d-top { background:#141920; }
+    .projects .d-top .d-brand { width:auto; margin-right:13px; }
+    .projects .d-project-switcher { background:#141920; padding-left:20px; }
+    .projects .d-browser { flex-basis:225px; }
+    .projects .d-tabs { height:39px; background:#11161c; padding:0 8px; }
+    .projects .d-tab { min-width:140px; }
+    .projects .d-tab.selected { background:#27313e; }
+    .projects .d-terminal { border-color:#323e4c; margin:12px 12px 0; }
+    .projects .d-terminal-head { border-color:#323e4c; }
+    .projects .d-output { padding:24px 24px 10px; }
+    .focus { --canvas:#101112; --panel:#17191b; --surface:#202326; --line:#303439; --selection:#30373c; }
+    .focus .d-top { height:59px; background:#131516; padding:0 20px; }
+    .focus .d-top .d-brand { width:auto; margin-right:14px; }
+    .d-focus-title { display:flex; gap:6px; flex-direction:column; }
+    .d-focus-title strong { font-weight:500; font-size:14px; color:#e3e7eb; }
+    .d-focus-title small { color:#8d969f; font-size:10px; }
+    .focus .d-browser { order:2; flex-basis:276px; border-right:0; border-left:1px solid var(--line); }
+    .focus .d-tabs { order:3; height:48px; padding:0 17px; background:#171a1c; border:0; border-top:1px solid var(--line); }
+    .focus .d-tab { height:33px; min-width:172px; }
+    .focus .d-tab.selected { background:#32393f; }
+    .focus .d-terminal { margin:18px 20px 0; border-radius:7px; }
+    .focus .d-output { padding:29px 32px 12px; }
+    .d-nav-title { display:flex; align-items:center; justify-content:space-between; height:39px; padding:0 18px; color:#a9b2bd; border-bottom:1px solid var(--line); font-size:11px; flex-shrink:0; }
+    .d-menu { position:absolute; z-index:5; width:212px; padding:5px; border:1px solid #414955; border-radius:7px; background:#252b33; box-shadow:0 10px 28px #0006; }
+    .d-menu button { display:flex; justify-content:flex-start; width:100%; height:33px; padding:0 10px; color:#d8dfe9; font-size:12px; }
+    .d-menu button:hover { background:#38414e; }
+    .d-modal-cover { position:absolute; inset:0; z-index:6; background:#05080cb3; display:grid; place-items:center; padding:20px; }
+    .d-dialog { width:360px; padding:24px; border:1px solid #424a58; border-radius:10px; background:#222831; box-shadow:0 24px 60px #0008; }
+    .d-dialog h2 { margin:0 0 6px; font-size:17px; font-weight:500; }
+    .d-dialog p { color:#97a3b2; line-height:1.6; margin:0 0 20px; font-size:12px; }
+    .d-dialog label { display:block; color:#c9d1dc; font-size:12px; margin:16px 0 7px; }
+    .d-dialog input,.d-dialog select { width:100%; padding:9px; border:1px solid #434e5d; background:#181e26; border-radius:5px; color:#e0e7f0; font-size:12px; }
+    .d-dialog footer { display:flex; justify-content:flex-end; gap:8px; margin-top:23px; }
+    .d-dialog .d-setting-line { display:flex; align-items:center; gap:12px; margin:16px 0; }
+    .d-dialog .d-setting-line label { margin:0; flex:1; }
+    .d-dialog .d-setting-line select { width:110px; }
+    .demo.compact .d-row,.demo.compact .d-select { min-height:29px; height:29px; }
+    .d-toast { position:absolute; z-index:8; bottom:42px; left:50%; transform:translateX(-50%); padding:10px 15px; background:#343e4b; border:1px solid #546174; color:#f0f3f7; border-radius:6px; font-size:12px; box-shadow:0 5px 20px #0004; }
+    @media(max-width:1100px) { .review-brand span,.review-note,.review-copy span:last-child { display:none; } .d-details { display:none; } .d-browser { flex-basis:235px; } .focus .d-browser { flex-basis:245px; } .d-top .d-brand { width:200px; } }
+    @media(max-width:760px) { .review-bar { height:auto; min-height:60px; padding:10px 14px; gap:12px; flex-wrap:wrap; } .review-nav { overflow:auto; width:100%; } .review-nav button { padding:0 9px; } .review-copy { padding:10px 14px; line-height:1.5; } .concept { padding:0 10px 12px; overflow:auto; } .demo,.concept>.app-frame { min-width:680px; } .demo { height:720px; } .d-crumb { display:none; } .d-top .d-brand { width:auto; } }
+    @media(prefers-reduced-motion:reduce) { * { scroll-behavior:auto!important; transition:none!important; } }
+
+    /* Workspace navigation has its own scroll region so a large library cannot shrink the terminal. */
+    .w-strip {display:flex;align-items:stretch;gap:5px;padding:0 14px;min-height:53px;border-bottom:1px solid var(--line);background:#171b21;overflow-x:auto}
+    .w-item {display:flex;align-items:center;gap:10px;border:0;background:transparent;color:#a9b0bd;padding:12px 14px;text-align:left;cursor:pointer;font:inherit;white-space:nowrap}
+    .w-item span {overflow:hidden;text-overflow:ellipsis}
+    .w-item small {margin-left:auto;color:#798391;font-size:11px}
+    .w-item.active {background:#282f39;color:#edf2fa}
+    .w-strip .w-item {border-bottom:2px solid transparent;min-width:150px}
+    .w-strip .w-item.active {border-bottom-color:#8faddb;background:#222a35}
+    .w-all {margin-left:auto;display:flex;gap:8px;align-items:center;white-space:nowrap;border:0;color:#aeb7c5;background:transparent;padding:12px;cursor:pointer}
+    .w-context {font-size:14px;color:#e2e6ec;padding:18px 18px 8px}
+    .w-context small {display:block;color:#8a929f;font-size:11px;margin-top:5px}
+    .w-empty-toggle {display:flex;align-items:center;gap:8px;color:#8b939f;background:none;border:0;padding:16px 12px;cursor:pointer;font-size:11px}
+    .w-rail {width:198px;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid #2b2d32;background:#131517;padding:12px 10px;min-height:0}
+    .w-rail-head {display:flex;align-items:center;justify-content:space-between;font-size:13px;padding:0 7px 14px}
+    .w-rail-scroll {flex:1;overflow:auto;min-height:0}
+    .w-rail .w-item {width:100%;border-radius:5px;margin:3px 0;padding:11px 9px;font-size:12px}
+    .w-rail .w-item.active {background:#303332;color:#f0f2ed}
+    .w-find {display:flex;align-items:center;gap:9px;border:0;border-radius:5px;padding:11px 8px;margin:2px 0;color:#9ca49f;background:transparent;font:inherit;font-size:11px;cursor:pointer;text-align:left}
+    .w-find:hover,.w-item:hover,.w-all:hover {background:#292d32;color:#f0f3f7}
+    .library {--canvas:#17191a;--panel:#1d2021;--surface:#26292a;--line:#343839;--selection:#343a39;--muted:#a0a9a6}
+    .library .d-brand {width:184px}
+    .library .d-browser {flex-basis:230px}
+    .library .d-terminal {border-radius:6px;background:#232627}
+    .library .d-tab.selected {background:#323938}
+    .library .d-primary {background:#d0ded5;color:#19251f;border-color:#d0ded5}
+    .switcher {--canvas:#111318;--panel:#1b1e25;--surface:#242832;--line:#323743;--selection:#303747}
+    .switcher .d-browser {flex-basis:275px}
+    .switcher .d-brand {width:245px}
+    .switcher .d-terminal {background:#20242c;margin:18px 20px 0;border-radius:9px}
+    .switcher .d-tabs {padding-left:18px;background:#111318}
+    .switcher .d-tab {border:0;border-bottom:2px solid transparent}
+    .switcher .d-tab.selected {border-bottom-color:#9aafe0;background:#202530}
+    .w-current {margin:14px 12px 4px;padding:12px;display:flex;gap:12px;align-items:center;text-align:left;color:#e6ebf5;background:#282e3b;border:1px solid #3b4558;border-radius:7px;cursor:pointer}
+    .w-current span {flex:1;font-size:15px}
+    .w-current small {display:block;font-size:9px;letter-spacing:1.2px;color:#a1afcb;margin-bottom:5px}
+    .w-dialog {width:540px;max-width:calc(100% - 32px)}
+    .w-dialog header {display:flex;align-items:center;justify-content:space-between}
+    .w-dialog h2 {margin:0}
+    .w-dialog-search {display:flex;gap:10px;align-items:center;border:1px solid #404752;border-radius:6px;padding:0 12px;margin:18px 0 8px}
+    .w-dialog-search input {border:0!important;margin:0!important;outline:none;background:transparent!important}
+    .w-results {max-height:320px;overflow:auto}
+    .w-result {display:flex;align-items:center;padding:5px;border-bottom:1px solid #30353e;gap:4px}
+    .w-result-name {display:flex;align-items:center;gap:12px;flex:1;min-width:0;text-align:left;background:none;border:0;color:#e2e7ee;padding:10px 5px;cursor:pointer;font:inherit}
+    .w-result-name span {overflow:hidden;text-overflow:ellipsis}
+    .w-result-name small {display:block;color:#909aa8;font-size:11px;margin-top:5px}
+    .w-archive {background:none;border:0;color:#9da8b7;font-size:11px;cursor:pointer;padding:8px}
+    .w-result.archived {opacity:.6}
+    .w-dialog footer span {font-size:11px;color:#98a2b0;flex:1}
+    .drop-target {outline:2px solid #90b5ec;outline-offset:-2px;background:#2c3c53!important}
+    [draggable=true] {cursor:grab}
+    .review-note {display:none}
+    @media(max-width:1100px) {.review-brand span {display:none}.review-nav button {padding:9px 10px}.w-rail{width:175px}.library .d-browser{flex-basis:205px}.w-strip .w-item{min-width:125px;padding:10px}}
+
+    .switcher {--canvas:#171513;--panel:#22201d;--surface:#2b2824;--line:#3b3630;--selection:#3d352b;--text:#e8dfd2;--muted:#a99e90;--ansi-green:#a8c990;--ansi-cyan:#85bec2;--ansi-yellow:#e5bf80;--ansi-purple:#bba3d4}
+    .switcher .d-top,.switcher .d-browser {background:var(--panel)}
+    .switcher .d-brand {width:224px}
+    .switcher .d-terminal {background:#141311;border-color:#39342d;margin:14px 15px 0;border-radius:7px}
+    .switcher .d-terminal-head {background:#211e1a;border-color:#39342d}
+    .switcher .d-output {color:#e0d7ca}
+    .switcher .d-output .d-muted {color:#a69c8e}
+    .switcher .d-output .d-command {color:var(--ansi-yellow);border-color:#b58f56;background:#211d16}
+    .switcher .d-output .d-result {color:var(--ansi-green)}
+    .switcher .d-output .d-welcome {color:var(--ansi-cyan)}
+    .switcher .d-output .d-output-rule {color:var(--ansi-purple)}
+    .switcher .d-primary {background:#dcc19b;color:#251c12;border-color:#dcc19b}
+    .switcher .d-tabs {background:#171513;padding-left:12px}
+    .switcher .d-tab.selected {background:#342d23;border-bottom-color:#c8a16b}
+    .switcher .d-browser {flex-basis:255px}
+    .switcher .w-current {background:#2d2720;border-color:#4a3b29;margin:14px 12px 6px;color:#eddfcb}
+    .switcher .w-current small {color:#c3a579}
+    .switcher .w-rail {height:100%;width:198px;background:#1c1916;border-color:#3b332a}
+    .switcher .w-rail .w-item.active {background:#3b3022;color:#efddc0}
+    .switcher .w-find {color:#b8ad9e}
+    .w-retreat-rail {display:none;position:relative;flex:0 0 198px;min-height:0}
+    .rail-open .w-retreat-rail {display:block}
+    .w-retreat-rail .w-rail {padding-bottom:44px}
+    .w-rail-close {position:absolute;bottom:9px;left:15px;background:none;border:0;color:#bfab8e;cursor:pointer;font-size:11px;padding:8px}
+    .w-settings-note {font-size:12px;line-height:1.6}
+    .d-dialog input[type=checkbox] {width:17px;height:17px;accent-color:#c6a578}
+    .switcher.palette-classic {--ansi-green:#72d99c;--ansi-cyan:#72c8ee;--ansi-yellow:#f1d07a;--ansi-purple:#d4a0ee}
+
+    .refined {--canvas:#101111;--panel:#191a19;--surface:#0d0e0e;--line:#2b2d2c;--selection:#2a2a28;--text:#cdd1d2;--muted:#858b8d;--ansi-green:#91b994;--ansi-cyan:#79abb1;--ansi-purple:#a397b8}
+    .refined .d-top,.refined .d-browser {background:var(--panel)}
+    .refined .d-top {height:46px;padding:0 14px}
+    .refined .d-top .d-brand {width:208px}
+    .refined .d-brand,.refined .d-crumb strong {color:#d9ddde}
+    .refined .d-brand .ico {color:#9fa5a6}
+    .refined .d-btn {height:29px}
+    .refined .d-primary {background:#aaa59d;color:#171818;border-color:#aaa59d}
+    .refined .d-browser {flex-basis:232px}
+    .refined .w-current {width:calc(100% - 18px);margin:9px 9px 5px;padding:8px 9px;min-height:46px;justify-content:flex-start;gap:9px;background:#202120;border:1px solid #303230;border-radius:4px;color:#d4d8d9}
+    .refined .w-current span {font-size:13px}
+    .refined .w-current > span:first-of-type {min-width:0;flex:1}
+    .refined .w-current small {margin-bottom:3px;color:#8d9393;font-size:8px;letter-spacing:1.1px;white-space:nowrap}
+    .refined .w-pane-chevron {display:flex;flex:0 0 auto;margin-left:auto;color:#878d8d;transition:transform 150ms ease}
+    .refined.rail-open .w-pane-chevron {transform:rotate(180deg)}
+    .refined .d-search {height:30px;margin:8px 9px 5px;padding:0 8px;border-color:#2d302f;border-radius:3px;background:#121313}
+    .refined .d-search .ico {width:14px;height:14px}
+    .refined .d-search input {font-size:11px;color:#cbd0d1}
+    .refined .d-lists {padding:0 7px 10px}
+    .refined .d-section-label {margin:13px 7px 5px;font-size:10px;color:#858b8c}
+    .refined .d-folder {margin-bottom:5px}
+    /* Keep project and session names aligned while giving the disclosure arrow a visible control boundary. */
+    .refined .d-group-line {display:flex;align-items:center;height:29px;border-radius:3px}
+    .refined .d-group-line:hover,.refined .d-group-line:focus-within {background:#202221}
+    .refined .d-group {flex:1;min-width:0;height:29px;padding:0 0 0 0;gap:6px}
+    .refined .d-group > .ico {width:22px;height:22px;padding:5px;border:1px solid #303230;border-radius:4px;background:#171918;color:#858b88}
+    .refined .d-group:hover > .ico {border-color:#3b3f3c;background:#202321;color:#afb5b2}
+    .refined .d-group .d-name {font-size:12px;color:#b8bdbe}
+    .refined .d-group-actions {display:flex;align-items:center;flex:none;padding-right:2px;opacity:.38;transition:opacity 120ms ease}
+    .refined .d-group-line:hover .d-group-actions,.refined .d-group-line:focus-within .d-group-actions {opacity:1}
+    .refined .d-group-actions .d-icon {width:23px;height:23px;color:#848a88}
+    .refined .d-group-actions .d-icon:hover {background:#303331;color:#d6dad8}
+    .refined .d-row {min-height:29px;margin-bottom:1px;border-radius:3px}
+    .refined .d-row .d-select {height:29px;padding-left:15px;font-size:11px;gap:7px}
+    .refined .d-folder .d-row .d-select {padding-left:28px}
+    .refined .d-row-actions .d-icon {height:25px}
+    .refined .w-empty-toggle {width:100%;justify-content:flex-start;padding:11px 8px;font-size:10px;color:#7f8586}
+    .refined .d-browser-foot {height:37px;padding:0 10px;font-size:10px}
+    .refined .d-tabs {height:37px;padding:0;gap:0;background:#141515;border-color:#292b2a}
+    .refined .d-tab {position:relative;height:36px;min-width:136px;max-width:205px;border-right:1px solid #292b2a;border-radius:0;color:#858b8d}
+    .refined .d-tab.selected {background:#1d1e1d;color:#d8dcdd}
+    .refined .d-tab.selected::after {content:"";position:absolute;right:10px;bottom:0;left:10px;height:2px;background:#8d9491}
+    .refined .d-tab button.d-tab-title {padding-left:11px;font-size:11px}
+    .refined .d-tab .d-icon {opacity:0;margin-right:3px}
+    .refined .d-tab:hover .d-icon,.refined .d-tab:focus-within .d-icon {opacity:1}
+    .refined .d-terminal {margin:0;border:0;border-radius:0;background:var(--surface)}
+    .refined .d-output {padding:24px 27px 10px;color:#c8cdce;font-size:12px}
+    .refined .d-output .d-muted {color:#858b8d}
+    .refined .d-output .d-command {color:#d1d5d5;border-color:#717a78;background:#131515}
+    .refined .d-output .d-result {color:var(--ansi-green)}
+    .refined .d-output .d-welcome {color:var(--ansi-cyan)}
+    .refined .d-output .d-output-rule {color:var(--ansi-purple)}
+    .refined .d-prompt-form {margin:7px 20px 12px;border-color:#292c2b}
+    .refined .d-bottom {height:29px;background:#141515;border-top:1px solid #242625}
+    .refined .w-retreat-rail {flex-basis:180px}
+    .refined .w-rail {width:180px;height:100%;padding:9px 7px;background:#151615;border-color:#2b2d2c}
+    .refined .w-rail-head {padding:0 7px 9px;font-size:12px}
+    .refined .w-find {width:100%;justify-content:flex-start;margin:0;padding:8px 7px;font-size:10px;color:#868c8c}
+    .refined .w-rail .d-section-label {margin-top:11px}
+    .refined .w-rail .w-item {min-height:29px;margin:1px 0;padding:7px;font-size:11px;border-radius:3px}
+    .refined .w-rail .w-item.active {background:#292a27;color:#d3d7d7}
+    .refined .w-rail-close {left:8px;bottom:5px;color:#858b8b;font-size:10px}
+    .refined .d-modal-cover:has(.wr-dialog) {background:#070808d9;backdrop-filter:blur(2px)}
+    .refined .wr-dialog {width:600px;max-width:calc(100% - 34px);padding:0;overflow:visible;border:1px solid #343735;border-radius:7px;background:#171918;box-shadow:0 28px 70px #000b}
+    .refined .wr-head {display:flex;align-items:flex-start;justify-content:space-between;padding:19px 20px 16px;border-bottom:1px solid #2a2d2b}
+    .refined .wr-kicker {display:block;margin-bottom:5px;color:#7d8381;font-size:9px;font-weight:600;letter-spacing:1.4px}
+    .refined .wr-head h2 {margin:0;color:#e1e4e3;font-size:17px;font-weight:520;letter-spacing:-.15px}
+    .refined .wr-head p {margin:5px 0 0;color:#858b89;font-size:11px;line-height:1.45}
+    .refined .wr-head .d-icon {width:28px;height:28px;margin:-3px -4px 0 12px;color:#888e8c}
+    .refined .wr-toolbar {display:flex;align-items:center;gap:9px;padding:12px 14px;border-bottom:1px solid #292c2a;background:#141615}
+    .refined .wr-search {display:flex;align-items:center;gap:8px;flex:1;height:34px;margin:0;padding:0 10px;border:1px solid #303432;border-radius:4px;background:#0f1110;color:#777e7b}
+    .refined .wr-search:focus-within {border-color:#555d59;box-shadow:0 0 0 1px #555d5955}
+    .refined .wr-search .ico {width:14px;height:14px;flex:none}
+    .refined .wr-search input {height:32px;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;outline:0;background:transparent!important;color:#d3d7d5;font-size:11px}
+    .refined .wr-search input::placeholder {color:#696f6d}
+    .refined .wr-toolbar .d-btn {height:34px;padding:0 12px;white-space:nowrap;background:#d4d7d3;color:#171918;border-color:#d4d7d3;font-size:11px}
+    .refined .wr-results {max-height:340px;min-height:212px;overflow:auto;padding:9px 10px 12px}
+    .refined .wr-section+.wr-section {margin-top:8px}
+    .refined .wr-section-title {padding:7px 9px 5px;color:#717775;font-size:9px;font-weight:600;letter-spacing:1.15px;text-transform:uppercase}
+    .refined .wr-row {display:flex;align-items:center;min-height:46px;margin:1px 0;border-radius:4px;color:#cbd0ce}
+    .refined .wr-row:hover {background:#202321}
+    .refined .wr-row.current {background:#252825}
+    .refined .wr-row.archived {opacity:.62}
+    .refined .wr-row-main {display:flex;align-items:center;justify-content:flex-start;gap:10px;flex:1;min-width:0;height:46px;padding:0 9px;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;font:inherit}
+    .refined .wr-row-main:disabled {cursor:default}
+    .refined .wr-folder {display:grid;place-items:center;width:28px;height:28px;flex:none;border:1px solid #303431;border-radius:4px;background:#1b1e1c;color:#8b928e}
+    .refined .wr-folder .ico {width:14px;height:14px}
+    .refined .wr-copy {min-width:0;overflow:hidden}
+    .refined .wr-copy strong {display:block;overflow:hidden;color:#cfd3d1;font-size:12px;font-weight:470;line-height:1.2;text-overflow:ellipsis;white-space:nowrap}
+    .refined .wr-current-mark {display:flex;align-items:center;gap:5px;margin:0 10px 0 auto;color:#9da6a1;font-size:9px;white-space:nowrap}
+    .refined .wr-current-mark .ico {width:13px;height:13px}
+    .refined .wr-row-action {display:grid;place-items:center;width:29px;height:29px;margin-right:5px;border:0;border-radius:3px;background:transparent;color:#747b78;cursor:pointer}
+    .refined .wr-row-action:hover,.refined .wr-row-action:focus-visible {background:#303430;color:#d4d8d6;outline:0}
+    .refined .wr-row-action .ico {width:15px;height:15px}
+    .refined .wr-empty {margin:56px 0;text-align:center;color:#777e7b;font-size:11px}
+    .refined .wr-footer {display:flex;justify-content:space-between;margin:0;padding:10px 18px;border-top:1px solid #292c2a;color:#737a77;font-size:9px}
+    .refined .wr-footer kbd {padding:2px 5px;border:1px solid #353936;border-radius:3px;background:#101210;color:#9aa19d;font:inherit}
+    .refined .wr-workspace-menu {width:174px;padding:4px;border-color:#383d39;border-radius:5px;background:#202321;box-shadow:0 14px 34px #0009}
+    .refined .wr-workspace-menu button {height:31px;color:#cbd0cd;font-size:11px}
+    .refined .wr-workspace-menu button:hover {background:#303430}
+    .refined.palette-classic {--ansi-green:#72d99c;--ansi-cyan:#72c8ee;--ansi-purple:#d4a0ee}
+  </style>
+</head>
+<body>
+  <header class="review-bar">
+    <div class="review-brand">Anchor<span>Interface concepts</span></div>
+    <nav class="review-nav" role="tablist" aria-label="Choose an interface concept">
+      <button role="tab" aria-controls="carbon" aria-selected="false" data-concept="carbon"><b>01</b>Carbon Ledger</button>
+      <button role="tab" aria-controls="workspace" aria-selected="true" data-concept="workspace"><b>02</b>Carbon Steel</button>
+      <button role="tab" aria-controls="projects" aria-selected="false" data-concept="projects"><b>03</b>Workspaces</button>
+      <button role="tab" aria-controls="library" aria-selected="false" data-concept="library"><b>04</b>Workspace Library</button>
+      <button role="tab" aria-controls="switcher" aria-selected="false" data-concept="switcher"><b>05</b>Workspace Retreat</button>
+      <button role="tab" aria-controls="refined" aria-selected="false" data-concept="refined"><b>06</b>Retreat Refined</button>
+    </nav>
+    <span class="review-note">Interactive previews · sample data</span>
+  </header>
+  <div class="review-copy"></div>
+  <section class="concept" role="tabpanel" aria-label="Carbon Ledger reference" id="carbon" hidden><article class="app-frame carbon" aria-label="Carbon ledger Anchor mockup">
+        <header class="app-titlebar">
+          <div class="window-controls"><i></i><i></i><i></i></div>
+          <div class="brand"><span class="brand-mark">A</span><span>Anchor</span></div>
+          <span class="workspace-path">~/dev/orion-api</span>
+          <div class="title-actions"><button class="plain-button">New session</button><button class="icon-button" aria-label="Settings">⌘</button></div>
+        </header>
+        <div class="app-body">
+          <aside class="sidebar">
+            <div class="sidebar-tools"><div class="search">⌕ <span>Find a session</span><kbd>⌘ K</kbd></div></div>
+            <div class="sidebar-scroll">
+              <div class="section-label">Favorites</div>
+              <div class="chat-row active"><span class="tool-badge">cx</span><span class="chat-name">Fix session deletion</span><span class="unread-dot"></span></div>
+              <div class="chat-row"><span class="tool-badge">cc</span><span class="chat-name">Audit release flow</span></div>
+              <div class="section-label">Projects</div>
+              <div class="project"><div class="project-title">Orion API <span class="count">3</span></div><div class="chat-row"><span class="tool-badge">cx</span><span class="chat-name">Path resolver</span></div><div class="chat-row"><span class="tool-badge">co</span><span class="chat-name">Test Windows shell</span></div></div>
+              <div class="project"><div class="project-title">Atlas CLI <span class="count">2</span></div><div class="chat-row"><span class="tool-badge">cc</span><span class="chat-name">Streaming parser</span></div><div class="chat-row"><span class="tool-badge">oc</span><span class="chat-name">Update command docs</span></div></div>
+              <div class="project"><div class="project-title">Docs Studio <span class="count">1</span></div><div class="chat-row"><span class="tool-badge">›_</span><span class="chat-name">Preview server</span></div></div>
+            </div>
+            <footer class="sidebar-footer"><span>3 open</span><span>1 needs reply</span><span class="settings-link">Settings</span></footer>
+          </aside>
+          <section class="workspace">
+            <div class="tabs"><div class="tab active"><span class="tool-badge">cx</span><span>Path resolver</span><span class="close">×</span></div><div class="tab"><span class="tool-badge">cc</span><span>Session cleanup</span><span class="unread-dot"></span><span class="close">×</span></div><div class="tab"><span class="tool-badge">co</span><span>Release notes</span><span class="close">×</span></div><button class="new-tab">+</button></div>
+            <div class="terminal-wrap"><div class="terminal"><header class="terminal-bar"><strong>Path resolver</strong><span>Codex · gpt-5</span><span class="branch">main · clean</span></header><div class="terminal-content"><p><span class="prompt">anchor</span> <span class="dim">on</span> <span class="success">main</span> <span class="command">npm test -- path-resolver</span>
+
+<span class="dim"> RUN </span> v2.1.9 /workspace/orion-api
+
+ <span class="success">✓</span> src/path-resolver.test.ts <span class="dim">(18 tests) 42ms</span>
+ <span class="success">✓</span> src/session-store.test.ts <span class="dim">(12 tests) 67ms</span>
+
+ Test Files  <span class="success">2 passed</span> <span class="dim">(2)</span>
+      Tests  <span class="success">30 passed</span> <span class="dim">(30)</span>
+
+<span class="prompt">anchor</span> <span class="dim">on</span> <span class="success">main</span> <span class="caret"></span></p></div></div></div>
+            <footer class="statusbar"><span class="online">● connected</span><span>session 7ad2…91f</span><span class="spacer"></span><span>UTF-8</span><span>132 × 41</span></footer>
+          </section>
+        </div>
+      </article></section>
+  <section class="concept" role="tabpanel" aria-label="Carbon Steel concept" id="workspace"><div class="demo workspace" data-mode="workspace"></div></section>
+  <section class="concept" role="tabpanel" aria-label="Workspaces concept" id="projects" hidden><div class="demo projects" data-mode="projects"></div></section>
+  <section class="concept" role="tabpanel" aria-label="Workspace Library concept" id="library" hidden><div class="demo library" data-mode="library"></div></section>
+  <section class="concept" role="tabpanel" aria-label="Workspace Retreat concept" id="switcher" hidden><div class="demo switcher" data-mode="switcher"></div></section>
+  <section class="concept" role="tabpanel" aria-label="Retreat Refined concept" id="refined" hidden><div class="demo refined" data-mode="refined"></div></section>
+  <script>
+
+(() => {
+  const paths = {
+    anchor:'M12 3v13m-4-4H4c0 5 3.5 8 8 8s8-3 8-8h-4M9 6a3 3 0 1 1 6 0a3 3 0 0 1-6 0',
+    search:'m16 16 4 4M18 10a7 7 0 1 1-14 0a7 7 0 0 1 14 0',
+    plus:'M12 5v14M5 12h14',close:'m6 6 12 12M6 18 18 6',
+    folder:'M3 7V5h6l2 2h10v13H3V7',chevron:'m9 5 7 7-7 7',
+    down:'m7 10 5 5 5-5',minimize:'M12 4v12m-5-5 5 5 5-5M5 20h14',
+    more:'M5 12h.01M12 12h.01M19 12h.01',
+    settings:'M4 7h16M4 17h16M9 4v6m6 4v6',
+    panel:'M3 4h18v16H3V4m12 0v16',
+    branch:'M6 6v12m0-7h7c4 0 5-2 5-5M4 4h4v4H4V4m12-1h4v4h-4V3M4 17h4v4H4v-4',
+    star:'m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3',
+    send:'M12 19V5m-5 5 5-5 5 5',file:'M5 3h9l5 5v13H5V3m9 0v6h5',
+    trash:'M3 6h18M9 3h6M6 6l1 15h10l1-15M10 10v7m4-7v7',
+    check:'m5 12 4 4L19 6',restore:'M3 12a9 9 0 1 0 3-6.7L3 8m0-5v5h5'
+  };
+  const icon = name => '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="'+paths[name]+'"/></svg>';
+  const escape = text => String(text).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const projects = [{id:'orion',name:'Orion API'}, {id:'beacon',name:'Beacon Web'}, {id:'atlas',name:'Atlas CLI'}];
+  const badges = {Codex:'CX',Claude:'CC',OpenCode:'OC',Copilot:'CO',Terminal:'>_'};
+  const seed = [
+    {id:'path',title:'Path resolver',project:'orion',tool:'Codex',open:true,favorite:false,unread:false},
+    {id:'cleanup',title:'Session cleanup',project:'orion',tool:'Claude',open:true,favorite:true,unread:true},
+    {id:'retry',title:'Improve retry handling',project:'orion',tool:'OpenCode',open:false,favorite:false,unread:false},
+    {id:'keyboard',title:'Keyboard navigation',project:'beacon',tool:'Claude',open:true,favorite:true,unread:false},
+    {id:'preview',title:'Preview server',project:'beacon',tool:'Terminal',open:false,favorite:false,unread:false},
+    {id:'release',title:'Release notes',project:'atlas',tool:'Copilot',open:false,favorite:false,unread:false}
+  ];
+  const descriptions = {
+    carbon:['Carbon Ledger','Your original reference.','Static reference'],
+    workspace:['Carbon Steel','All projects on the left. Open sessions above the terminal.','Try tabs, search, menus, or a sample message'],
+    projects:['Workspaces','A workspace holds chats, not folders. Projects are shared across workspaces.','Drag a chat onto a workspace to move it'],
+    library:['Workspace Library','A permanent workspace list, beside your chats.','Search, pin, or archive workspaces'],
+    switcher:['Workspace Retreat','The library when you need it. More room for your terminal when you don’t.','Click the workspace heading · pin the pane in Settings'],
+    refined:['Retreat Refined','A tighter, quieter pass on version 05 with a flat terminal deck.','Click the workspace heading · watch the arrow reverse']
+  };
+  const instances = {};
+  // Prototype state is isolated per concept and held in memory; no CLI or user session store is accessed.
+  function createDemo(root) {
+    const mode = root.dataset.mode;
+    const state = {sessions:structuredClone(seed),active:'path',project:'orion',collapsed:new Set(),filter:'',details:mode==='projects',navigator:true,compact:false,sequence:0,logs:{},drafts:{},readTimer:null};
+    const workspaceMode=mode!=='workspace';
+    const spaces=[
+      {id:'default',name:'Default',pinned:true},
+      {id:'release-work',name:'Release prep',pinned:true},
+      {id:'explore',name:'Exploration',pinned:true},
+      {id:'maintenance',name:'Maintenance',pinned:false},
+      {id:'past',name:'Spring cleanup',pinned:false,archived:true}
+    ];
+    state.railOpen=false;state.railPinned=false;
+    state.workspace='default';state.showEmpty=false;state.views={};
+    state.sessions.forEach(s=>s.workspace='default');
+    if(workspaceMode)state.sessions.push(
+      {id:'release-api',title:'API release checklist',project:'orion',tool:'Codex',workspace:'release-work',open:true,favorite:true,unread:false},
+      {id:'release-web',title:'Review launch changes',project:'beacon',tool:'Claude',workspace:'release-work',open:true,favorite:false,unread:true},
+      {id:'explore-api',title:'Streaming API design',project:'orion',tool:'OpenCode',workspace:'explore',open:true,favorite:false,unread:false},
+      {id:'explore-cli',title:'Try the new CLI',project:'atlas',tool:'Copilot',workspace:'explore',open:false,favorite:true,unread:false}
+    );
+    // Project directories are global; conversation ownership and view state belong to a workspace.
+    const visible=()=>state.sessions.filter(s=>s.workspace===state.workspace);
+    const space=()=>spaces.find(w=>w.id===state.workspace);
+    function switchSpace(id){
+      const target=spaces.find(w=>w.id===id&&!w.archived);if(!target)return;
+      clearTimeout(state.readTimer);
+      state.views[state.workspace]={active:state.active,filter:state.filter,collapsed:state.collapsed,showEmpty:state.showEmpty};
+      state.workspace=id;
+      if((mode==='switcher'||mode==='refined')&&!state.railPinned)state.railOpen=false;
+      Object.assign(state,state.views[id]||{active:visible().find(s=>s.open)?.id||null,filter:'',collapsed:new Set(),showEmpty:false});
+      if(!visible().some(s=>s.id===state.active&&s.open))state.active=visible().find(s=>s.open)?.id||null;
+      render();
+    }
+    function moveSession(id,destination){
+      const s=state.sessions.find(s=>s.id===id),target=spaces.find(w=>w.id===destination&&!w.archived);
+      if(!s||!target||s.workspace===destination)return;
+      // Move the existing record: its CLI identity, transcript, draft, and favorite flag must survive.
+      const source=s.workspace;s.workspace=destination;
+      if(source===state.workspace&&state.active===id)state.active=visible().find(x=>x.open)?.id||null;
+      if(state.views[source]?.active===id)state.views[source].active=null;
+      render();toast('Moved to '+target.name);
+    }
+    function workspaceButton(w){
+      return '<button class="w-item '+(w.id===state.workspace?'active':'')+'" data-action="workspace" data-id="'+w.id+'" data-workspace="'+w.id+'" aria-current="'+(w.id===state.workspace)+'">'+icon('folder')+'<span>'+escape(w.name)+'</span><small>'+state.sessions.filter(s=>s.workspace===w.id).length+'</small></button>';
+    }
+    function workspaceRail(){
+      return '<aside class="w-rail"><div class="w-rail-head">Workspaces'+button('manage','Manage workspaces','more')+'</div><button class="w-find" data-action="manage">'+icon('search')+'Find a workspace</button><div class="w-rail-scroll"><div class="d-section-label">Pinned</div>'+spaces.filter(w=>w.pinned&&!w.archived).map(workspaceButton).join('')+'<div class="d-section-label">Other workspaces</div>'+spaces.filter(w=>!w.pinned&&!w.archived).map(workspaceButton).join('')+'</div><button class="w-find" data-action="new-workspace">'+icon('plus')+'New workspace</button><button class="w-find" data-action="manage">'+icon('folder')+'Archived workspaces</button></aside>';
+    }
+    function workspaceBar(){
+      return '<nav class="w-strip" aria-label="Workspaces">'+spaces.filter(w=>!w.archived&&(w.pinned||w.id===state.workspace)).slice(0,5).map(workspaceButton).join('')+'<button class="w-all" data-action="manage">'+icon('search')+'All workspaces</button>'+button('new-workspace','New workspace','plus')+'</nav>';
+    }
+    const current = () => state.sessions.find(s=>s.id===state.active);
+    const projectName = id => projects.find(p=>p.id===id)?.name || 'Orion API';
+    const button = (action,label,glyph,extra='') => '<button class="d-icon" type="button" data-action="'+action+'" aria-label="'+escape(label)+'" title="'+escape(label)+'" '+extra+'>'+icon(glyph)+'</button>';
+    function row(s) {
+      const harnessBadge=mode==='refined'?'':'<span class="d-provider">'+badges[s.tool]+'</span>';
+      return '<div class="d-row '+(state.active===s.id?'selected':'')+'" draggable="true" data-session="'+s.id+'"><button class="d-select" data-action="select" data-id="'+s.id+'">'+harnessBadge+'<span class="d-title">'+escape(s.title)+'</span></button><div class="d-row-actions">'+button(s.open?'close':'delete',s.open?'Close tab: '+s.title:'Delete session: '+s.title,s.open?'minimize':'trash','data-id="'+s.id+'"')+button('menu','Session options: '+s.title,'more','data-id="'+s.id+'"')+'</div>'+(s.open&&s.unread?'<span class="d-notice" aria-label="Unread response"></span>':'')+'</div>';
+    }
+    function listMarkup() {
+      const match = s => (s.title+' '+projectName(s.project)+' '+s.tool).toLowerCase().includes(state.filter.toLowerCase());
+      let html = '<div class="d-section-label">Favorites</div>'+visible().filter(s=>s.favorite&&match(s)).map(row).join('');
+      html += '<div class="d-section-label">'+'All chats'+'</div>';
+      for(const project of projects){
+        const sessions=visible().filter(s=>s.project===project.id&&match(s));
+        if(!sessions.length&&(state.filter||(workspaceMode&&!state.showEmpty))) continue;
+        const collapsed=state.collapsed.has(project.id)&&!state.filter;
+        const chatCount=mode==='refined'?'':'<span class="d-count">'+sessions.length+'</span>';
+        const groupButton='<button class="d-group" data-action="collapse" data-id="'+project.id+'" aria-expanded="'+!collapsed+'">'+icon(collapsed?'chevron':'down')+'<span class="d-name">'+project.name+'</span>'+chatCount+'</button>';
+        const groupHeader=mode==='refined'?'<div class="d-group-line">'+groupButton+'<div class="d-group-actions">'+button('new-project-session','New session in '+project.name,'plus','data-id="'+project.id+'"')+button('project-options','Project options for '+project.name,'more','data-id="'+project.id+'"')+'</div></div>':groupButton;
+        html+='<section class="d-folder">'+groupHeader+(collapsed?'':sessions.map(row).join(''))+'</section>';
+      }
+      if(workspaceMode)html+='<button class="w-empty-toggle" data-action="empty">'+icon('folder')+(state.showEmpty?'Hide empty projects':'Show empty projects')+'</button>';
+      return html;
+    }
+    function browser() {
+      if(mode==='focus'&&!state.navigator) return '';
+      const activitySummary=mode==='refined'?'':'<span>'+visible().filter(s=>s.open).length+' open · '+visible().filter(s=>s.open&&s.unread).length+' unread</span>';
+      return '<aside class="d-browser" aria-label="Session browser">'+(mode==='switcher'?'<button class="w-current" data-action="toggle-rail" aria-expanded="'+state.railOpen+'" aria-controls="retreat-workspaces">'+icon('folder')+'<span><small>WORKSPACE · SWITCH</small>'+escape(space().name)+'</span>'+icon('down')+'</button>':mode==='refined'?'<button class="w-current" data-action="toggle-rail" aria-expanded="'+state.railOpen+'" aria-controls="refined-workspaces">'+icon('folder')+'<span><small>WORKSPACE · SWITCH</small>'+escape(space().name)+'</span><span class="w-pane-chevron">'+icon('chevron')+'</span></button>':workspaceMode?'<div class="w-context">'+escape(space().name)+'<small>Chats in this workspace</small></div>':'')+'<label class="d-search">'+icon('search')+'<input aria-label="Filter sessions" type="search" placeholder="Search sessions" value="'+escape(state.filter)+'"></label><div class="d-lists">'+listMarkup()+'</div><footer class="d-browser-foot">'+((mode==='switcher'||mode==='refined')?button('toggle-rail','Toggle workspaces','panel'):'')+activitySummary+button('settings','Settings','settings')+'</footer></aside>';
+    }
+    function tabs() {
+      const tab=s=>{
+        const providerBadge=mode==='refined'?'':'<span class="d-provider">'+badges[s.tool]+'</span>';
+        return '<div class="d-tab '+(s.id===state.active?'selected':'')+'"><button class="d-tab-title" data-action="select" data-id="'+s.id+'" aria-current="'+(s.id===state.active)+'">'+providerBadge+'<span class="d-title">'+escape(s.title)+'</span>'+(s.unread?'<span class="d-notice" aria-label="Unread response"></span>':'')+'</button>'+button('close','Close tab: '+s.title,'close','data-id="'+s.id+'"')+'</div>';
+      };
+      return '<nav class="d-tabs" aria-label="Open sessions">'+visible().filter(s=>s.open).map(tab).join('')+button('new','New session','plus')+'</nav>';
+    }
+    function transcript(s) {
+      const intro='<p class="d-welcome">'+escape(s.tool)+' <span class="d-muted">/ '+escape(s.title)+'</span></p>';
+      if(s.id==='path') return intro+'<p class="d-muted">/workspace/orion-api  ·  main</p><p class="d-command">› Fix the path handling and add regression tests.</p><p>I found the issue in the directory resolver. Windows paths were\npassed to the shell before the extended prefix was removed.</p><p class="d-muted">• Updated src/path-resolver.ts\n• Added coverage for drive letters and mapped folders</p><p>$ npm test -- path-resolver</p><p class="d-result">  ✓ path-resolver.test.ts    18 tests\n  ✓ session-store.test.ts    12 tests</p><p class="d-output-rule">All 30 tests passed. The working directory now stays attached\nto the session when a new terminal opens.</p>';
+      const responses={cleanup:['Check the session close and delete behavior.','Closing a tab now keeps its saved conversation. Deleting a\nclosed session removes it in one step. The regression tests pass.'],keyboard:['Make the command menu work with the keyboard.','Arrow keys move the selection. Enter opens the session,\nand Escape closes the menu. Focus returns to the terminal.'],retry:['Review the retry handling.','The request queue now stops after three failed attempts.\nA cancelled request is never added back to the queue.'],preview:['npm run dev','Local preview ready at http://localhost:3000\nWatching for file changes.'],release:['Draft the release notes from the recent changes.','Draft ready: session recovery, keyboard navigation, and\nWindows directory handling. Review the changes before publishing.']};
+      const content=responses[s.id]||['Start a new conversation.','This is a sample session. Type below to try the interface.'];
+      return intro+'<p class="d-muted">/workspace/'+escape(s.project)+'</p><p class="d-command">› '+escape(content[0])+'</p><p>'+escape(content[1])+'</p>';
+    }
+    function terminal() {
+      const s=current();
+      if(!s) return '<div class="d-empty"><strong>No tab open</strong><p>Open a saved session or start a new one.</p><button class="d-btn d-primary" data-action="new">'+icon('plus')+'New session</button></div>';
+      // Version 06 uses the selected tab as its identity header; repeating it wastes terminal height.
+      const sessionHeader=mode==='refined'?'':'<header class="d-terminal-head"><span class="d-provider">'+badges[s.tool]+'</span><strong>'+s.tool+'</strong><span>Saved conversation</span><div class="d-terminal-tools"><span>main</span>'+button('menu','Session options','more','data-id="'+s.id+'"')+'</div></header>';
+      return '<section class="d-terminal" aria-label="'+escape(s.title)+' terminal">'+sessionHeader+'<div class="d-output" role="log" aria-label="Terminal output">'+transcript(s)+(state.logs[s.id]||[]).map(item=>'<p class="'+(item.user?'d-command':'')+'">'+escape(item.text)+'</p>').join('')+'</div><form class="d-prompt-form"><span>›</span><input aria-label="Message '+escape(s.tool)+'" placeholder="Message '+s.tool+'…" value="'+escape(state.drafts[s.id]||'')+'" autocomplete="off"><button type="submit" aria-label="Send sample message">'+icon('send')+'</button></form></section>';
+    }
+    function details() {
+      const s=current();if(!state.details||!s)return '';
+      return '<aside class="d-details" aria-label="Session details"><h3>Session details'+button('details','Hide session details','close')+'</h3><label>Project</label><p>'+projectName(s.project)+'</p><label>Harness</label><p>'+s.tool+'</p><label>Session ID</label><p>demo-'+s.id+'-7ad2</p><label>Working directory</label><p>/workspace/'+s.project+'</p><div class="d-divider"></div><h3>Recent files</h3><span class="d-file">'+icon('file')+'path-resolver.ts</span><span class="d-file">'+icon('file')+'path-resolver.test.ts</span><div class="d-divider"></div><h3>Needs your attention</h3>'+visible().filter(x=>x.open&&x.unread).map(x=>'<button class="d-session-link" data-action="select" data-id="'+x.id+'"><span class="d-notice"></span>'+escape(x.title)+'</button>').join('')+'</aside>';
+    }
+    function render() {
+      const s=current();
+      const top='<header class="d-top"><div class="d-brand">'+icon('anchor')+'Anchor</div>'+(mode==='focus'?'<div class="d-focus-title"><strong>'+escape(s?.title||'Workspace')+'</strong><small>'+projectName(s?.project||state.project)+' / '+(s?.tool||'Sessions')+'</small></div>':'<div class="d-crumb"><span>'+(workspaceMode?escape(space().name):'Sessions')+'</span><span>/</span><strong>'+projectName(s?.project||state.project)+'</strong></div>')+'<div class="d-top-actions"><button class="d-btn" data-action="search">'+icon('search')+'Search <kbd class="d-key">⌘ K</kbd></button>'+(mode==='focus'?button('navigator','Toggle session browser','panel'):button('details','Toggle session details','panel'))+'<button class="d-btn d-primary" data-action="new">'+icon('plus')+'New session</button></div></header>';
+      root.classList.toggle('compact',state.compact);
+      root.classList.toggle('rail-open',state.railOpen);
+      root.innerHTML=top+(mode==='projects'?workspaceBar():'')+'<div class="d-body">'+(mode==='library'?workspaceRail():mode==='switcher'?'<div class="w-retreat-rail" id="retreat-workspaces" '+(!state.railOpen?'inert':'')+'>'+workspaceRail()+'<button class="w-rail-close" data-action="toggle-rail" aria-label="Collapse workspaces">← Collapse workspaces</button></div>':mode==='refined'?'<div class="w-retreat-rail" id="refined-workspaces" '+(!state.railOpen?'inert':'')+'>'+workspaceRail()+'</div>':'')+browser()+'<main class="d-main">'+tabs()+terminal()+'<footer class="d-bottom"><span>'+icon('branch')+'</span><span>main</span><span>'+escape(workspaceMode?space().name:(s?.tool||'Anchor'))+'</span><span>Sample data · no live CLI</span></footer></main>'+details()+'</div>';
+    }
+    function select(id){
+      const s=state.sessions.find(x=>x.id===id); if(!s)return;
+      s.open=true;state.active=id;state.project=s.project;render();
+      clearTimeout(state.readTimer);
+      const selectedWorkspace=state.workspace;
+      if(s.unread)state.readTimer=setTimeout(()=>{if(state.workspace===selectedWorkspace&&state.active===id){s.unread=false;render();}},1000);
+    }
+    function close(id) {
+      const s=state.sessions.find(x=>x.id===id);if(!s)return;
+      const open=visible().filter(x=>x.open),index=open.indexOf(s);
+      s.open=false;
+      if(state.active===id)state.active=open.filter(x=>x.id!==id)[Math.min(index,open.length-2)]?.id||null;
+      clearTimeout(state.readTimer);render();
+    }
+    function dialog(kind) {
+      root.querySelector('.d-menu')?.remove();
+      const cover=document.createElement('div');cover.className='d-modal-cover';
+      const retreatSettings='<div class="d-setting-line"><label for="refined-pin">Keep workspaces open</label><input id="refined-pin" type="checkbox" data-setting="rail-pin" '+(state.railPinned?'checked':'')+'></div><p class="w-settings-note">When off, the pane closes after you select a workspace. Open it from the workspace heading or bottom-left button.</p><div class="d-setting-line"><label for="refined-palette">Terminal palette</label><select id="refined-palette" data-setting="palette"><option value="warm" '+(!root.classList.contains('palette-classic')?'selected':'')+'>Soft ANSI</option><option value="classic" '+(root.classList.contains('palette-classic')?'selected':'')+'>Classic ANSI</option></select></div>';
+      const content=kind==='new'?'<h2>New session</h2><p>Choose a project and a coding assistant.</p><form data-form="new"><label for="'+mode+'-project">Project</label><select id="'+mode+'-project" name="project">'+projects.map(p=>'<option value="'+p.id+'" '+(p.id===state.project?'selected':'')+'>'+p.name+'</option>').join('')+'</select><label for="'+mode+'-harness">Harness</label><select id="'+mode+'-harness" name="tool">'+Object.keys(badges).map(t=>'<option>'+t+'</option>').join('')+'</select><label for="'+mode+'-name">Session name</label><input id="'+mode+'-name" name="title" placeholder="New conversation" maxlength="80"><footer><button type="button" class="d-btn" data-action="dismiss">Cancel</button><button class="d-btn d-primary" type="submit">Create session</button></footer></form>':'<h2>Appearance</h2><p>Preview settings for this concept. Changes reset on reload.</p>'+(mode==='switcher'?'<div class="d-setting-line"><label for="retreat-pin">Keep workspaces open</label><input id="retreat-pin" type="checkbox" data-setting="rail-pin" '+(state.railPinned?'checked':'')+'></div><p class="w-settings-note">When off, the pane closes after you select a workspace. Open it from the workspace heading or bottom-left button.</p><div class="d-setting-line"><label for="retreat-palette">Terminal palette</label><select id="retreat-palette" data-setting="palette"><option value="warm" '+(!root.classList.contains('palette-classic')?'selected':'')+'>Warm ANSI</option><option value="classic" '+(root.classList.contains('palette-classic')?'selected':'')+'>Classic ANSI</option></select></div>':mode==='refined'?retreatSettings:'')+'<div class="d-setting-line"><label for="'+mode+'-density">Session list</label><select id="'+mode+'-density" data-setting="density"><option value="comfortable" '+(!state.compact?'selected':'')+'>Comfortable</option><option value="compact" '+(state.compact?'selected':'')+'>Compact</option></select></div><footer><button class="d-btn d-primary" data-action="dismiss">Done</button></footer>';
+      cover.innerHTML='<section class="d-dialog" role="dialog" aria-modal="true" aria-label="'+(kind==='new'?'New session':'Appearance')+'">'+content+'</section>';
+      root.append(cover);
+      const priorFocus=document.activeElement;
+      cover.addEventListener('click',e=>{if(e.target===cover){cover.remove();priorFocus?.focus();}});
+      cover.addEventListener('keydown',e=>{
+        if(e.key==='Escape'){cover.remove();priorFocus?.focus();}
+        if(e.key==='Tab'){
+          const fields=[...cover.querySelectorAll('button,input,select')];
+          if(e.shiftKey&&document.activeElement===fields[0]){e.preventDefault();fields.at(-1).focus();}
+          else if(!e.shiftKey&&document.activeElement===fields.at(-1)){e.preventDefault();fields[0].focus();}
+        }
+      });
+      cover.querySelector('input,select,button')?.focus();
+    }
+    function menu(id,target) {
+      const s=state.sessions.find(x=>x.id===id);if(!s)return;
+      root.querySelector('.d-menu')?.remove();
+      const el=document.createElement('div');el.className='d-menu';el.setAttribute('role','menu');
+      el.innerHTML=(workspaceMode?'<button data-action="move" data-id="'+id+'">'+icon('folder')+'Move to workspace…</button>':'')+'<button data-action="favorite" data-id="'+id+'">'+icon('star')+(s.favorite?'Remove from favorites':'Add to favorites')+'</button><button data-action="copy" data-id="'+id+'">'+icon('file')+'Copy session ID</button><button data-action="'+(s.open?'close':'delete')+'" data-id="'+id+'">'+icon(s.open?'minimize':'trash')+(s.open?'Close tab':'Delete session')+'</button>';
+      root.append(el);
+      const rect=target.getBoundingClientRect(),bounds=root.getBoundingClientRect();
+      el.style.left=Math.max(8,Math.min(rect.left-bounds.left,root.clientWidth-220))+'px';
+      el.style.top=Math.max(8,Math.min(rect.bottom-bounds.top+4,root.clientHeight-122))+'px';
+      el.querySelector('button').focus();
+    }
+    function projectOptions(id,target) {
+      const project=projects.find(item=>item.id===id);if(!project)return;
+      root.querySelector('.d-menu')?.remove();
+      const collapsed=state.collapsed.has(id);
+      const el=document.createElement('div');el.className='d-menu';el.setAttribute('role','menu');
+      el.innerHTML='<button data-action="new-project-session" data-id="'+id+'">'+icon('plus')+'New session</button><button data-action="rename-project" data-id="'+id+'">'+icon('file')+'Rename group</button><button data-action="copy-project-path" data-id="'+id+'">'+icon('folder')+'Copy folder path</button><button data-action="collapse" data-id="'+id+'">'+icon(collapsed?'down':'chevron')+(collapsed?'Expand group':'Collapse group')+'</button><button data-action="remove-project" data-id="'+id+'">'+icon('trash')+'Remove group</button>';
+      root.append(el);
+      const rect=target.getBoundingClientRect(),bounds=root.getBoundingClientRect();
+      el.style.left=Math.max(8,Math.min(rect.right-bounds.left-190,root.clientWidth-198))+'px';
+      el.style.top=Math.max(8,Math.min(rect.bottom-bounds.top+4,root.clientHeight-186))+'px';
+      el.querySelector('button').focus();
+    }
+    function removeProjectDialog(id){
+      const project=projects.find(item=>item.id===id);if(!project)return;
+      const count=state.sessions.filter(session=>session.project===id).length;
+      const cover=document.createElement('div');cover.className='d-modal-cover';
+      cover.innerHTML='<section class="d-dialog" role="dialog" aria-modal="true" aria-label="Remove project group"><h2>Remove '+escape(project.name)+'?</h2><p>This removes the group and its '+count+' saved session'+(count===1?'':'s')+' from this demo.</p><label class="d-setting-line"><input type="checkbox" data-remove-project-ack><span>I understand these sessions will be removed</span></label><footer><button class="d-btn" data-action="dismiss">Cancel</button><button class="d-btn d-primary" data-action="confirm-remove-project" data-id="'+id+'" disabled>Remove group</button></footer></section>';
+      root.append(cover);
+      cover.querySelector('[data-remove-project-ack]').addEventListener('change',event=>{cover.querySelector('[data-action="confirm-remove-project"]').disabled=!event.target.checked;});
+    }
+    function renameProjectDialog(id){
+      const project=projects.find(item=>item.id===id);if(!project)return;
+      const cover=document.createElement('div');cover.className='d-modal-cover';
+      cover.innerHTML='<form class="d-dialog" data-form="project-rename" role="dialog" aria-modal="true" aria-label="Rename project group"><h2>Rename group</h2><p>Update the project name shown in Anchor.</p><input type="hidden" name="id" value="'+id+'"><label for="'+mode+'-project-rename">Name</label><input id="'+mode+'-project-rename" name="name" value="'+escape(project.name)+'" required maxlength="80"><footer><button class="d-btn" type="button" data-action="dismiss">Cancel</button><button class="d-btn d-primary">Save name</button></footer></form>';
+      root.append(cover);cover.querySelector('[name="name"]').select();
+    }
+    function workspaceOptions(id,target) {
+      const workspace=spaces.find(item=>item.id===id);if(!workspace)return;
+      root.querySelector('.d-menu')?.remove();
+      const el=document.createElement('div');el.className='d-menu wr-workspace-menu';el.setAttribute('role','menu');
+      el.innerHTML='<button data-action="pin-workspace" data-id="'+id+'">'+icon('star')+(workspace.pinned?'Unpin workspace':'Pin workspace')+'</button>'+(workspace.id==='default'?'':'<button data-action="archive-workspace" data-id="'+id+'">'+icon('folder')+'Archive workspace</button>');
+      root.append(el);
+      const rect=target.getBoundingClientRect(),bounds=root.getBoundingClientRect();
+      el.style.left=Math.max(8,Math.min(rect.right-bounds.left-174,root.clientWidth-182))+'px';
+      el.style.top=Math.max(8,Math.min(rect.bottom-bounds.top+4,root.clientHeight-82))+'px';
+      el.querySelector('button').focus();
+    }
+    root.addEventListener('click',async e=>{
+      const btn=e.target.closest('[data-action]');if(!btn)return;
+      const {action,id}=btn.dataset;
+      if(action!=='menu'&&action!=='workspace-options'&&action!=='project-options')root.querySelector('.d-menu')?.remove();
+      if(action==='select')select(id);
+      if(action==='close')close(id);
+      if(action==='delete'){state.sessions=state.sessions.filter(s=>s.id!==id);render();}
+      if(action==='collapse'){state.collapsed.has(id)?state.collapsed.delete(id):state.collapsed.add(id);render();}
+      if(action==='new-project-session'){state.project=id;dialog('new');}
+      if(action==='project-options')projectOptions(id,btn);
+      if(action==='rename-project')renameProjectDialog(id);
+      if(action==='remove-project')removeProjectDialog(id);
+      if(action==='confirm-remove-project'){
+        const projectIndex=projects.findIndex(item=>item.id===id);
+        if(projectIndex>=0)projects.splice(projectIndex,1);
+        state.sessions=state.sessions.filter(session=>session.project!==id);
+        root.querySelector('.d-modal-cover')?.remove();render();
+      }
+      if(action==='copy-project-path'){
+        const path='/workspace/'+id;
+        try{await navigator.clipboard.writeText(path);toast('Folder path copied');}
+        catch{toast('Folder path: '+path);}
+      }
+      if(action==='favorite'){const s=state.sessions.find(s=>s.id===id);s.favorite=!s.favorite;render();}
+      if(action==='toggle-rail'){
+        state.railOpen=!state.railOpen;
+        // Pane toggles must not replace the terminal DOM or discard a draft or scroll position.
+        root.classList.toggle('rail-open',state.railOpen);
+        root.querySelector('.w-retreat-rail').inert=!state.railOpen;
+        root.querySelector('.w-current').setAttribute('aria-expanded',String(state.railOpen));
+        if(!state.railOpen)root.querySelector('.w-current').focus();
+      }
+      if(action==='workspace')switchSpace(id);
+      if(action==='empty'){state.showEmpty=!state.showEmpty;render();}
+      if(action==='manage')workspaceDialog();
+      if(action==='new-workspace')workspaceDialog('create');
+      if(action==='move')workspaceDialog('move',id);
+      if(action==='move-here')moveSession(btn.dataset.sessionId,id);
+      if(action==='pin-workspace'){const w=spaces.find(w=>w.id===id);w.pinned=!w.pinned;render();workspaceDialog();}
+      if(action==='archive-workspace'){
+        const w=spaces.find(w=>w.id===id);if(w.id==='default')return;
+        w.archived=!w.archived;
+        if(w.archived&&state.workspace===id)switchSpace('default');else render();
+        workspaceDialog();
+      }
+      if(action==='menu')menu(id,btn);
+      if(action==='workspace-options')workspaceOptions(id,btn);
+      if(action==='new'||action==='settings')dialog(action);
+      if(action==='dismiss')root.querySelector('.d-modal-cover')?.remove();
+      if(action==='details'){state.details=!state.details;render();}
+      if(action==='navigator'){state.navigator=!state.navigator;render();}
+      if(action==='search'){state.navigator=true;render();root.querySelector('.d-search input')?.focus();}
+      if(action==='copy'){
+        try{await navigator.clipboard.writeText('demo-'+id+'-7ad2');toast('Session ID copied');}
+        catch{toast('Session ID: demo-'+id+'-7ad2');}
+      }
+    });
+    root.addEventListener('contextmenu',e=>{
+      const row=e.target.closest('.d-row');if(!row)return;e.preventDefault();menu(row.dataset.session,row);
+    });
+    root.addEventListener('input',e=>{
+      if(e.target.matches('.d-search input')){state.filter=e.target.value;root.querySelector('.d-lists').innerHTML=listMarkup();}
+      if(e.target.matches('.d-prompt-form input')&&state.active)state.drafts[state.active]=e.target.value;
+    });
+    root.addEventListener('change',e=>{
+      if(e.target.dataset.setting==='palette')root.classList.toggle('palette-classic',e.target.value==='classic');
+      if(e.target.dataset.setting==='rail-pin'){
+        state.railPinned=e.target.checked;state.railOpen=state.railPinned;
+        root.classList.toggle('rail-open',state.railOpen);root.querySelector('.w-retreat-rail').inert=!state.railOpen;
+        root.querySelector('.w-current').setAttribute('aria-expanded',String(state.railOpen));
+      }
+      if(e.target.dataset.setting==='density'){state.compact=e.target.value==='compact';root.classList.toggle('compact',state.compact);}
+    });
+    root.addEventListener('submit',e=>{
+      e.preventDefault();
+      if(e.target.dataset.form==='project-rename'){
+        const values=new FormData(e.target),project=projects.find(item=>item.id===values.get('id')),name=values.get('name').trim();
+        if(project&&name)project.name=name;
+        root.querySelector('.d-modal-cover')?.remove();render();return;
+      }
+      if(e.target.dataset.form==='workspace'){
+        const name=new FormData(e.target).get('name').trim();if(!name)return;
+        const id='space-'+(++state.sequence);spaces.push({id,name,pinned:false});switchSpace(id);return;
+      }
+      if(e.target.dataset.form==='new'){
+        const values=new FormData(e.target);const id='new-'+(++state.sequence);
+        state.sessions.push({id,workspace:state.workspace,title:values.get('title').trim()||'New conversation',project:values.get('project'),tool:values.get('tool'),open:true,favorite:false,unread:false});
+        select(id);return;
+      }
+      if(!e.target.matches('.d-prompt-form')||!state.active)return;
+      const input=e.target.querySelector('input'),message=input.value.trim();if(!message)return;
+      const id=state.active;
+      (state.logs[id]||=[]).push({user:true,text:'› '+message},{user:false,text:'Sample response: message received. This preview shows the interaction;\nit does not run commands or connect to an AI provider.'});
+      state.drafts[id]='';render();
+      const output=root.querySelector('.d-output');output.scrollTop=output.scrollHeight;
+      root.querySelector('.d-prompt-form input').focus();
+    });
+    root.addEventListener('keydown',e=>{
+      if(e.key==='Escape'){root.querySelector('.d-menu')?.remove();root.querySelector('.d-modal-cover')?.remove();}
+      if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();state.navigator=true;render();root.querySelector('.d-search input')?.focus();}
+    });
+    function workspaceDialog(kind='manage',sessionId=''){
+      root.querySelector('.d-modal-cover')?.remove();
+      const cover=document.createElement('div');cover.className='d-modal-cover';
+      const title=kind==='create'?'New workspace':kind==='move'?'Move chat to workspace':'Your workspaces';
+      // Version 06 treats workspace management as navigation, so its dialog uses one quiet action per row and hides chat counts.
+      if(mode==='refined'&&kind!=='create'){
+        const heading=kind==='move'?'Move chat':'Switch workspace';
+        cover.innerHTML='<section class="d-dialog w-dialog wr-dialog" role="dialog" aria-modal="true" aria-label="'+heading+'"><header class="wr-head"><div><span class="wr-kicker">WORKSPACES</span><h2>'+heading+'</h2><p>'+(kind==='move'?'Choose where this chat should live.':'Each workspace keeps its own chats, favorites, and open tabs.')+'</p></div>'+button('dismiss','Close workspace dialog','close')+'</header><div class="wr-toolbar"><label class="wr-search">'+icon('search')+'<input type="search" aria-label="Find workspace" placeholder="'+(kind==='move'?'Search destinations':'Search workspaces')+'"></label>'+(kind==='move'?'':'<button class="d-btn" data-action="new-workspace">'+icon('plus')+'New workspace</button>')+'</div><div class="wr-results"></div><footer class="wr-footer"><span>Projects stay available in every workspace</span><span><kbd>Esc</kbd> Close</span></footer></section>';
+        root.append(cover);
+        const row=w=>{
+          const current=w.id===state.workspace;
+          const action=kind==='move'?'move-here':'workspace';
+          const trailing=current?'<span class="wr-current-mark">'+icon('check')+'Current</span>':kind==='move'?'':w.archived?'<button class="wr-row-action" data-action="archive-workspace" data-id="'+w.id+'" aria-label="Restore '+escape(w.name)+'" title="Restore workspace">'+icon('restore')+'</button>':'<button class="wr-row-action" data-action="workspace-options" data-id="'+w.id+'" aria-label="Options for '+escape(w.name)+'" title="Workspace options">'+icon('more')+'</button>';
+          return '<div class="wr-row '+(current?'current ':'')+(w.archived?'archived':'')+'" data-workspace="'+w.id+'"><button class="wr-row-main" data-action="'+action+'" data-id="'+w.id+'" data-session-id="'+sessionId+'" '+(current||w.archived?'disabled':'')+'><span class="wr-folder">'+icon('folder')+'</span><span class="wr-copy"><strong>'+escape(w.name)+'</strong></span></button>'+trailing+'</div>';
+        };
+        function results(query=''){
+          const term=query.trim().toLowerCase();
+          const matches=spaces.filter(w=>w.name.toLowerCase().includes(term)&&(kind!=='move'||(!w.archived&&w.id!==state.workspace)));
+          const section=(label,items)=>items.length?'<section class="wr-section"><div class="wr-section-title">'+label+'</div>'+items.map(row).join('')+'</section>':'';
+          cover.querySelector('.wr-results').innerHTML=!matches.length?'<p class="wr-empty">No matching workspaces</p>':term?section('Results',matches):section('Pinned',matches.filter(w=>w.pinned&&!w.archived))+section('Workspaces',matches.filter(w=>!w.pinned&&!w.archived))+section('Archived',matches.filter(w=>w.archived));
+        }
+        results();cover.querySelector('input').addEventListener('input',e=>results(e.target.value));
+        const prior=document.activeElement;
+        cover.addEventListener('click',e=>{if(e.target===cover){cover.remove();prior?.focus();}});
+        cover.addEventListener('keydown',e=>{
+          if(e.key==='Tab'){const fields=[...cover.querySelectorAll('button:not(:disabled),input')];if(e.shiftKey&&document.activeElement===fields[0]){e.preventDefault();fields.at(-1).focus();}else if(!e.shiftKey&&document.activeElement===fields.at(-1)){e.preventDefault();fields[0].focus();}}
+        });
+        cover.querySelector('input').focus();return;
+      }
+      cover.innerHTML='<section class="d-dialog w-dialog" role="dialog" aria-modal="true" aria-label="'+title+'"><header><h2>'+title+'</h2>'+button('dismiss','Close workspace dialog','close')+'</header>'+(kind==='create'?'<p>Use any project here. Chats, favorites, and tabs stay separate.</p><form data-form="workspace"><label for="'+mode+'-ws-name">Workspace name</label><input id="'+mode+'-ws-name" name="name" required maxlength="50" placeholder="e.g. Release prep"><footer><button class="d-btn" type="button" data-action="dismiss">Cancel</button><button class="d-btn d-primary">Create workspace</button></footer></form>':'<p>Shared projects. Separate chats, favorites, and tabs.</p><label class="w-dialog-search">'+icon('search')+'<input type="search" aria-label="Find workspace" placeholder="Find a workspace…"></label><div class="w-results"></div><footer><span>Archive old workspaces to keep the list short.</span><button class="d-btn" data-action="new-workspace">'+icon('plus')+'New workspace</button></footer>')+'</section>';
+      root.append(cover);
+      function results(query=''){
+        cover.querySelector('.w-results').innerHTML=spaces.filter(w=>w.name.toLowerCase().includes(query.toLowerCase())&&(kind!=='move'||(!w.archived&&w.id!==state.workspace))).map(w=>'<div class="w-result '+(w.archived?'archived':'')+'" data-workspace="'+w.id+'"><button class="w-result-name" data-action="'+(kind==='move'?'move-here':'workspace')+'" data-id="'+w.id+'" data-session-id="'+sessionId+'" '+(w.archived?'disabled':'')+'>'+icon('folder')+'<span>'+escape(w.name)+'<small>'+state.sessions.filter(s=>s.workspace===w.id).length+' chats · '+(w.archived?'Archived':w.pinned?'Pinned':'Workspace')+'</small></span></button>'+(kind==='move'?'':button('pin-workspace',w.pinned?'Unpin workspace':'Pin workspace','star','data-id="'+w.id+'"')+(w.id==='default'?'': '<button class="w-archive" data-action="archive-workspace" data-id="'+w.id+'">'+(w.archived?'Restore':'Archive')+'</button>'))+'</div>').join('')||'<p>No matching workspaces.</p>';
+      }
+      if(kind!=='create'){results();cover.querySelector('input').addEventListener('input',e=>results(e.target.value));}
+      const prior=document.activeElement;
+      cover.addEventListener('click',e=>{if(e.target===cover){cover.remove();prior?.focus();}});
+      cover.addEventListener('keydown',e=>{
+        if(e.key==='Tab'){const fields=[...cover.querySelectorAll('button:not(:disabled),input')];if(e.shiftKey&&document.activeElement===fields[0]){e.preventDefault();fields.at(-1).focus();}else if(!e.shiftKey&&document.activeElement===fields.at(-1)){e.preventDefault();fields[0].focus();}}
+      });
+      cover.querySelector('input')?.focus();
+    }
+    root.addEventListener('dragstart',e=>{const row=e.target.closest('[data-session]');if(!row||!workspaceMode)return;e.dataTransfer.setData('text/plain',row.dataset.session);e.dataTransfer.effectAllowed='move';});
+    root.addEventListener('dragover',e=>{
+      if(!workspaceMode)return;
+      // Reveal overflow destinations without replacing the dragged session node.
+      if(e.target.closest('[data-action="toggle-rail"]')&&(mode==='switcher'||mode==='refined')&&!state.railOpen){state.railOpen=true;root.classList.add('rail-open');root.querySelector('.w-retreat-rail').inert=false;root.querySelector('.w-current').setAttribute('aria-expanded','true');}
+      if(e.target.closest('[data-action="manage"]')&&!root.querySelector('.d-modal-cover')){e.preventDefault();workspaceDialog();return;}
+      const target=e.target.closest('[data-workspace]');if(!target)return;
+      e.preventDefault();e.dataTransfer.dropEffect='move';target.classList.add('drop-target');
+    });
+    root.addEventListener('dragleave',e=>e.target.closest('[data-workspace]')?.classList.remove('drop-target'));
+    root.addEventListener('drop',e=>{const target=e.target.closest('[data-workspace]');if(!target)return;e.preventDefault();moveSession(e.dataTransfer.getData('text/plain'),target.dataset.workspace);});
+    function toast(text){root.querySelector('.d-toast')?.remove();const el=document.createElement('div');el.className='d-toast';el.setAttribute('role','status');el.textContent=text;root.append(el);setTimeout(()=>el.remove(),2200);}
+    render();
+    return {cancelRead:()=>clearTimeout(state.readTimer)};
+  }
+  document.querySelectorAll('.demo').forEach(root=>{instances[root.dataset.mode]=createDemo(root);});
+  function choose(id) {
+    if(!descriptions[id])id='workspace';
+    Object.values(instances).forEach(instance=>instance.cancelRead());
+    document.querySelectorAll('.concept').forEach(panel=>{panel.hidden=panel.id!==id;});
+    document.querySelectorAll('.review-nav button').forEach(button=>button.setAttribute('aria-selected',String(button.dataset.concept===id)));
+    const [name,description,hint]=descriptions[id];
+    document.querySelector('.review-copy').innerHTML='<span><strong>'+name+'</strong>'+description+'</span><span>'+hint+'</span>';
+  }
+  document.querySelector('.review-nav').addEventListener('click',e=>{const button=e.target.closest('[data-concept]');if(!button)return;choose(button.dataset.concept);history.replaceState(null,'','#'+button.dataset.concept);});
+  document.addEventListener('click',e=>{if(!e.target.closest('[data-action="menu"],[data-action="workspace-options"],[data-action="project-options"],.d-menu'))document.querySelectorAll('.d-menu').forEach(menu=>menu.remove());});
+  choose(location.hash.slice(1)||'projects');
+})();
+
+  </script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { Badge } from "./Badge";
-import { StatusDot } from "./StatusDot";
+import { AttentionDot } from "./StatusDot";
 import { Toggle } from "./Toggle";
 
 describe("Badge", () => {
@@ -11,13 +11,12 @@ describe("Badge", () => {
   });
 });
 
-describe("StatusDot", () => {
-  it("renders a dot for running/waiting but nothing for stopped", () => {
-    const { container: running } = render(<StatusDot status="running" />);
-    expect(running.querySelector(".a-dot")).not.toBeNull();
-
-    const { container: stopped } = render(<StatusDot status="stopped" />);
-    expect(stopped.querySelector(".a-dot")).toBeNull();
+describe("AttentionDot", () => {
+  it("renders gray idle and blue ready states", () => {
+    const { container, rerender } = render(<AttentionDot />);
+    expect(container.querySelector(".a-dot")).toHaveAttribute("data-attention", "idle");
+    rerender(<AttentionDot ready />);
+    expect(container.querySelector(".a-dot")).toHaveAttribute("data-attention", "ready");
   });
 });
 

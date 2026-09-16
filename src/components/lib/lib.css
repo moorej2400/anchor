@@ -61,7 +61,7 @@ button {
   border-color: transparent;
   color: #fff;
   font-weight: 600;
-  box-shadow: 0 8px 26px rgba(214, 65, 122, 0.4);
+  box-shadow: none;
 }
 .a-btn--primary:hover { filter: brightness(1.05); background: var(--grad); }
 .a-btn--danger {
@@ -113,7 +113,7 @@ button {
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-/* ---- StatusDot ---- */
+/* ---- AttentionDot ---- */
 .a-dot {
   flex: none;
   display: inline-block;
@@ -296,9 +296,8 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
-  /* Uniform width rather than content-sized: content-sized tabs land on
-     fractional pixels, which renders their borders and gradient edge blurry
-     and makes the strip's rhythm uneven. Titles ellipsize instead. */
+  /* Uniform width keeps borders crisp and gives the strip a stable rhythm.
+     Titles ellipsize instead of changing each tab's geometry. */
   width: 230px;
   height: var(--tab-h);
   padding: 8px 11px;
@@ -316,26 +315,15 @@ button {
   border: 1px solid var(--hairline);
   border-bottom: none;
 }
-/* Gradient top edge, feathered at the ends via a mask (mirrors the mock). */
+/* Flat active edge. */
 .a-tab__edge {
   position: absolute;
-  left: 0;
-  right: 0;
+  left: 12px;
+  right: 12px;
   top: 0;
-  height: 12px;
-  -webkit-mask: linear-gradient(90deg, transparent, #000 26%, #000 74%, transparent);
-  mask: linear-gradient(90deg, transparent, #000 26%, #000 74%, transparent);
-}
-.a-tab__edge::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 9px 9px 0 0;
+  height: 2px;
+  border-radius: 2px;
   background: var(--grad);
-  padding: 2px 0 0;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
 }
 .a-tab__title {
   position: relative;
@@ -371,26 +359,15 @@ button {
   background: rgba(255, 255, 255, 0.07);
   border: 1px solid rgba(255, 255, 255, 0.09);
 }
-/* Gradient left edge for the active row (feathered top/bottom). */
+/* Flat active edge. */
 .a-row__edge {
   position: absolute;
   left: 0;
-  top: 0;
-  bottom: 0;
-  width: 12px;
-  -webkit-mask: linear-gradient(180deg, transparent, #000 24%, #000 76%, transparent);
-  mask: linear-gradient(180deg, transparent, #000 24%, #000 76%, transparent);
-}
-.a-row__edge::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: var(--radius);
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
   background: var(--grad);
-  padding: 0 0 0 3px;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
 }
 /* Lift real content above the decorative bg/edge layers. Both halves are
    wrapped in :where() so the rule carries zero specificity: a child that
@@ -408,7 +385,15 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Fixed-width trailing slot: the status dot and the hover actions occupy the
+.a-row__meta {
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Fixed-width trailing slot: the attention dot and hover actions occupy the
    same footprint, so hovering a row never reflows its title. */
 .a-row__trail {
   flex: none;

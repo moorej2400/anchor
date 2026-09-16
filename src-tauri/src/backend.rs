@@ -23,7 +23,8 @@ use chrono::Utc;
 
 use crate::adapters::{adapter_for, codex, Adapter, IdCapture, SpawnSpec};
 use crate::models::{
-    AppState, CliInfo, Folder, PtyReplay, PtyResize, Session, Settings, Status, Tool,
+    AppState, CliInfo, Folder, HarnessDefinition, PtyReplay, PtyResize, Session, Settings, Status,
+    Tool,
 };
 use crate::pty::{PtyEvent, PtyManager};
 use crate::registry::Registry;
@@ -578,6 +579,70 @@ impl Backend {
         )
     }
 
+    /// Launch a user-defined harness without routing its arguments through a shell.
+    /// The settings mapping is committed before spawn so a successful process can
+    /// always be resumed with the exact harness definition that created it.
+    pub fn launch_custom_session(
+        self: &Arc<Self>,
+        folder_id: &str,
+        harness_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Session, String> {
+        let _operation = self.operations.lock().map_err(lock_error)?;
+        let (folder_path, settings) = self.folder_path_and_settings(folder_id)?;
+        let harness = enabled_harness(&settings, harness_id)?;
+        let now = Utc::now().to_rfc3339();
+        let id = uuid::Uuid::new_v4().hyphenated().to_string();
+        let cli_session_id = (harness.session_id_strategy == "preassigned")
+            .then(|| uuid::Uuid::new_v4().hyphenated().to_string());
+        let title = {
+            let registry = self.registry.lock().map_err(lock_error)?;
+            next_default_title(&registry, folder_id, &harness.name)
+        };
+        let session = Session {
+            id: id.clone(),
+            folder_id: folder_id.to_owned(),
+            tool: Tool::Terminal,
+            title,
+            cli_session_id: cli_session_id.clone(),
+            status: Status::Stopped,
+            model: Some(harness.name.clone()),
+            extra_args: Vec::new(),
+            codex_profile: None,
+            created_at: now.clone(),
+            last_active_at: now,
+            was_open_in_tab: true,
+        };
+        let spec = custom_harness_spawn_spec(
+            &harness,
+            &session,
+            &folder_path,
+            false,
+            self.settings_store.internal_data_dir()?,
+        )?;
+        let spec = self.resolve_spawn_spec(Tool::Terminal, spec, &settings)?;
+        self.persist_session_harness_mapping(&id, Some(harness_id))?;
+        let capture = cli_session_id
+            .map(IdCapture::PreAssigned)
+            .unwrap_or(IdCapture::None);
+        let result = self.persist_spawn_and_discover(
+            session,
+            folder_path,
+            &settings,
+            spec,
+            capture,
+            SystemTime::now(),
+            cols,
+            rows,
+            adapter_for(Tool::Terminal),
+        );
+        if result.is_err() {
+            let _ = self.persist_session_harness_mapping(&id, None);
+        }
+        result
+    }
+
     pub fn fork_codex_session(
         self: &Arc<Self>,
         source_session_id: &str,
@@ -697,6 +762,11 @@ impl Backend {
             self.validate_codex_profile_for_tool(session.tool, session.codex_profile.clone())?;
         let folder_path = self.folder_path(&session.folder_id)?;
         let settings = self.get_settings()?;
+        let custom_harness = settings
+            .session_harness_ids
+            .get(session_id)
+            .map(|harness_id| enabled_harness(&settings, harness_id))
+            .transpose()?;
         let adapter = adapter_for(session.tool);
         if let Err(error) = adapter.preflight_resume(&session) {
             if error == format!("{CODEX_ACTIVE_WRITER_CODE}: {CODEX_ACTIVE_WRITER_MESSAGE}") {
@@ -708,7 +778,17 @@ impl Backend {
             }
             return Err(error);
         }
-        let spec = adapter.resume(&session, &folder_path, &settings)?;
+        let spec = if let Some(harness) = custom_harness.as_ref() {
+            custom_harness_spawn_spec(
+                harness,
+                &session,
+                &folder_path,
+                true,
+                self.settings_store.internal_data_dir()?,
+            )?
+        } else {
+            adapter.resume(&session, &folder_path, &settings)?
+        };
         let spec = self.resolve_spawn_spec(session.tool, spec, &settings)?;
 
         if session.tool == Tool::Terminal {
@@ -815,13 +895,41 @@ impl Backend {
         }
         let _operation = self.operations.lock().map_err(lock_error)?;
         let session = self.session(session_id)?;
-        if session.tool == Tool::Terminal {
+        let custom_harness = self
+            .get_settings()?
+            .session_harness_ids
+            .contains_key(session_id);
+        if session.tool == Tool::Terminal && !custom_harness {
             return Err("SESSION_ID_UNSUPPORTED: terminal sessions do not use provider IDs".into());
         }
         if session.status != Status::Stopped || self.runtime.is_live(session_id) {
             return Err("SESSION_ID_CHANGE_REQUIRES_STOPPED: stop the session before changing its provider ID".into());
         }
         self.replace_session_id(session_id, Some(cli_session_id.to_owned()))
+    }
+
+    fn persist_session_harness_mapping(
+        &self,
+        session_id: &str,
+        harness_id: Option<&str>,
+    ) -> Result<(), String> {
+        let mut settings = self.settings.lock().map_err(lock_error)?;
+        let previous = settings.session_harness_ids.clone();
+        match harness_id {
+            Some(harness_id) => {
+                settings
+                    .session_harness_ids
+                    .insert(session_id.to_owned(), harness_id.to_owned());
+            }
+            None => {
+                settings.session_harness_ids.remove(session_id);
+            }
+        }
+        if let Err(error) = self.settings_store.save(&settings) {
+            settings.session_harness_ids = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Generate a title through a provider-owned hidden conversation and keep
@@ -1680,6 +1788,58 @@ impl Backend {
     }
 }
 
+fn enabled_harness(settings: &Settings, harness_id: &str) -> Result<HarnessDefinition, String> {
+    settings
+        .custom_harnesses
+        .iter()
+        .find(|harness| harness.id == harness_id)
+        .cloned()
+        .ok_or_else(|| "HARNESS_NOT_FOUND: saved custom harness is unavailable".to_string())
+        .and_then(|harness| {
+            if harness.enabled {
+                Ok(harness)
+            } else {
+                Err("HARNESS_DISABLED: enable this harness before starting its session".into())
+            }
+        })
+}
+
+fn custom_harness_spawn_spec(
+    harness: &HarnessDefinition,
+    session: &Session,
+    project_path: &Path,
+    resume: bool,
+    internal_data_dir: PathBuf,
+) -> Result<SpawnSpec, String> {
+    let templates = if resume && !harness.resume_args.is_empty() {
+        &harness.resume_args
+    } else {
+        &harness.launch_args
+    };
+    let session_id = session.cli_session_id.as_deref().unwrap_or_default();
+    if templates.iter().any(|arg| arg.contains("{sessionId}")) && session_id.is_empty() {
+        return Err(
+            "SESSION_ID_UNAVAILABLE: set this custom harness session ID before resuming".into(),
+        );
+    }
+    let data_directory = if harness.data_directory.trim().is_empty() {
+        internal_data_dir.join("harnesses").join(&harness.id)
+    } else {
+        expand_tilde(&harness.data_directory)?
+    };
+    let project = project_path.to_string_lossy();
+    let data = data_directory.to_string_lossy();
+    let args = templates
+        .iter()
+        .map(|arg| {
+            arg.replace("{projectPath}", &project)
+                .replace("{sessionId}", session_id)
+                .replace("{dataDirectory}", &data)
+        })
+        .collect::<Vec<_>>();
+    Ok(SpawnSpec::new(&harness.executable, args, project_path))
+}
+
 fn recover_missing_codex_ids(registry: &mut Registry, adapter: &codex::CodexAdapter) -> bool {
     let folders = registry
         .folders
@@ -2534,6 +2694,98 @@ mod tests {
         registry.sessions.push(session.clone());
         registry.save().unwrap();
         session
+    }
+
+    fn synthetic_custom_harness() -> HarnessDefinition {
+        HarnessDefinition {
+            id: "synthetic-agent".into(),
+            name: "Synthetic agent".into(),
+            executable: "synthetic-agent".into(),
+            launch_args: vec![
+                "start".into(),
+                "--cwd={projectPath}".into(),
+                "--data={dataDirectory}".into(),
+            ],
+            resume_args: vec!["resume".into(), "{sessionId}".into()],
+            session_id_strategy: "manual".into(),
+            working_directory: "project".into(),
+            data_directory: String::new(),
+            kind: "ai".into(),
+            enabled: true,
+        }
+    }
+
+    fn synthetic_custom_session(cli_session_id: Option<&str>) -> Session {
+        Session {
+            id: "11111111-1111-4111-8111-111111111111".into(),
+            folder_id: "synthetic-folder".into(),
+            tool: Tool::Terminal,
+            title: "Synthetic agent".into(),
+            cli_session_id: cli_session_id.map(str::to_owned),
+            status: Status::Stopped,
+            model: Some("Synthetic agent".into()),
+            extra_args: Vec::new(),
+            codex_profile: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            last_active_at: "2026-01-01T00:00:00Z".into(),
+            was_open_in_tab: true,
+        }
+    }
+
+    #[test]
+    fn custom_harness_arguments_are_substituted_without_a_shell() {
+        let root = tempdir().unwrap();
+        let project = root.path().join("synthetic-project");
+        let data_root = root.path().join("internal");
+        let session = synthetic_custom_session(Some("synthetic-cli-session"));
+
+        let launch = custom_harness_spawn_spec(
+            &synthetic_custom_harness(),
+            &session,
+            &project,
+            false,
+            data_root.clone(),
+        )
+        .unwrap();
+        assert_eq!(launch.program, "synthetic-agent");
+        assert_eq!(launch.cwd, project);
+        assert_eq!(launch.args[0], "start");
+        assert_eq!(launch.args[1], format!("--cwd={}", project.display()));
+        assert_eq!(
+            launch.args[2],
+            format!(
+                "--data={}",
+                data_root.join("harnesses/synthetic-agent").display()
+            )
+        );
+
+        let resumed = custom_harness_spawn_spec(
+            &synthetic_custom_harness(),
+            &session,
+            &project,
+            true,
+            data_root,
+        )
+        .unwrap();
+        assert_eq!(
+            resumed.args,
+            vec!["resume".to_string(), "synthetic-cli-session".to_string()]
+        );
+    }
+
+    #[test]
+    fn custom_harness_resume_fails_closed_without_the_required_session_id() {
+        let root = tempdir().unwrap();
+        let error = custom_harness_spawn_spec(
+            &synthetic_custom_harness(),
+            &synthetic_custom_session(None),
+            root.path(),
+            true,
+            root.path().join("internal"),
+        )
+        .unwrap_err();
+
+        assert!(error.starts_with("SESSION_ID_UNAVAILABLE:"));
     }
 
     #[test]

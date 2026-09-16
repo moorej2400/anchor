@@ -1,18 +1,18 @@
-/** Status indicator dot. `stopped` renders nothing (returns null). */
-import type { Status } from "../../ipc/types";
-import { STATUS_COLOR } from "./tokens";
+/** Gray/blue response-attention dot for an open chat. */
+import { ATTENTION_COLOR } from "./tokens";
 
-interface StatusDotProps {
-  status: Status;
+interface AttentionDotProps {
+  ready?: boolean;
   size?: number;
 }
 
-export function StatusDot({ status, size = 8 }: StatusDotProps) {
-  const color = STATUS_COLOR[status];
-  if (!color) return null;
+export function AttentionDot({ ready = false, size = 8 }: AttentionDotProps) {
+  const color = ready ? ATTENTION_COLOR.ready : ATTENTION_COLOR.idle;
   return (
     <span
       className="a-dot"
+      data-attention={ready ? "ready" : "idle"}
+      aria-label={ready ? "AI response ready" : "Open chat"}
       style={{ width: size, height: size, background: color, boxShadow: `0 0 6px ${color}88` }}
     />
   );

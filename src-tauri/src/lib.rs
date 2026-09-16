@@ -12,17 +12,33 @@ mod settings;
 mod status;
 mod title_agent;
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 use backend::{Backend, BackendEvents};
 use models::{
     events, AttentionCountPayload, PtyOutputPayload, Session, SessionResumeErrorPayload,
     SessionStatusPayload, Status,
 };
-use tauri::{Emitter, Manager, UserAttentionType};
+use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
-struct TauriEvents(tauri::AppHandle);
+#[derive(Default)]
+struct BackgroundErrorGate(Mutex<HashSet<String>>);
+
+impl BackgroundErrorGate {
+    fn first_occurrence(&self, message: &str) -> bool {
+        self.0
+            .lock()
+            .map(|mut surfaced| surfaced.insert(message.to_owned()))
+            .unwrap_or(true)
+    }
+}
+
+struct TauriEvents {
+    app: tauri::AppHandle,
+    background_errors: BackgroundErrorGate,
+}
 
 impl BackendEvents for TauriEvents {
     fn pty_output(
@@ -34,7 +50,7 @@ impl BackendEvents for TauriEvents {
         cols: u16,
         rows: u16,
     ) {
-        let _ = self.0.emit(
+        let _ = self.app.emit(
             events::PTY_OUTPUT,
             PtyOutputPayload {
                 session_id: session_id.to_owned(),
@@ -48,7 +64,7 @@ impl BackendEvents for TauriEvents {
     }
 
     fn session_status(&self, session_id: &str, status: Status, exit_code: Option<i32>) {
-        let _ = self.0.emit(
+        let _ = self.app.emit(
             events::SESSION_STATUS,
             SessionStatusPayload {
                 session_id: session_id.to_owned(),
@@ -59,11 +75,11 @@ impl BackendEvents for TauriEvents {
     }
 
     fn session_updated(&self, session: &Session) {
-        let _ = self.0.emit(events::SESSION_UPDATED, session);
+        let _ = self.app.emit(events::SESSION_UPDATED, session);
     }
 
     fn session_resume_error(&self, session_id: &str, code: &str, message: &str) {
-        let _ = self.0.emit(
+        let _ = self.app.emit(
             events::SESSION_RESUME_ERROR,
             SessionResumeErrorPayload {
                 session_id: session_id.to_owned(),
@@ -75,16 +91,16 @@ impl BackendEvents for TauriEvents {
 
     fn attention_count(&self, waiting: u32, notify: bool) {
         let _ = self
-            .0
+            .app
             .emit(events::ATTENTION_COUNT, AttentionCountPayload { waiting });
-        if let Some(window) = self.0.get_webview_window("main") {
+        if let Some(window) = self.app.get_webview_window("main") {
             #[cfg(target_os = "windows")]
             {
                 let AttentionSurface::OverlayIcon(show) = attention_surface(waiting, true) else {
                     unreachable!("Windows attention uses an overlay icon")
                 };
                 let icon = show
-                    .then(|| self.0.default_window_icon().cloned())
+                    .then(|| self.app.default_window_icon().cloned())
                     .flatten();
                 let _ = window.set_overlay_icon(icon);
             }
@@ -98,7 +114,7 @@ impl BackendEvents for TauriEvents {
         }
         if notify {
             let _ = self
-                .0
+                .app
                 .notification()
                 .builder()
                 .title("Anchor")
@@ -108,16 +124,14 @@ impl BackendEvents for TauriEvents {
     }
 
     fn background_error(&self, message: &str) {
-        // Background work has no command response. A safely JSON-encoded
-        // `alert` provides a blocking in-app surface without expanding the
-        // normative IPC contract; notification and window attention remain
-        // redundant OS-level fallbacks.
-        if let Some(window) = self.0.get_webview_window("main") {
-            let _ = window.eval(blocking_alert_script(message));
-            let _ = window.request_user_attention(Some(UserAttentionType::Critical));
+        // Status and discovery retries can report the same storage outage many
+        // times. One OS notification is enough; taskbar attention is reserved
+        // for completed AI responses and must never be driven by an error.
+        if !self.background_errors.first_occurrence(message) {
+            return;
         }
         let _ = self
-            .0
+            .app
             .notification()
             .builder()
             .title("Anchor background error")
@@ -140,14 +154,6 @@ fn attention_surface(waiting: u32, windows: bool) -> AttentionSurface {
     }
 }
 
-fn blocking_alert_script(message: &str) -> String {
-    // serde_json encoding prevents quotes, newlines, or attacker-controlled
-    // text from escaping the JavaScript string literal.
-    let encoded = serde_json::to_string(message)
-        .unwrap_or_else(|_| "\"A background operation failed.\"".to_owned());
-    format!("window.alert({encoded});")
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -159,7 +165,10 @@ pub fn run() {
         // calls `frontend_ready` once it has listeners, state, and a measured
         // terminal grid for initial PTY spawns (SPEC.md §8).
         .setup(move |app| {
-            let events: Arc<dyn BackendEvents> = Arc::new(TauriEvents(app.handle().clone()));
+            let events: Arc<dyn BackendEvents> = Arc::new(TauriEvents {
+                app: app.handle().clone(),
+                background_errors: BackgroundErrorGate::default(),
+            });
             let backend = Backend::platform(events).map_err(|error| {
                 std::io::Error::other(format!("backend initialization failed: {error}"))
             })?;
@@ -175,6 +184,7 @@ pub fn run() {
             commands::rename_folder,
             commands::remove_folder,
             commands::launch_session,
+            commands::launch_custom_session,
             commands::resume_session,
             commands::repair_session_identity,
             commands::fork_codex_session,
@@ -202,16 +212,14 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{attention_surface, blocking_alert_script, AttentionSurface};
+    use super::{attention_surface, AttentionSurface, BackgroundErrorGate};
 
     #[test]
-    fn background_alert_script_json_escapes_untrusted_text() {
-        let script = blocking_alert_script("failure ' \" \n </script> ; window.evil()");
-        assert!(script.starts_with("window.alert(\""));
-        assert!(script.ends_with("\");"));
-        assert!(script.contains("\\\""));
-        assert!(script.contains("\\n"));
-        assert!(!script.contains("; window.evil());"));
+    fn background_errors_surface_each_message_once() {
+        let gate = BackgroundErrorGate::default();
+        assert!(gate.first_occurrence("REGISTRY_WRITE_FAILED"));
+        assert!(!gate.first_occurrence("REGISTRY_WRITE_FAILED"));
+        assert!(gate.first_occurrence("SCROLLBACK_WRITE_FAILED"));
     }
 
     #[test]

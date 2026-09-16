@@ -8,7 +8,7 @@ export { GlassPanel } from "./GlassPanel";
 export { Button } from "./Button";
 export { IconButton } from "./IconButton";
 export { Badge } from "./Badge";
-export { StatusDot } from "./StatusDot";
+export { AttentionDot } from "./StatusDot";
 export { Toggle } from "./Toggle";
 export { RadioGroup } from "./RadioGroup";
 export { Slider } from "./Slider";

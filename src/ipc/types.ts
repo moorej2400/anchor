@@ -6,6 +6,9 @@
 
 export type Tool = "claude" | "codex" | "copilot" | "opencode" | "terminal";
 export type Status = "running" | "waiting" | "stopped";
+export type ResponseReadDelayMs = 0 | 1000 | 2500 | 5000;
+export type HarnessSessionIdStrategy = "none" | "preassigned" | "manual";
+export const DEFAULT_WORKSPACE_ID = "00000000-0000-4000-8000-000000000001";
 
 export interface Folder {
   id: string;
@@ -34,6 +37,56 @@ export interface EnvVar {
   value: string;
 }
 
+export interface Workspace {
+  id: string;
+  name: string;
+  pinned: boolean;
+  archived: boolean;
+  favoriteSessionIds: string[];
+  folderOrder: string[];
+  tabOrder: string[];
+  collapsedFolderIds: string[];
+}
+
+export interface TerminalTheme {
+  background: string;
+  foreground: string;
+  cursor: string;
+  cursorAccent: string;
+  selectionBackground: string;
+  selectionForeground: string;
+  black: string;
+  red: string;
+  green: string;
+  yellow: string;
+  blue: string;
+  magenta: string;
+  cyan: string;
+  white: string;
+  brightBlack: string;
+  brightRed: string;
+  brightGreen: string;
+  brightYellow: string;
+  brightBlue: string;
+  brightMagenta: string;
+  brightCyan: string;
+  brightWhite: string;
+}
+
+/** A shell-free executable definition. Arguments are passed directly to the PTY process. */
+export interface HarnessDefinition {
+  id: string;
+  name: string;
+  executable: string;
+  launchArgs: string[];
+  resumeArgs: string[];
+  sessionIdStrategy: HarnessSessionIdStrategy;
+  workingDirectory: "project";
+  dataDirectory: string;
+  kind: "ai" | "terminal";
+  enabled: boolean;
+}
+
 export interface Settings {
   shell: string;
   envVars: EnvVar[];
@@ -50,6 +103,25 @@ export interface Settings {
   fontSize: number;
   accent: string;
   notifyOnWaiting: boolean;
+  responseReadDelayMs: ResponseReadDelayMs;
+  /** Ordered chat shortcuts shown in the Favorites sidebar section. */
+  favoriteSessionIds: string[];
+  /** Explicit project-group order; folders absent here retain registry order. */
+  folderOrder: string[];
+  /** Explicit open-tab order; restored tabs absent here follow registry order. */
+  tabOrder: string[];
+  /** Unix epoch milliseconds when each currently empty folder became empty. */
+  emptyFolderSinceMs: Record<string, number>;
+  /** Workspace records own navigation state while projects remain shared. */
+  workspaces: Workspace[];
+  activeWorkspaceId: string;
+  /** Session ids absent from this map belong to the stable Default workspace. */
+  sessionWorkspaceIds: Record<string, string>;
+  workspacePaneKeepOpen: boolean;
+  terminalTheme: TerminalTheme;
+  customHarnesses: HarnessDefinition[];
+  /** Custom harness identity for sessions stored as generic terminal records. */
+  sessionHarnessIds: Record<string, string>;
 }
 
 export interface CliInfo {

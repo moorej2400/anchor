@@ -1,7 +1,7 @@
 # Anchor — Product & Technical Specification
 
 **Status:** Approved. This document is the single source of truth for the project.
-**UI mock (authoritative frontend spec):** [`docs/Anchor.dc.html`](./Anchor.dc.html) — open it in a browser. **The application must be built to this mock.**
+**UI mock (authoritative frontend spec):** [`docs/Anchor-Implementation-Mock.html`](./Anchor-Implementation-Mock.html) — open it in a browser. **The application must be built to this mock.**
 **Audience:** This spec is written so an AI or human with *zero* prior context can implement any phase of the project from this document alone.
 
 > ⚠️ **This is a PUBLIC repository. Never commit personal information** — no real API keys, tokens, usernames, machine-specific absolute paths, or private data of any kind. Example/fixture data must be synthetic.
@@ -14,15 +14,19 @@ Developers run many AI coding CLIs at once — Claude Code, Codex, GitHub Copilo
 
 **Anchor** is a cross-platform (macOS / Windows / Linux) desktop app that hosts managed terminal sessions for AI CLIs. Its **core promise**: every session's identity — CLI tool, working directory, and the CLI's own session ID — is persisted to disk *the moment the session launches*, so after an app restart or OS reboot every session can be resumed with one click, restored to its original directory and conversation. Resume always targets that persisted ID; Anchor never opens a provider's interactive session picker.
 
-### Supported session types (5)
+### Built-in session types (5)
 
-| key | Name | Badge | Kind |
-|---|---|---|---|
-| `claude` | Claude Code | `cc` | AI CLI |
-| `codex` | Codex | `cx` | AI CLI |
-| `copilot` | Copilot | `co` | AI CLI |
-| `opencode` | opencode | `oc` | AI CLI |
-| `terminal` | Generic terminal | `›_` | Plain shell (persistence = scrollback restore, not session ID) |
+| key | Name | Kind |
+|---|---|---|
+| `claude` | Claude Code | AI CLI |
+| `codex` | Codex | AI CLI |
+| `copilot` | Copilot | AI CLI |
+| `opencode` | opencode | AI CLI |
+| `terminal` | Generic terminal | Plain shell (persistence = scrollback restore, not session ID) |
+
+User-defined harnesses extend these built-ins from Settings. A custom harness is
+an executable plus a typed argument array; Anchor never evaluates a custom
+harness through a command shell.
 
 ### Non-goals (v1)
 
@@ -44,7 +48,8 @@ Split/grid multi-terminal view, remote/SSH sessions, session content search, Win
 anchor/
 ├── docs/
 │   ├── SPEC.md              ← this file
-│   └── Anchor.dc.html       ← authoritative UI mock
+│   ├── Anchor.dc.html       ← legacy baseline mock
+│   └── Anchor-Implementation-Mock.html ← authoritative workspace UI mock
 ├── src/                     ← frontend (React + TS)
 │   ├── main.tsx
 │   ├── App.tsx
@@ -87,6 +92,7 @@ Root data directory: **`~/.anchor/`** by default (the "Backup location" setting,
 | `settings.last-good.json` | Checksummed recovery envelope for settings, including the path that locates the session registry. |
 | `<platform-config>/anchor/internal/title-agents/state.json` | Private IDs for hidden title-generation sessions, one per harness and per selected Codex profile. These IDs never enter the visible session registry. |
 | `<platform-config>/anchor/internal/title-agents/workspaces/<tool>/` | Dedicated working directories for hidden title generation, isolated from user projects. |
+| `<platform-config>/anchor/internal/harnesses/<harness-id>/` | Default dedicated data directory available to custom harness argument templates. |
 
 `registry.json` schema (serde JSON, camelCase):
 
@@ -152,20 +158,30 @@ and are rewritten as version 2 on the next registry mutation.
 
 ---
 
-## 4. Session lifecycle & status model
+## 4. Session lifecycle, runtime status, and response attention
 
-**Exactly three statuses** (mock is authoritative, see the comment block in the mock source):
+**Exactly three runtime statuses** remain available to lifecycle logic:
 
-| status | Dot | Meaning |
-|---|---|---|
-| `running` | 🟢 `#5fb891` | Process ON; AI working or shell live. |
-| `waiting` | 🟡 `#d4a35f` | Process ON but **blocked on user input** (approval prompt, `[y/N]`, question). This is the "needs your attention" state. |
-| `stopped` | *no dot* | Process NOT running. May hold a saved `cliSessionId` → resumable. |
+| status | Meaning |
+|---|---|
+| `running` | Process ON; AI working or shell live. |
+| `waiting` | Process ON but blocked on user input (approval prompt, `[y/N]`, question), or idle after an output burst. |
+| `stopped` | Process NOT running. May hold a saved `cliSessionId` → resumable. |
 
 - ON = running ∨ waiting. OFF = stopped.
-- **Tabs ↔ ON:** with the default setting `stopOnClose: true`, an open tab corresponds to an ON session; closing a tab stops the process. Sidebar dots therefore mirror open tabs exactly.
+- Runtime status does **not** choose a sidebar or tab indicator color.
 - Clicking a stopped session in the sidebar opens its tab showing the **Resume card** (not a live terminal). Pressing **Resume** relaunches the CLI with its resume flag → `running`.
 - On app boot every session is normalized to `stopped` (no processes survive an app quit in v1; the "keep running in tray" lifecycle option is deferred — see §10 Future).
+
+**Response-attention indicator (frontend):**
+
+- A closed chat has no indicator, regardless of runtime status.
+- In the sidebar and other session lists, every open chat has a gray indicator while no unread AI response is waiting. The top tab strip omits this idle indicator and shows only the blue unread-response indicator.
+- Submitting a non-empty input line in an AI chat arms that chat for one response. Generic terminal commands can update recency but never arm AI-response attention. Typing without submitting and merely selecting a row or tab do not arm it.
+- If the armed chat reaches `waiting` or `stopped` while another tab is active, its indicator turns blue to mean the AI response is ready and may need a reply.
+- Focusing a blue chat clears it to gray only after that chat stays active for `responseReadDelayMs`. Leaving sooner cancels the clear. A chat selected automatically because its neighbor closed is not eligible to clear until the user explicitly selects a chat. Supported delays are Instant, 1 second, 2.5 seconds, and 5 seconds; the default is 1 second.
+- Finishing while already focused stays gray because the response is visible. Sending another input clears the old blue state and arms the next response.
+- This attention state is ephemeral. It does not change process status, folder/session position, or the saved provider identity.
 
 ### Waiting/attention detection (Rust, `status.rs`)
 
@@ -175,7 +191,7 @@ A session flips `running → waiting` when any of:
 
 Any subsequent PTY output or user keystroke flips `waiting → running`. Process exit → `stopped` (with exit code surfaced via event).
 
-**Attention priority (spec addition on top of the mock):** within a folder, `waiting` sessions sort above others in the sidebar. The OS-level surface: dock/taskbar badge count of waiting sessions, and optional OS notification (settings toggle `notifyOnWaiting`, default off → badge only).
+Runtime waiting changes never reorder sidebar rows. The backend still supplies a dock/taskbar waiting count and optional OS notification (`notifyOnWaiting`, default off); the frontend's gray/blue per-chat indicator additionally requires a submitted input and an open tab.
 
 ---
 
@@ -232,6 +248,34 @@ export type Status = "running" | "waiting" | "stopped";
 
 export interface Folder { id: string; name: string; path: string; }
 
+export interface Workspace {
+  id: string; name: string; pinned: boolean; archived: boolean;
+  favoriteSessionIds: string[];
+  folderOrder: string[];
+  tabOrder: string[];
+  collapsedFolderIds: string[];
+}
+
+export interface TerminalTheme {
+  background: string; foreground: string; cursor: string; cursorAccent: string;
+  selectionBackground: string; selectionForeground: string;
+  black: string; red: string; green: string; yellow: string; blue: string;
+  magenta: string; cyan: string; white: string;
+  brightBlack: string; brightRed: string; brightGreen: string;
+  brightYellow: string; brightBlue: string; brightMagenta: string;
+  brightCyan: string; brightWhite: string;
+}
+
+export interface HarnessDefinition {
+  id: string; name: string; executable: string;
+  launchArgs: string[]; resumeArgs: string[];
+  sessionIdStrategy: "none" | "preassigned" | "manual";
+  workingDirectory: "project";
+  dataDirectory: string;
+  kind: "ai" | "terminal";
+  enabled: boolean;
+}
+
 export interface Session {
   id: string;
   folderId: string;
@@ -251,7 +295,7 @@ export interface Settings {
   shell: string;                      // default shell for terminal sessions
   envVars: { key: string; value: string }[];  // extra env for all spawns; values masked in UI
   autoRestore: boolean;               // on boot: reopen wasOpenInTab tabs AND auto-resume them
-  confirmClose: boolean;              // confirm before closing a running session's tab
+  confirmClose: boolean;              // confirm before a tab close interrupts an in-progress AI response
   stopOnClose: boolean;               // closing a tab stops the process (default true)
   restoreScrollback: boolean;         // terminal sessions restore scrollback
   backupPath: string;                 // registry dir, default "~/.anchor/sessions"
@@ -260,8 +304,20 @@ export interface Settings {
   theme: "graphite" | "obsidian" | "nebula";
   density: "comfortable" | "compact";
   fontSize: number;                   // terminal px, 11–18, default 13
-  accent: string;                     // hex, default "#d6417a"
+  accent: string;                     // hex, default "#88a99d"
   notifyOnWaiting: boolean;           // OS notification when a session flips to waiting (default false)
+  responseReadDelayMs: 0 | 1000 | 2500 | 5000; // active time before a blue response indicator is cleared; default 1000
+  favoriteSessionIds: string[];       // ordered favorite chat shortcuts shown above All chats
+  folderOrder: string[];              // ordered folder ids; unknown/new folders follow in registry order
+  tabOrder: string[];                 // drag-persisted open-tab order; unknown/new tabs follow registry order
+  emptyFolderSinceMs: Record<string, number>; // epoch ms when each currently empty folder became empty
+  workspaces: Workspace[];            // workspace-owned navigation state
+  activeWorkspaceId: string;
+  sessionWorkspaceIds: Record<string, string>; // absent session ids belong to Default
+  workspacePaneKeepOpen: boolean;
+  terminalTheme: TerminalTheme;       // complete xterm ANSI palette
+  customHarnesses: HarnessDefinition[];
+  sessionHarnessIds: Record<string, string>; // custom harness identity for terminal records
 }
 
 export interface CliInfo { tool: Tool; found: boolean; version: string | null; path: string | null; }
@@ -283,6 +339,7 @@ export interface PtyReplay { data: string; throughSequence: number; cols: number
 | `rename_folder` | `{ folderId: string; name: string }` | `Folder` | |
 | `remove_folder` | `{ folderId: string }` | `void` | Stops + deletes all its sessions (UI shows the ack modal first). Async + `spawn_blocking`: it can wait on several PTY shutdowns. |
 | `launch_session` | `{ folderId: string; tool: Tool; cols: number; rows: number; title?: string; extraArgs?: string[]; codexProfile?: string }` | `Session` | Creates record (persisted before spawn), spawns the PTY at the measured xterm size, and starts discovery. Status `running`. `codexProfile` is valid only for Codex. |
+| `launch_custom_session` | `{ folderId: string; harnessId: string; cols: number; rows: number }` | `Session` | Creates a terminal-backed record, persists its harness mapping before spawn, expands only the supported argument placeholders, and launches the configured executable directly without a shell. |
 | `resume_session` | `{ sessionId: string; cols: number; rows: number }` | `Session` | Spawns the exact saved AI session by `cliSessionId`, or shell+scrollback for `terminal`, at the measured xterm size. Missing AI IDs return `SESSION_ID_UNAVAILABLE`; provider pickers are never opened. On Windows, Codex rollout sharing is checked before spawn and an existing writer returns `CODEX_ACTIVE_WRITER` without opening a fallback TUI. |
 | `repair_session_identity` | `{ sessionId: string; cols: number; rows: number }` | `Session` | For a stopped AI record with no `cliSessionId`, starts a new provider conversation in the same record, persists a pre-assigned ID before spawn or starts normal discovery, and returns the now-running record. It never creates a second Anchor session. |
 | `fork_codex_session` | `{ sessionId: string; cols: number; rows: number }` | `Session` | Creates and persists a new Anchor record, then runs `codex fork <sourceCliSessionId>` at the measured xterm size and discovers the fork's new ID. The source must be a stopped Codex record with a saved ID. No picker and no automatic resume fallback. |
@@ -291,7 +348,7 @@ export interface PtyReplay { data: string; throughSequence: number; cols: number
 | `stop_session` | `{ sessionId: string }` | `void` | Graceful kill (SIGTERM → SIGKILL after 5 s; ConPTY close on Windows). Async + `spawn_blocking` so the graceful wait never blocks the native UI thread. |
 | `delete_session` | `{ sessionId: string }` | `void` | Stops if ON; removes record + scrollback file. If shutdown reports a late completion error after the PTY is confirmed dead, deletion still completes. If the PTY remains live after the first shutdown error, Anchor retries shutdown once so one Delete action can finish an in-progress ConPTY teardown. Async + `spawn_blocking`. |
 | `rename_session` | `{ sessionId: string; title: string }` | `Session` | |
-| `set_session_id` | `{ sessionId: string; cliSessionId: string }` | `Session` | Replaces the provider ID on a stopped AI record after bounded command-safe validation. Terminal and live-session changes are rejected. |
+| `set_session_id` | `{ sessionId: string; cliSessionId: string }` | `Session` | Replaces the provider ID on a stopped built-in AI record or custom-harness record after bounded command-safe validation. Plain generic terminals and live-session changes are rejected. |
 | `generate_session_title` | `{ sessionId: string; message: string }` | `Session` | Blocking-worker request to the harness's hidden reusable title session. Renames only a still-default visible title and emits `session:updated`; title-agent IDs stay outside the visible registry. |
 | `set_tab_open` | `{ sessionId: string; open: boolean }` | `void` | Frontend reports tab open/close so `wasOpenInTab` persists for auto-restore. The sole close lifecycle command: with `stopOnClose` it also stops the PTY, so the frontend must not additionally call `stop_session`. Async + `spawn_blocking`. |
 | `write_pty` | `{ sessionId: string; data: string }` | `void` | Keystrokes (UTF-8). |
@@ -318,31 +375,37 @@ Errors: commands reject with a string error code + message, e.g. `"CLI_NOT_FOUND
 
 ---
 
-## 7. Settings surface (per mock, Settings view sections)
+## 7. Settings surface (full-page view)
 
 - The Settings navigation shows the packaged Anchor version so users can identify the installed build.
-- **General:** Default shell (text input; on Windows, new and legacy-default settings prefer `pwsh.exe`, the current PowerShell host, when installed and otherwise use `powershell.exe`); Environment variables (key/value list, values masked, stored locally only — **never committed anywhere**); toggles: Auto-restore sessions on launch, Confirm before closing a running session, Stop session when its tab is closed, Notify when a session needs attention (`notifyOnWaiting`). Every persisted setting must have a control here: the badge-only default is a choice the user makes, not one the absence of a toggle makes for them.
+- **General:** Default shell; projects directory; masked environment variables; auto-restore, close confirmation, stop-on-close, and keep-workspace-rail-open controls.
+- **Appearance:** Flat dark themes, accent color, and compact/comfortable density.
+- **Notifications:** OS waiting notification and response-read delay (Instant / 1 second / 2.5 seconds / 5 seconds).
+- **Terminal:** font size plus the complete editable xterm ANSI palette with a live preview.
+- **Harnesses:** read-only built-ins plus create/edit/remove for custom typed executable definitions. Argument arrays support `{projectPath}`, `{sessionId}`, and `{dataDirectory}`; no shell command strings are accepted.
 - **Persistence & Backup:** persisted-session count callout; Backup location (path input + Browse); Save & restore terminal scrollback toggle; Scrollback retention slider (1–90 days); Export sessions… / Import… buttons.
-- **Appearance:** Theme radio (Graphite / Obsidian / Nebula — all dark; they vary background tint); Accent color swatches; Density radio (Comfortable / Compact); Terminal font size slider (11–18 px) with live preview line.
 - **Keyboard Shortcuts:** read-only list: ⌘K command palette · ⌘, settings · ⌘W close tab · ⌃⇥ next/prev tab · ⌘↩ resume session under cursor · ⌘T new generic terminal · ⌘F focus filter. (Ctrl on Windows/Linux.)
+- **About:** packaged application version and runtime.
 
 ---
 
 ## 8. Frontend spec
 
-**The mock `docs/Anchor.dc.html` is the authoritative UI spec** — layout, spacing, colors, typography, interactions, empty states, menus, modals, and copy must match it. Open it in a browser to see live behavior (it is a self-contained interactive prototype; its inline JS shows exact intended interaction logic, including the status model comment block). Key inventory:
+**The mock `docs/Anchor-Implementation-Mock.html` is the authoritative UI spec** — layout, spacing, colors, typography, interactions, empty states, menus, modals, and copy must match it. Key inventory:
 
-- **Window chrome bar** (38 px): app mark + "Anchor", centered active folder path (JetBrains Mono), traffic-light placeholders (use native window controls per-platform; overlay/hidden-title-bar style).
-- **Sidebar** (298 px): filter input with ⌘K chip; folder groups — enlarged clickable name for collapse (renamable inline), session count, no visible folder path or collapse marker, hover `⋯` menu (Rename group / Copy folder path / Remove group → ack-checkbox modal), `+` quick-launch menu (the 4 AI CLIs + Generic terminal, "Launch in <folder>"); indented session rows — tool badge, title (renamable inline), status dot, hover actions (✕ delete with confirm popover: "Delete this session? Its saved session ID will be removed.", `⋯` menu: Rename session / Copy session ID / Set session ID for stopped AI sessions); right-clicking a session row opens that same `⋯` menu; footer — running/waiting/stopped counts + Settings button.
-- **Tab strip:** open sessions, badge + title + dot + ×, `+` opens the New-session wizard.
+- **Window toolbar** (45 px): app mark + "Anchor", workspace/project breadcrumb (folder paths are hidden), Search, and New session.
+- **Workspace rail** (188 px, collapsed by default): pinned and other workspaces, search, create/manage actions, archive/restore, and session drop targets. Selecting a workspace collapses the rail unless `workspacePaneKeepOpen` is enabled. Projects remain shared; workspaces own visible sessions, favorites, tabs, folder order/collapse state, and search text. A session can move between workspaces without changing its Anchor ID or provider ID.
+- **Session sidebar** (236 px): workspace switcher, search, **Favorites**, **All chats**, and **Hidden**. Project names and their child chat titles share an alignment rail; folder paths, per-project counts, and tool badges are hidden. Folder groups remain drag-reorderable and keep their quick-launch/options controls. Session hover actions and right-click menus retain the close/delete/favorite/rename/session-ID behavior.
+- **Tab strip:** workspace-scoped, drag-reorderable open sessions with title + blue unread-response indicator + ×; idle gray dots and tool badges are not rendered. `+` follows the tabs and opens the New-session wizard.
 - **New-session wizard** (three steps). Opening from a folder's quick-launch `+`
   jumps straight to `tool`; opening from the tab strip or ⌘O starts at `folder`,
   so a cold start with no folders is recoverable:
-  1. **folder** — "Folders already in Anchor" (name, path, session count) plus
-     "Add a folder": *Choose an existing folder…* (⌘O) and *Create a new project*.
+  1. **folder** — "Add a folder" first: *Choose an existing folder…* (⌘O)
+     and *Create a new project*. "Folders already in Anchor" (name, path,
+     session count) appears below those actions.
   2. **create** — project name input, live "will be created at
      `<projectsDir>/<name>`" preview, Create disabled until non-empty.
-  3. **tool** — the chosen folder with a Change button, then the five CLIs.
+  3. **tool** — the chosen folder with a Change button, then the five built-ins and every enabled custom harness.
 
   *Choose an existing folder…* calls `pick_folder`, which opens the **native OS
   folder picker** rather than an in-app browser. Cancelling leaves the wizard on
@@ -351,34 +414,36 @@ Errors: commands reject with a string error code + message, e.g. `"CLI_NOT_FOUND
   (The mock draws an in-app browser for this step; the native picker was chosen
   deliberately over it — less code and the dialog users already know.)
 - **Main pane:** live terminal (xterm.js, JetBrains Mono, `fontSize` setting) for ON sessions; **Resume card** for stopped ones — badge, title, folder path, "Saved session — ready to resume" panel (session id / model / last active), gradient "↻ Resume session" button, "Restored from <backupPath>" footnote. A missing AI ID replaces Resume with "Start new chat in this session", which repairs that same record instead of opening a picker or creating another record. Empty state when no tabs: "No session open · Press ⌘K …".
-- **Status bar:** active session badge/title/tool·model, session-id chip with copy, status chip, Stop button (only when `stopOnClose` is off and session is ON), right side: counts + shortcut hints.
+- **Status bar:** active title/tool·model, session-id chip with copy, status chip, Stop button (only when `stopOnClose` is off and session is ON), and shortcut hints. Global open/unread counts and tool badges are omitted.
 - **Command palette (⌘K):** fuzzy filter over sessions (title, folder, tool); Enter jumps/opens tab.
 - **Toasts:** "Session ID copied" / "Folder path copied" style, bottom-center.
-- **Theming:** dark-only; accent gradient `--acc2 → --acc` (defaults `#8a3fd0 → #d6417a`); glass blur; design tokens exactly as the mock's CSS vars. Badges/colors per tool as in mock (`cc` orange, `cx` green, `co` blue, `oc` purple, `›_` neutral).
-- **Sorting (spec addition):** session rows are ordered by **user activity**
-  within their folder. Typing into a session's terminal moves it to the top of
-  its folder; the next most recently typed-in session follows, and so on.
-  Sessions the user has never typed into keep registry order below those.
+- **Theming:** dark-only, flat opaque surfaces, no decorative gradients, default accent `#88a99d`, and a terminal surface one shade darker than its surrounding deck.
+- **Sorting (spec addition):** session rows are ordered by **submitted user
+  messages** within their folder. Pressing Enter on a non-empty input moves
+  that session to the top of its folder; the next most recently submitted-to
+  session follows, and so on. Merely typing, focusing, or selecting does not
+  reorder anything. Sessions the user has never submitted into keep registry
+  order below those.
 
   Ordering must not depend on `status`. The idle detector flips ON sessions
   between `running` and `waiting` every few seconds (§4), so ranking by status
   made rows reshuffle on their own while the user was reading them. Selecting a
-  row or a tab does not reorder it either — only keystrokes do, taken from
-  xterm's `onData`, which never fires for PTY output. Attention is conveyed by
-  the status dot rather than by position.
+  row or a tab does not reorder it either. Completed input submissions are
+  reconstructed from xterm's `onData`, which never receives PTY output.
+  Attention is conveyed by the response indicator rather than by position.
 
 Frontend architecture requirements:
 - **Custom, extensible component library:** all UI is built from an in-repo
   component library at `src/components/lib/` — no external UI kit (no MUI,
   shadcn, Radix, etc.). Requirements:
   - Primitives derived from the mock's recurring patterns — at minimum:
-    `GlassPanel`, `Button` (incl. gradient variant), `IconButton`, `Badge`
-    (tool badge), `StatusDot`, `Toggle`, `RadioGroup`, `Slider`, `TextInput`,
+    `GlassPanel`, `Button`, `IconButton`, `Badge`, `AttentionDot`, `Toggle`,
+    `RadioGroup`, `Slider`, `TextInput`,
     `Menu`/`MenuItem` (the `⋯`/`+` popovers), `Modal`, `ConfirmPopover`,
     `Toast`, `Tab`, `SidebarRow`, `Tooltip`.
   - Styled exclusively via design tokens (`src/components/lib/tokens.ts` +
-    CSS variables) extracted from the mock — accent/gradient, glass blur,
-    surface alphas, radii, typography, status colors — so theme/accent/density
+    CSS variables) extracted from the mock — accent, opaque surfaces, radii,
+    typography, attention colors — so theme/accent/density
     settings flow through tokens, not per-component overrides.
   - Extensible by construction: variants via props, `className`/style
     pass-through, composition over configuration; components are app-agnostic
@@ -514,12 +579,13 @@ Frontend architecture requirements:
   request succeeds, and not at all if the tab was reopened while it was in
   flight.
 
-- When `confirmClose` is enabled and the session is ON, closing asks first and
-  issues no lifecycle command until the user answers. The gate belongs to the
-  close action itself, not to the tab strip, so every entry point — the tab's
-  close button and ⌘W — is guarded by one decision. Confirming closes on the
-  same immediate path above; dismissing leaves the session untouched. Sessions
-  that are not ON never prompt, because closing their tab stops nothing.
+- When `confirmClose` and `stopOnClose` are enabled, closing asks first only
+  while a submitted AI prompt is still awaiting its response. A live but idle
+  CLI, a completed response, a generic terminal, or unknown activity closes
+  without a warning. The gate belongs to the close action itself, not to the
+  tab strip, so the tab close button and ⌘W share one decision. Confirming
+  closes on the same immediate path above; dismissing leaves the session
+  untouched.
 
 ---
 
@@ -535,7 +601,7 @@ Frontend architecture requirements:
 **Testing:**
 - Rust unit tests: adapter command construction; codex jsonl parsing + opencode sqlite query against **fixture files** checked into `src-tauri/tests/fixtures/` (synthetic data only); registry atomic-write round-trip; version 1 → 2 migration with exact `cliSessionId` preservation; corrupt/missing-primary recovery; checksum rejection; future-version refusal; ten-generation retention; settings-path recovery; status heuristic (bell, idle-after-burst).
 - Rust integration test: spawn a fake CLI script that writes a fake session file → assert discovery → kill → assert resume command.
-- Frontend: vitest component tests for sidebar/status logic against the mock IPC; type-level guarantee that `types.ts` matches command signatures.
+- Frontend: vitest component tests for stable selection order, submit-only chat promotion, favorite persistence, folder and tab drag ordering, 12-hour empty-folder hiding, add-folder-first chooser order, open-tab-only gray/blue attention, delayed read clearing, and the remaining sidebar/status logic against the mock IPC; type-level guarantee that `types.ts` matches command signatures.
 - Manual E2E per real CLI before release: launch → converse → quit app → relaunch → resume → verify conversation intact.
 
 ---
@@ -558,7 +624,7 @@ Acceptance: `cargo test` green; manual smoke: `launch_session`(claude) → regis
 **Do not touch `src/` (frontend) except `src/ipc/types.ts` — and only with a matching spec update.**
 
 ### Phase 3 — Frontend
-Implement §8 to the mock, wired to the §6 contract (real backend by default, `VITE_IPC=mock` for browser dev). **Build the custom extensible component library first** (§8 "Frontend architecture requirements" — tokens, primitives, gallery page), then compose all views/interactions/shortcuts/settings from it; xterm integration; waiting-first sorting; toasts; palette.
+Implement §8 to the mock, wired to the §6 contract (real backend by default, `VITE_IPC=mock` for browser dev). **Build the custom extensible component library first** (§8 "Frontend architecture requirements" — tokens, primitives, gallery page), then compose all views/interactions/shortcuts/settings from it; xterm integration; submit-activity sorting; toasts; palette.
 Acceptance: visual parity with the mock at 1440×900; every screen composed from the `src/components/lib/` library (no one-off styled elements where a primitive exists); gallery page renders all components; all interactions in §8 work against the real backend; `npm run build` + vitest green.
 **Do not touch `src-tauri/` except to register nothing — backend is done; report contract gaps instead of hacking around them.**
 

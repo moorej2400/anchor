@@ -22,13 +22,37 @@ import {
   onSessionStatus,
   onSessionUpdated,
 } from "../ipc/events";
-import type { CliInfo, Folder, PtyReplay, Session, Settings, Tool } from "../ipc/types";
-import { isOn } from "./selectors";
+import type {
+  CliInfo,
+  Folder,
+  HarnessDefinition,
+  PtyReplay,
+  Session,
+  Settings,
+  Tool,
+  Workspace,
+} from "../ipc/types";
+import { isOn, orderIds, reconcileEmptyFolderSinceMs } from "./selectors";
 import { applyTheme } from "./theme";
 import { TerminalManager } from "./terminals";
 import { SubmittedPromptCapture } from "./titleInput";
+import {
+  DEFAULT_TERMINAL_THEME,
+  DEFAULT_WORKSPACE,
+  activeWorkspace,
+  replaceWorkspace,
+  workspaceIdForSession,
+} from "./workspaces";
 
-export type SettingsSection = "general" | "persistence" | "appearance" | "shortcuts";
+export type SettingsSection =
+  | "general"
+  | "appearance"
+  | "notifications"
+  | "terminal"
+  | "harnesses"
+  | "persistence"
+  | "shortcuts"
+  | "about";
 export type View = "terminal" | "settings";
 
 export interface OperationError {
@@ -56,10 +80,19 @@ interface State {
   codexProfiles: string[];
   openTabs: string[];
   activeId: string | null;
-  /** Sidebar ordering: session id → sequence of the last keystroke sent to it. */
-  typedOrder: Record<string, number>;
-  /** Monotonic counter backing `typedOrder`. */
-  typeSeq: number;
+  /** A neighbor selected by closing a tab is not evidence that the user read it. */
+  autoSelectedId: string | null;
+  /** Sidebar ordering: session id → sequence of the last submitted input. */
+  submittedOrder: Record<string, number>;
+  /** Monotonic counter backing `submittedOrder`. */
+  submissionSeq: number;
+  /** Sessions waiting for the completion of an input the user submitted. */
+  awaitingResponses: Record<string, true>;
+  /** Completed background responses that have not met the read-delay rule. */
+  unreadResponses: Record<string, true>;
+  workspacePaneOpen: boolean;
+  /** Search text follows its workspace instead of leaking between contexts. */
+  workspaceFilters: Record<string, string>;
   view: View;
   settingsSection: SettingsSection;
   filter: string;
@@ -67,7 +100,7 @@ interface State {
   newSessionOpen: boolean;
   /** When set, the wizard skips the folder step and launches into this folder. */
   newSessionFolderId: string | null;
-  /** Tab awaiting close confirmation, when `confirmClose` guards a live session. */
+  /** Tab awaiting close confirmation while an AI response is in progress. */
   closeConfirmId: string | null;
   /** The latest failed launch stays visible until the user retries or dismisses it. */
   launchError: LaunchError | null;
@@ -91,8 +124,20 @@ const DEFAULT_SETTINGS: Settings = {
   theme: "graphite",
   density: "comfortable",
   fontSize: 13,
-  accent: "#d6417a",
+  accent: "#88a99d",
   notifyOnWaiting: false,
+  responseReadDelayMs: 1000,
+  favoriteSessionIds: [],
+  folderOrder: [],
+  tabOrder: [],
+  emptyFolderSinceMs: {},
+  workspaces: [DEFAULT_WORKSPACE],
+  activeWorkspaceId: DEFAULT_WORKSPACE.id,
+  sessionWorkspaceIds: {},
+  workspacePaneKeepOpen: false,
+  terminalTheme: DEFAULT_TERMINAL_THEME,
+  customHarnesses: [],
+  sessionHarnessIds: {},
 };
 
 const initialState: State = {
@@ -105,8 +150,13 @@ const initialState: State = {
   codexProfiles: [],
   openTabs: [],
   activeId: null,
-  typedOrder: {},
-  typeSeq: 0,
+  autoSelectedId: null,
+  submittedOrder: {},
+  submissionSeq: 0,
+  awaitingResponses: {},
+  unreadResponses: {},
+  workspacePaneOpen: false,
+  workspaceFilters: {},
   view: "terminal",
   settingsSection: "general",
   filter: "",
@@ -121,6 +171,12 @@ const initialState: State = {
   fatalError: null,
 };
 
+function sessionUsesAiHarness(settings: Settings, session: Session): boolean {
+  if (session.tool !== "terminal") return true;
+  const harnessId = settings.sessionHarnessIds[session.id];
+  return settings.customHarnesses.some((harness) => harness.id === harnessId && harness.kind === "ai");
+}
+
 type Action =
   | { type: "HYDRATE"; folders: Folder[]; sessions: Session[]; settings: Settings; clis: CliInfo[]; codexProfiles: string[]; openTabs: string[]; activeId: string | null }
   | { type: "RECONCILE_SESSIONS"; sessions: Session[] }
@@ -130,10 +186,12 @@ type Action =
   | { type: "UPSERT_FOLDER"; folder: Folder }
   | { type: "REMOVE_FOLDER"; id: string }
   | { type: "OPEN_TAB"; id: string }
+  | { type: "REORDER_TABS"; workspaceId: string; ids: string[] }
   | { type: "CLOSE_TAB"; id: string }
   | { type: "RESTORE_TAB"; id: string }
   | { type: "SET_ACTIVE"; id: string | null }
-  | { type: "SESSION_TYPED"; id: string }
+  | { type: "SESSION_SUBMITTED"; id: string; expectResponse: boolean }
+  | { type: "MARK_RESPONSE_READ"; id: string }
   | { type: "SET_VIEW"; view: View }
   | { type: "SET_SETTINGS_SECTION"; section: SettingsSection }
   | { type: "SET_FILTER"; value: string }
@@ -144,6 +202,8 @@ type Action =
   | { type: "SET_RESUME_ERROR"; id: string; error: OperationError | null }
   | { type: "SET_TOAST"; text: string | null }
   | { type: "SET_SETTINGS"; settings: Settings }
+  | { type: "SET_WORKSPACE_PANE"; open: boolean }
+  | { type: "SWITCH_WORKSPACE"; id: string; activeId: string | null }
   | { type: "SET_WAITING"; count: number }
   | { type: "BOOT_READY" }
   | { type: "FATAL"; message: string };
@@ -164,20 +224,27 @@ function applyBootSessionAction(sessions: Session[], action: BootSessionAction):
   );
 }
 
-/** Drop deleted sessions from the typed-order map so it can't grow unbounded. */
-function withoutIds(
-  typedOrder: Record<string, number>,
+/** Drop deleted sessions from ephemeral per-session maps so they cannot grow unbounded. */
+function withoutIds<T>(
+  values: Record<string, T>,
   ids: string[],
-): Record<string, number> {
-  if (!ids.some((id) => id in typedOrder)) return typedOrder;
-  const next = { ...typedOrder };
+): Record<string, T> {
+  if (!ids.some((id) => id in values)) return values;
+  const next = { ...values };
   for (const id of ids) delete next[id];
   return next;
 }
 
-function pickAdjacent(openTabs: string[], closingId: string): string | null {
-  const i = openTabs.indexOf(closingId);
-  const remaining = openTabs.filter((t) => t !== closingId);
+function pickAdjacent(
+  openTabs: string[],
+  closingId: string,
+  sessions: Session[],
+  settings: Settings,
+): string | null {
+  const workspaceId = workspaceIdForSession(settings, closingId);
+  const visible = openTabs.filter((id) => workspaceIdForSession(settings, id) === workspaceId);
+  const i = visible.indexOf(closingId);
+  const remaining = visible.filter((id) => id !== closingId && sessions.some((session) => session.id === id));
   if (remaining.length === 0) return null;
   return remaining[Math.min(i, remaining.length - 1)] ?? null;
 }
@@ -195,6 +262,8 @@ function reducer(state: State, action: Action): State {
         codexProfiles: action.codexProfiles,
         openTabs: action.openTabs,
         activeId: action.activeId,
+        workspacePaneOpen: action.settings.workspacePaneKeepOpen,
+        filter: state.workspaceFilters[action.settings.activeWorkspaceId] ?? "",
       };
     case "RECONCILE_SESSIONS": {
       const ids = new Set(action.sessions.map((session) => session.id));
@@ -202,9 +271,12 @@ function reducer(state: State, action: Action): State {
         .filter((session) => !ids.has(session.id))
         .map((session) => session.id);
       const openTabs = state.openTabs.filter((id) => ids.has(id));
+      const workspaceTabs = openTabs.filter((id) =>
+        workspaceIdForSession(state.settings, id) === state.settings.activeWorkspaceId
+      );
       const activeId = state.activeId && ids.has(state.activeId)
         ? state.activeId
-        : openTabs[openTabs.length - 1] ?? null;
+        : workspaceTabs[workspaceTabs.length - 1] ?? null;
       const resumeErrors = Object.fromEntries(
         Object.entries(state.resumeErrors).filter(([id]) => ids.has(id)),
       );
@@ -213,7 +285,9 @@ function reducer(state: State, action: Action): State {
         sessions: action.sessions,
         openTabs,
         activeId,
-        typedOrder: withoutIds(state.typedOrder, removedIds),
+        submittedOrder: withoutIds(state.submittedOrder, removedIds),
+        awaitingResponses: withoutIds(state.awaitingResponses, removedIds),
+        unreadResponses: withoutIds(state.unreadResponses, removedIds),
         resumeErrors,
         closeConfirmId: state.closeConfirmId && ids.has(state.closeConfirmId)
           ? state.closeConfirmId
@@ -231,23 +305,41 @@ function reducer(state: State, action: Action): State {
     }
     case "REMOVE_SESSION": {
       const active =
-        state.activeId === action.id ? pickAdjacent(state.openTabs, action.id) : state.activeId;
+        state.activeId === action.id
+          ? pickAdjacent(state.openTabs, action.id, state.sessions, state.settings)
+          : state.activeId;
       return {
         ...state,
         sessions: state.sessions.filter((s) => s.id !== action.id),
         openTabs: state.openTabs.filter((t) => t !== action.id),
         activeId: active,
-        typedOrder: withoutIds(state.typedOrder, [action.id]),
+        autoSelectedId: state.activeId === action.id
+          ? active
+          : state.autoSelectedId === action.id ? null : state.autoSelectedId,
+        submittedOrder: withoutIds(state.submittedOrder, [action.id]),
+        awaitingResponses: withoutIds(state.awaitingResponses, [action.id]),
+        unreadResponses: withoutIds(state.unreadResponses, [action.id]),
         closeConfirmId: state.closeConfirmId === action.id ? null : state.closeConfirmId,
       };
     }
-    case "SET_STATUS":
+    case "SET_STATUS": {
+      let awaitingResponses = state.awaitingResponses;
+      let unreadResponses = state.unreadResponses;
+      if ((action.status === "waiting" || action.status === "stopped") && awaitingResponses[action.id]) {
+        awaitingResponses = withoutIds(awaitingResponses, [action.id]);
+        if (state.openTabs.includes(action.id) && state.activeId !== action.id) {
+          unreadResponses = { ...unreadResponses, [action.id]: true };
+        }
+      }
       return {
         ...state,
         sessions: state.sessions.map((s) =>
           s.id === action.id ? { ...s, status: action.status } : s,
         ),
+        awaitingResponses,
+        unreadResponses,
       };
+    }
     case "UPSERT_FOLDER": {
       const exists = state.folders.some((f) => f.id === action.folder.id);
       return {
@@ -260,17 +352,21 @@ function reducer(state: State, action: Action): State {
     case "REMOVE_FOLDER": {
       const ids = new Set(state.sessions.filter((s) => s.folderId === action.id).map((s) => s.id));
       const openTabs = state.openTabs.filter((t) => !ids.has(t));
-      const active =
-        state.activeId && ids.has(state.activeId)
-          ? openTabs[openTabs.length - 1] ?? null
-          : state.activeId;
+      const workspaceTabs = openTabs.filter((id) =>
+        workspaceIdForSession(state.settings, id) === state.settings.activeWorkspaceId
+      );
+      const active = state.activeId && ids.has(state.activeId)
+        ? workspaceTabs[workspaceTabs.length - 1] ?? null
+        : state.activeId;
       return {
         ...state,
         folders: state.folders.filter((f) => f.id !== action.id),
         sessions: state.sessions.filter((s) => s.folderId !== action.id),
         openTabs,
         activeId: active,
-        typedOrder: withoutIds(state.typedOrder, [...ids]),
+        submittedOrder: withoutIds(state.submittedOrder, [...ids]),
+        awaitingResponses: withoutIds(state.awaitingResponses, [...ids]),
+        unreadResponses: withoutIds(state.unreadResponses, [...ids]),
       };
     }
     case "OPEN_TAB": {
@@ -280,15 +376,28 @@ function reducer(state: State, action: Action): State {
       // A launch error is a transient pane overlay. Selecting any real session
       // must restore that session's terminal or Resume card instead of leaving
       // an unrelated failed launch on top of it.
-      return { ...state, openTabs, activeId: action.id, view: "terminal", paletteOpen: false, launchError: null };
+      return {
+        ...state,
+        openTabs,
+        activeId: action.id,
+        autoSelectedId: null,
+        view: "terminal",
+        paletteOpen: false,
+        launchError: null,
+      };
     }
     case "CLOSE_TAB": {
       const active =
-        state.activeId === action.id ? pickAdjacent(state.openTabs, action.id) : state.activeId;
+        state.activeId === action.id
+          ? pickAdjacent(state.openTabs, action.id, state.sessions, state.settings)
+          : state.activeId;
       return {
         ...state,
         openTabs: state.openTabs.filter((t) => t !== action.id),
         activeId: active,
+        // Closing the current tab can expose an unread neighbor without any
+        // user intent to read it. Only an explicit selection makes it eligible.
+        autoSelectedId: state.activeId === action.id ? active : state.autoSelectedId,
         // The tab this prompt belonged to is gone; never leave it orphaned on
         // a tab index some other session now occupies.
         closeConfirmId: state.closeConfirmId === action.id ? null : state.closeConfirmId,
@@ -300,24 +409,63 @@ function reducer(state: State, action: Action): State {
       const openTabs = state.openTabs.includes(action.id)
         ? state.openTabs
         : [...state.openTabs, action.id];
-      return { ...state, openTabs, activeId: state.activeId ?? action.id };
+      return {
+        ...state,
+        openTabs,
+        activeId: state.activeId ?? action.id,
+        autoSelectedId: state.activeId === null ? action.id : state.autoSelectedId,
+      };
     }
     case "SET_ACTIVE":
       return { ...state, activeId: action.id, view: "terminal", launchError: null };
-    case "SESSION_TYPED": {
-      // Fires on every keystroke. Once a session already holds the newest
-      // sequence it is at the top of its folder and cannot move further, so
-      // return the same state and let React bail out of the re-render.
-      if (state.typedOrder[action.id] === state.typeSeq) return state;
-      const typeSeq = state.typeSeq + 1;
-      return { ...state, typeSeq, typedOrder: { ...state.typedOrder, [action.id]: typeSeq } };
+    case "SESSION_SUBMITTED": {
+      const submissionSeq = state.submissionSeq + 1;
+      return {
+        ...state,
+        submissionSeq,
+        submittedOrder: { ...state.submittedOrder, [action.id]: submissionSeq },
+        awaitingResponses: action.expectResponse
+          ? { ...state.awaitingResponses, [action.id]: true }
+          : withoutIds(state.awaitingResponses, [action.id]),
+        unreadResponses: withoutIds(state.unreadResponses, [action.id]),
+        autoSelectedId: state.autoSelectedId === action.id ? null : state.autoSelectedId,
+      };
     }
+    case "REORDER_TABS": {
+      const current = state.openTabs.filter((id) =>
+        workspaceIdForSession(state.settings, id) === action.workspaceId
+      );
+      const currentIds = new Set(current);
+      if (action.ids.length !== current.length
+        || action.ids.some((id) => !currentIds.has(id))
+        || new Set(action.ids).size !== action.ids.length) return state;
+      let replacement = 0;
+      return {
+        ...state,
+        openTabs: state.openTabs.map((id) =>
+          workspaceIdForSession(state.settings, id) === action.workspaceId
+            ? action.ids[replacement++] ?? id
+            : id
+        ),
+      };
+    }
+    case "MARK_RESPONSE_READ":
+      return state.unreadResponses[action.id]
+        ? { ...state, unreadResponses: withoutIds(state.unreadResponses, [action.id]) }
+        : state;
     case "SET_VIEW":
       return { ...state, view: action.view };
     case "SET_SETTINGS_SECTION":
       return { ...state, settingsSection: action.section };
     case "SET_FILTER":
-      return { ...state, filter: action.value };
+      return {
+        ...state,
+        filter: action.value,
+        workspaceFilters: {
+          ...state.workspaceFilters,
+          [state.settings.activeWorkspaceId]: action.value,
+        },
+      };
     case "SET_PALETTE":
       return { ...state, paletteOpen: action.open };
     case "SET_NEW_SESSION":
@@ -340,6 +488,18 @@ function reducer(state: State, action: Action): State {
       return { ...state, toast: action.text };
     case "SET_SETTINGS":
       return { ...state, settings: action.settings };
+    case "SET_WORKSPACE_PANE":
+      return { ...state, workspacePaneOpen: action.open };
+    case "SWITCH_WORKSPACE":
+      return {
+        ...state,
+        activeId: action.activeId,
+        autoSelectedId: action.activeId,
+        filter: state.workspaceFilters[action.id] ?? "",
+        view: "terminal",
+        paletteOpen: false,
+        launchError: null,
+      };
     case "SET_WAITING":
       return { ...state, waitingCount: action.count };
     case "BOOT_READY":
@@ -365,6 +525,22 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
   stateRef.current = state;
   const deletedSessionIds = useRef(new Set<string>());
   const titleInput = useRef(new SubmittedPromptCapture()).current;
+  const activeHasReadableResponse = state.activeId !== null
+    && state.autoSelectedId !== state.activeId
+    && Boolean(state.unreadResponses[state.activeId]);
+
+  useEffect(() => {
+    const id = state.activeId;
+    if (!id || !activeHasReadableResponse) return;
+    // A quick Ctrl+Tab pass is navigation, not reading. Clear only if this chat
+    // remains selected for the user's configured dwell time.
+    const timer = window.setTimeout(() => {
+      if (stateRef.current.activeId === id) {
+        dispatch({ type: "MARK_RESPONSE_READ", id });
+      }
+    }, state.settings.responseReadDelayMs);
+    return () => window.clearTimeout(timer);
+  }, [state.activeId, state.autoSelectedId, state.settings.responseReadDelayMs, activeHasReadableResponse]);
 
   // Toast auto-dismiss.
   const toastTimer = useRef<number | undefined>(undefined);
@@ -376,20 +552,31 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
 
   const terminals = useMemo(
     () => {
-      // This callback is xterm's onData — real user keystrokes only, never PTY
-      // output — so it is the right signal for activity-based sidebar order.
+      // xterm's onData contains only user input. Reordering and response
+      // attention wait for a completed line so browsing or partial typing can
+      // never move a sidebar row.
       const manager = new TerminalManager((sessionId, data) => {
-        dispatch({ type: "SESSION_TYPED", id: sessionId });
-        void ipc.writePty(sessionId, data).catch(() => {});
-        const message = titleInput.observe(sessionId, data);
-        const session = stateRef.current.sessions.find((candidate) => candidate.id === sessionId);
-        if (message && session && session.tool !== "terminal") {
-          void ipc.generateSessionTitle(sessionId, message).then((updated) => {
-            if (!deletedSessionIds.current.has(updated.id)) {
-              dispatch({ type: "UPSERT_SESSION", session: updated });
-            }
-          }).catch((error) => showToast(shortError(error)));
-        }
+        const prompt = titleInput.observe(sessionId, data);
+        void ipc.writePty(sessionId, data).then(() => {
+          if (!prompt || deletedSessionIds.current.has(sessionId)) return;
+          const session = stateRef.current.sessions.find((candidate) => candidate.id === sessionId);
+          if (!session) return;
+          dispatch({
+            type: "SESSION_SUBMITTED",
+            id: sessionId,
+            expectResponse: sessionUsesAiHarness(stateRef.current.settings, session),
+          });
+          if (prompt.titleMessage && session.tool !== "terminal") {
+            void ipc.generateSessionTitle(sessionId, prompt.titleMessage).then((updated) => {
+              if (!deletedSessionIds.current.has(updated.id)) {
+                dispatch({ type: "UPSERT_SESSION", session: updated });
+              }
+            }).catch((error) => showToast(shortError(error)));
+          }
+        }).catch(() => {
+          // The terminal owns write-error presentation; failed input must not
+          // count as a submitted message or arm response attention.
+        });
       },
       (sessionId, size) => ipc.resizePty(sessionId, size.cols, size.rows),
       (_sessionId, error) => showToast(`Terminal resize failed: ${shortError(error)}`));
@@ -479,6 +666,7 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
 
         applyTheme(settings);
+        terminals.setTheme(settings.terminalTheme);
         // The probe can exist before settings load. Update xterm itself, not
         // only the CSS variable, before measuring the grid used for restore.
         terminals.setFontSize(settings.fontSize);
@@ -493,6 +681,16 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
         const restoredTabs = restore
           ? hydratedSessions.filter((s) => s.wasOpenInTab).map((s) => s.id)
           : [];
+        const orderedRestoredTabs = settings.workspaces.flatMap((workspace) =>
+          orderIds(
+            restoredTabs.filter((id) => workspaceIdForSession(settings, id) === workspace.id),
+            workspace.tabOrder,
+          )
+        );
+        const initialWorkspace = activeWorkspace(settings);
+        const initialActiveId = orderedRestoredTabs.find((id) =>
+          workspaceIdForSession(settings, id) === initialWorkspace.id
+        ) ?? null;
         dispatch({
           type: "HYDRATE",
           folders: snapshot.folders,
@@ -500,8 +698,8 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
           settings,
           clis,
           codexProfiles,
-          openTabs: restoredTabs,
-          activeId: restoredTabs[0] ?? null,
+          openTabs: orderedRestoredTabs,
+          activeId: initialActiveId,
         });
         hydrated = true;
 
@@ -589,6 +787,21 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
     [terminals, showToast, titleInput],
   );
 
+  // Persist the start of each continuous empty interval. Deriving this from
+  // registry state also clears the timestamp as soon as a session is added.
+  useEffect(() => {
+    if (!state.loaded) return;
+    const next = reconcileEmptyFolderSinceMs(
+      state.folders,
+      state.sessions,
+      state.settings.emptyFolderSinceMs,
+      Date.now(),
+    );
+    if (next !== state.settings.emptyFolderSinceMs) {
+      void actions.updateSettings({ emptyFolderSinceMs: next });
+    }
+  }, [actions, state.folders, state.loaded, state.sessions, state.settings.emptyFolderSinceMs]);
+
   const value = useMemo<AnchorContextValue>(
     () => ({ state, terminals, actions }),
     [state, terminals, actions],
@@ -607,22 +820,38 @@ export function useAnchor(): AnchorContextValue {
 
 export interface Actions {
   selectSession(id: string): void;
+  reorderTabs(ids: string[]): Promise<void>;
   launch(tool: Tool, folderId: string, codexProfile?: string | null): Promise<void>;
+  launchCustomHarness(harnessId: string, folderId: string): Promise<void>;
   resume(id: string): Promise<void>;
   repairIdentity(id: string): Promise<void>;
   forkCodex(id: string): Promise<void>;
   closeTab(id: string): Promise<void>;
+  /** Sidebar minimize is an explicit no-warning close; lifecycle behavior stays in performClose. */
+  closeTabImmediately(id: string): Promise<void>;
   confirmCloseTab(): Promise<void>;
   cancelCloseTab(): void;
   stop(id: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
   renameSession(id: string, title: string): Promise<void>;
+  toggleFavoriteSession(id: string): Promise<void>;
   setSessionId(id: string, cliSessionId: string): Promise<boolean>;
   setCodexProfile(id: string, codexProfile: string | null): Promise<boolean>;
   addFolder(path: string): Promise<Folder | null>;
   createProject(name: string): Promise<Folder | null>;
   renameFolder(id: string, name: string): Promise<void>;
+  reorderFolders(folderIds: string[]): Promise<void>;
+  toggleFolderCollapsed(folderId: string): Promise<void>;
   removeFolder(id: string): Promise<void>;
+  toggleWorkspacePane(open?: boolean): void;
+  selectWorkspace(id: string): Promise<void>;
+  createWorkspace(name: string): Promise<Workspace | null>;
+  renameWorkspace(id: string, name: string): Promise<void>;
+  toggleWorkspacePinned(id: string): Promise<void>;
+  setWorkspaceArchived(id: string, archived: boolean): Promise<void>;
+  moveSessionToWorkspace(sessionId: string, workspaceId: string): Promise<void>;
+  saveHarness(harness: HarnessDefinition): Promise<void>;
+  removeHarness(id: string): Promise<void>;
   setFilter(value: string): void;
   openPalette(): void;
   closePalette(): void;
@@ -666,6 +895,70 @@ function makeActions(
     void setTabOpenOrdered(id, open).catch(() => {});
   };
 
+  // Settings controls can fire faster than React publishes the latest state.
+  // Keep one optimistic draft and serialize full-object writes so a quick
+  // favorite toggle or drag cannot overwrite another in-flight setting.
+  let settingsDraft: Settings | null = null;
+  let settingsWrite: Promise<void> = Promise.resolve();
+  let settingsRevision = 0;
+  const currentSettings = () => settingsDraft ?? stateRef.current.settings;
+  async function persistSettingsPatch(patch: Partial<Settings>): Promise<void> {
+    const previous = currentSettings();
+    const next = { ...previous, ...patch };
+    const revision = ++settingsRevision;
+    settingsDraft = next;
+    dispatch({ type: "SET_SETTINGS", settings: next });
+    applyTheme(next);
+    if (patch.fontSize !== undefined) terminals.setFontSize(patch.fontSize);
+    if (patch.terminalTheme !== undefined) terminals.setTheme(patch.terminalTheme);
+
+    const write = settingsWrite
+      .catch(() => {})
+      .then(async () => {
+        const saved = await ipc.setSettings(next);
+        if (revision === settingsRevision) {
+          settingsDraft = null;
+          dispatch({ type: "SET_SETTINGS", settings: saved });
+          applyTheme(saved);
+          terminals.setTheme(saved.terminalTheme);
+        }
+      });
+    settingsWrite = write.catch(() => {});
+    try {
+      await write;
+    } catch (error) {
+      if (revision === settingsRevision) {
+        settingsDraft = null;
+        dispatch({ type: "SET_SETTINGS", settings: previous });
+        applyTheme(previous);
+        terminals.setFontSize(previous.fontSize);
+        terminals.setTheme(previous.terminalTheme);
+      }
+      showToast(shortError(error));
+    }
+  }
+
+  const persistWorkspaceUpdate = async (
+    workspaceId: string,
+    update: (workspace: Workspace) => Workspace,
+    patch: Partial<Settings> = {},
+  ) => {
+    const settings = currentSettings();
+    await persistSettingsPatch({
+      ...patch,
+      workspaces: replaceWorkspace(settings, workspaceId, update),
+    });
+  };
+
+  const orderedOpenTabsForWorkspace = (workspaceId: string): string[] => {
+    const current = stateRef.current;
+    const workspace = current.settings.workspaces.find((item) => item.id === workspaceId);
+    const ids = current.openTabs.filter((id) =>
+      workspaceIdForSession(current.settings, id) === workspaceId
+    );
+    return orderIds(ids, workspace?.tabOrder ?? []);
+  };
+
   // Tabs with a close request still in flight, keyed to the token of the
   // request that owns them. Reopening a tab clears its token, so a close that
   // settles afterwards neither disposes the terminal nor undoes the reopen.
@@ -701,6 +994,12 @@ function makeActions(
       if (closingTabs.get(id) !== closeToken) return;
       await setTabOpenOrdered(id, false);
       if (closingTabs.get(id) !== closeToken) return;
+      const settings = currentSettings();
+      const workspaceId = workspaceIdForSession(settings, id);
+      await persistWorkspaceUpdate(workspaceId, (workspace) => ({
+        ...workspace,
+        tabOrder: workspace.tabOrder.filter((candidate) => candidate !== id),
+      }));
       closingTabs.delete(id);
       const resumedLive = resumeOperation?.spawned ?? false;
       if (session && (stopOnClose || (!resumedLive && !isOn(session.status)))) {
@@ -763,9 +1062,34 @@ function makeActions(
   return {
     selectSession(id) {
       closingTabs.delete(id);
-      const already = stateRef.current.openTabs.includes(id);
+      const current = stateRef.current;
+      const already = current.openTabs.includes(id);
+      const workspaceId = workspaceIdForSession(current.settings, id);
+      const workspace = current.settings.workspaces.find((item) => item.id === workspaceId)
+        ?? DEFAULT_WORKSPACE;
+      const tabOrder = workspace.tabOrder.includes(id)
+        ? workspace.tabOrder
+        : [...workspace.tabOrder, id];
+      void persistWorkspaceUpdate(
+        workspaceId,
+        (item) => ({ ...item, tabOrder }),
+        { activeWorkspaceId: workspaceId },
+      );
+      if (workspaceId !== current.settings.activeWorkspaceId) {
+        dispatch({ type: "SWITCH_WORKSPACE", id: workspaceId, activeId: id });
+      }
+      if (!current.settings.workspacePaneKeepOpen) {
+        dispatch({ type: "SET_WORKSPACE_PANE", open: false });
+      }
       dispatch({ type: "OPEN_TAB", id });
       if (!already) persistTabOpen(id, true);
+    },
+    async reorderTabs(ids) {
+      const workspace = activeWorkspace(stateRef.current.settings);
+      const current = orderedOpenTabsForWorkspace(workspace.id);
+      if (ids.length === current.length && ids.every((id, index) => id === current[index])) return;
+      dispatch({ type: "REORDER_TABS", workspaceId: workspace.id, ids });
+      await persistWorkspaceUpdate(workspace.id, (item) => ({ ...item, tabOrder: ids }));
     },
     async launch(tool, folderId, codexProfile) {
       if (!stateRef.current.bootReady) {
@@ -781,6 +1105,19 @@ function makeActions(
         const session = codexProfile === undefined
           ? await ipc.launchSession(folderId, tool, terminalSize)
           : await ipc.launchSession(folderId, tool, terminalSize, undefined, undefined, codexProfile);
+        const settings = currentSettings();
+        const workspace = activeWorkspace(settings);
+        await persistWorkspaceUpdate(workspace.id, (item) => ({
+          ...item,
+          tabOrder: item.tabOrder.includes(session.id)
+            ? item.tabOrder
+            : [...item.tabOrder, session.id],
+        }), {
+          sessionWorkspaceIds: {
+            ...settings.sessionWorkspaceIds,
+            [session.id]: workspace.id,
+          },
+        });
         dispatch({ type: "SET_LAUNCH_ERROR", error: null });
         dispatch({ type: "UPSERT_SESSION", session });
         dispatch({ type: "OPEN_TAB", id: session.id });
@@ -790,6 +1127,50 @@ function makeActions(
         const error: LaunchError = { ...baseError, operation: "launch", folderId };
         dispatch({ type: "SET_LAUNCH_ERROR", error });
         showToast(error.message);
+      }
+    },
+    async launchCustomHarness(harnessId, folderId) {
+      if (!stateRef.current.bootReady) {
+        showToast("Anchor is still restoring sessions.");
+        return;
+      }
+      const harness = currentSettings().customHarnesses.find((item) => item.id === harnessId);
+      if (!harness || !harness.enabled) {
+        showToast("This custom harness is not available.");
+        return;
+      }
+      dispatch({ type: "SET_LAUNCH_ERROR", error: null });
+      dispatch({ type: "SET_VIEW", view: "terminal" });
+      try {
+        const terminalSize = await terminals.waitForViewport();
+        const session = await ipc.launchCustomSession(folderId, harnessId, terminalSize);
+        // The backend commits the harness/session relationship before spawning.
+        // Refresh first so the following workspace write cannot erase that mapping.
+        const refreshed = await ipc.getSettings();
+        settingsDraft = refreshed;
+        dispatch({ type: "SET_SETTINGS", settings: refreshed });
+        applyTheme(refreshed);
+        terminals.setTheme(refreshed.terminalTheme);
+        const workspace = activeWorkspace(refreshed);
+        await persistWorkspaceUpdate(workspace.id, (item) => ({
+          ...item,
+          tabOrder: item.tabOrder.includes(session.id)
+            ? item.tabOrder
+            : [...item.tabOrder, session.id],
+        }), {
+          sessionWorkspaceIds: {
+            ...refreshed.sessionWorkspaceIds,
+            [session.id]: workspace.id,
+          },
+        });
+        dispatch({ type: "UPSERT_SESSION", session });
+        dispatch({ type: "OPEN_TAB", id: session.id });
+        persistTabOpen(session.id, true);
+      } catch (error) {
+        const baseError = operationError("launch", "terminal", error);
+        const launchError: LaunchError = { ...baseError, operation: "launch", folderId };
+        dispatch({ type: "SET_LAUNCH_ERROR", error: launchError });
+        showToast(launchError.message);
       }
     },
     async resume(id) {
@@ -862,6 +1243,19 @@ function makeActions(
       try {
         const terminalSize = await terminals.waitForViewport();
         const session = await ipc.forkCodexSession(id, terminalSize);
+        const settings = currentSettings();
+        const workspaceId = workspaceIdForSession(settings, source.id);
+        await persistWorkspaceUpdate(workspaceId, (workspace) => ({
+          ...workspace,
+          tabOrder: workspace.tabOrder.includes(session.id)
+            ? workspace.tabOrder
+            : [...workspace.tabOrder, session.id],
+        }), {
+          sessionWorkspaceIds: {
+            ...settings.sessionWorkspaceIds,
+            [session.id]: workspaceId,
+          },
+        });
         dispatch({ type: "SET_RESUME_ERROR", id, error: null });
         dispatch({ type: "UPSERT_SESSION", session });
         dispatch({ type: "OPEN_TAB", id: session.id });
@@ -874,15 +1268,22 @@ function makeActions(
         forkingSessions.delete(id);
       }
     },
-    // Closing a live session kills a running CLI, so `confirmClose` guards it.
-    // The gate lives here rather than in the tab strip so every entry point —
-    // the tab's close button and ⌘W alike — goes through one decision.
+    // A live CLI can sit idle indefinitely. Warn only when Anchor has an armed
+    // AI response and this close would stop it; unknown activity fails open.
+    // The gate stays here so the tab button and ⌘W share one decision.
     async closeTab(id) {
-      const session = stateRef.current.sessions.find((candidate) => candidate.id === id);
-      if (stateRef.current.settings.confirmClose && session && isOn(session.status)) {
+      const current = stateRef.current;
+      if (
+        current.settings.confirmClose
+        && current.settings.stopOnClose
+        && current.awaitingResponses[id]
+      ) {
         dispatch({ type: "SET_CLOSE_CONFIRM", id });
         return;
       }
+      await performClose(id);
+    },
+    async closeTabImmediately(id) {
       await performClose(id);
     },
     async confirmCloseTab() {
@@ -924,6 +1325,20 @@ function makeActions(
       try {
         await ipc.deleteSession(id);
         titleInput.forget(id);
+        const settings = currentSettings();
+        await persistSettingsPatch({
+          workspaces: settings.workspaces.map((workspace) => ({
+            ...workspace,
+            favoriteSessionIds: workspace.favoriteSessionIds.filter((candidate) => candidate !== id),
+            tabOrder: workspace.tabOrder.filter((candidate) => candidate !== id),
+          })),
+          sessionWorkspaceIds: Object.fromEntries(
+            Object.entries(settings.sessionWorkspaceIds).filter(([sessionId]) => sessionId !== id),
+          ),
+          sessionHarnessIds: Object.fromEntries(
+            Object.entries(settings.sessionHarnessIds).filter(([sessionId]) => sessionId !== id),
+          ),
+        });
       } catch (e) {
         deletedSessionIds.delete(id);
         terminals.allowOutput(id);
@@ -953,6 +1368,17 @@ function makeActions(
       } catch (e) {
         showToast(shortError(e));
       }
+    },
+    async toggleFavoriteSession(id) {
+      const settings = currentSettings();
+      const workspaceId = workspaceIdForSession(settings, id);
+      const workspace = settings.workspaces.find((item) => item.id === workspaceId)
+        ?? DEFAULT_WORKSPACE;
+      const favorites = workspace.favoriteSessionIds;
+      const favoriteSessionIds = favorites.includes(id)
+        ? favorites.filter((candidate) => candidate !== id)
+        : [...favorites, id];
+      await persistWorkspaceUpdate(workspaceId, (item) => ({ ...item, favoriteSessionIds }));
     },
     async setSessionId(id, cliSessionId) {
       try {
@@ -1005,12 +1431,30 @@ function makeActions(
         showToast(shortError(e));
       }
     },
+    async reorderFolders(folderIds) {
+      const known = new Set(stateRef.current.folders.map((folder) => folder.id));
+      if (
+        folderIds.length !== known.size
+        || new Set(folderIds).size !== known.size
+        || folderIds.some((id) => !known.has(id))
+      ) return;
+      const workspace = activeWorkspace(currentSettings());
+      await persistWorkspaceUpdate(workspace.id, (item) => ({ ...item, folderOrder: folderIds }));
+    },
+    async toggleFolderCollapsed(folderId) {
+      const workspace = activeWorkspace(currentSettings());
+      const collapsedFolderIds = workspace.collapsedFolderIds.includes(folderId)
+        ? workspace.collapsedFolderIds.filter((id) => id !== folderId)
+        : [...workspace.collapsedFolderIds, folderId];
+      await persistWorkspaceUpdate(workspace.id, (item) => ({ ...item, collapsedFolderIds }));
+    },
     async removeFolder(id) {
       if (!stateRef.current.bootReady) {
         showToast("Anchor is still restoring sessions.");
         return;
       }
       const ids = stateRef.current.sessions.filter((s) => s.folderId === id).map((s) => s.id);
+      const removedIds = new Set(ids);
       try {
         await ipc.removeFolder(id);
         ids.forEach((sid) => deletedSessionIds.add(sid));
@@ -1019,9 +1463,160 @@ function makeActions(
         dispatch({ type: "REMOVE_FOLDER", id });
         ids.forEach((sid) => titleInput.forget(sid));
         ids.forEach((sid) => terminals.ignoreOutput(sid));
+        await persistSettingsPatch({
+          favoriteSessionIds: currentSettings().favoriteSessionIds.filter((sid) => !removedIds.has(sid)),
+          folderOrder: currentSettings().folderOrder.filter((folderId) => folderId !== id),
+          workspaces: currentSettings().workspaces.map((workspace) => ({
+            ...workspace,
+            favoriteSessionIds: workspace.favoriteSessionIds.filter((sid) => !removedIds.has(sid)),
+            tabOrder: workspace.tabOrder.filter((sid) => !removedIds.has(sid)),
+            folderOrder: workspace.folderOrder.filter((folderId) => folderId !== id),
+            collapsedFolderIds: workspace.collapsedFolderIds.filter((folderId) => folderId !== id),
+          })),
+          sessionWorkspaceIds: Object.fromEntries(
+            Object.entries(currentSettings().sessionWorkspaceIds)
+              .filter(([sessionId]) => !removedIds.has(sessionId)),
+          ),
+          sessionHarnessIds: Object.fromEntries(
+            Object.entries(currentSettings().sessionHarnessIds)
+              .filter(([sessionId]) => !removedIds.has(sessionId)),
+          ),
+          emptyFolderSinceMs: Object.fromEntries(
+            Object.entries(currentSettings().emptyFolderSinceMs)
+              .filter(([folderId]) => folderId !== id),
+          ),
+        });
       } catch (e) {
         showToast(shortError(e));
       }
+    },
+    toggleWorkspacePane(open) {
+      dispatch({
+        type: "SET_WORKSPACE_PANE",
+        open: open ?? !stateRef.current.workspacePaneOpen,
+      });
+    },
+    async selectWorkspace(id) {
+      const settings = currentSettings();
+      const workspace = settings.workspaces.find((item) => item.id === id && !item.archived);
+      if (!workspace) return;
+      const activeId = orderedOpenTabsForWorkspace(id)[0] ?? null;
+      dispatch({ type: "SWITCH_WORKSPACE", id, activeId });
+      if (!settings.workspacePaneKeepOpen) {
+        dispatch({ type: "SET_WORKSPACE_PANE", open: false });
+      }
+      await persistSettingsPatch({ activeWorkspaceId: id });
+    },
+    async createWorkspace(name) {
+      const clean = name.trim();
+      if (!clean) return null;
+      const workspace: Workspace = {
+        id: crypto.randomUUID(),
+        name: clean,
+        pinned: false,
+        archived: false,
+        favoriteSessionIds: [],
+        folderOrder: stateRef.current.folders.map((folder) => folder.id),
+        tabOrder: [],
+        collapsedFolderIds: [],
+      };
+      const settings = currentSettings();
+      await persistSettingsPatch({ workspaces: [...settings.workspaces, workspace] });
+      return workspace;
+    },
+    async renameWorkspace(id, name) {
+      const clean = name.trim();
+      if (!clean) return;
+      await persistWorkspaceUpdate(id, (workspace) => ({ ...workspace, name: clean }));
+    },
+    async toggleWorkspacePinned(id) {
+      await persistWorkspaceUpdate(id, (workspace) => ({
+        ...workspace,
+        pinned: !workspace.pinned,
+      }));
+    },
+    async setWorkspaceArchived(id, archived) {
+      if (id === DEFAULT_WORKSPACE.id) {
+        showToast("The Default workspace cannot be archived.");
+        return;
+      }
+      const settings = currentSettings();
+      const next = replaceWorkspace(settings, id, (workspace) => ({ ...workspace, archived }));
+      let activeWorkspaceId = settings.activeWorkspaceId;
+      if (archived && activeWorkspaceId === id) {
+        activeWorkspaceId = next.find((workspace) => !workspace.archived)?.id ?? DEFAULT_WORKSPACE.id;
+      }
+      await persistSettingsPatch({ workspaces: next, activeWorkspaceId });
+      if (activeWorkspaceId !== settings.activeWorkspaceId) {
+        dispatch({
+          type: "SWITCH_WORKSPACE",
+          id: activeWorkspaceId,
+          activeId: orderedOpenTabsForWorkspace(activeWorkspaceId)[0] ?? null,
+        });
+      }
+    },
+    async moveSessionToWorkspace(sessionId, workspaceId) {
+      const settings = currentSettings();
+      const destination = settings.workspaces.find((workspace) =>
+        workspace.id === workspaceId && !workspace.archived
+      );
+      if (!destination) return;
+      const sourceId = workspaceIdForSession(settings, sessionId);
+      if (sourceId === workspaceId) return;
+      const isOpen = stateRef.current.openTabs.includes(sessionId);
+      const source = settings.workspaces.find((workspace) => workspace.id === sourceId);
+      const wasFavorite = source?.favoriteSessionIds.includes(sessionId) ?? false;
+      const nextSourceActiveId = orderedOpenTabsForWorkspace(sourceId)
+        .find((id) => id !== sessionId) ?? null;
+      const workspaces = settings.workspaces.map((workspace) => {
+        if (workspace.id === sourceId) {
+          return {
+            ...workspace,
+            favoriteSessionIds: workspace.favoriteSessionIds.filter((id) => id !== sessionId),
+            tabOrder: workspace.tabOrder.filter((id) => id !== sessionId),
+          };
+        }
+        if (workspace.id === workspaceId) {
+          return {
+            ...workspace,
+            favoriteSessionIds: wasFavorite && !workspace.favoriteSessionIds.includes(sessionId)
+              ? [...workspace.favoriteSessionIds, sessionId]
+              : workspace.favoriteSessionIds,
+            tabOrder: isOpen && !workspace.tabOrder.includes(sessionId)
+              ? [...workspace.tabOrder, sessionId]
+              : workspace.tabOrder,
+          };
+        }
+        return workspace;
+      });
+      await persistSettingsPatch({
+        workspaces,
+        sessionWorkspaceIds: { ...settings.sessionWorkspaceIds, [sessionId]: workspaceId },
+      });
+      if (stateRef.current.activeId === sessionId && settings.activeWorkspaceId === sourceId) {
+        dispatch({ type: "SET_ACTIVE", id: nextSourceActiveId });
+      }
+      showToast(`Moved to ${destination.name}`);
+    },
+    async saveHarness(harness) {
+      const settings = currentSettings();
+      const exists = settings.customHarnesses.some((item) => item.id === harness.id);
+      const customHarnesses = exists
+        ? settings.customHarnesses.map((item) => item.id === harness.id ? harness : item)
+        : [...settings.customHarnesses, harness];
+      await persistSettingsPatch({ customHarnesses });
+      showToast("Harness saved");
+    },
+    async removeHarness(id) {
+      const settings = currentSettings();
+      if (Object.values(settings.sessionHarnessIds).includes(id)) {
+        showToast("Remove or reassign this harness's saved sessions first.");
+        return;
+      }
+      await persistSettingsPatch({
+        customHarnesses: settings.customHarnesses.filter((harness) => harness.id !== id),
+      });
+      showToast("Harness removed");
     },
     setFilter(value) {
       dispatch({ type: "SET_FILTER", value });
@@ -1048,17 +1643,7 @@ function makeActions(
       dispatch({ type: "SET_SETTINGS_SECTION", section });
     },
     async updateSettings(patch) {
-      const next = { ...stateRef.current.settings, ...patch };
-      dispatch({ type: "SET_SETTINGS", settings: next });
-      applyTheme(next);
-      if (patch.fontSize !== undefined) terminals.setFontSize(patch.fontSize);
-      try {
-        const saved = await ipc.setSettings(next);
-        dispatch({ type: "SET_SETTINGS", settings: saved });
-        applyTheme(saved);
-      } catch (e) {
-        showToast(shortError(e));
-      }
+      await persistSettingsPatch(patch);
     },
     copy(text, label) {
       try {

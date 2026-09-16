@@ -133,6 +133,19 @@ pub fn launch_session(
 }
 
 #[tauri::command]
+pub fn launch_custom_session(
+    backend: State<'_, Arc<Backend>>,
+    folder_id: String,
+    harness_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<Session, String> {
+    backend
+        .inner()
+        .launch_custom_session(&folder_id, &harness_id, cols, rows)
+}
+
+#[tauri::command]
 pub fn get_codex_profiles(backend: State<'_, Arc<Backend>>) -> Vec<String> {
     backend.codex_profiles()
 }

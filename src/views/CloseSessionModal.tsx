@@ -1,5 +1,5 @@
 /**
- * Confirmation for closing a live session's tab (`confirmClose`).
+ * Confirmation for closing a tab while its AI response is still in progress.
  *
  * A modal rather than a popover anchored to the tab: the tab strip scrolls and
  * clips its overflow, and ⌘W can target a tab that is scrolled out of view, so
@@ -24,9 +24,7 @@ export function CloseSessionModal() {
           </div>
         </div>
         <div style={{ fontSize: 13, lineHeight: 1.55, color: "var(--text-2)", marginBottom: 18 }}>
-          {state.settings.stopOnClose
-            ? "Its running process will be stopped. The saved session ID is kept, so you can resume it later."
-            : "Its process keeps running in the background; only the tab closes."}
+          The AI is still responding. Closing this tab will stop its process. The saved session ID is kept, so you can resume it later.
         </div>
         <div style={{ display: "flex", gap: 10 }}>
           <button

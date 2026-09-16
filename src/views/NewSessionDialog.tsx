@@ -103,6 +103,12 @@ export function NewSessionDialog() {
     void actions.launch(tool, folder.id, codexProfile);
   };
 
+  const launchCustom = (harnessId: string) => {
+    if (!folder) return;
+    close();
+    void actions.launchCustomHarness(harnessId, folder.id);
+  };
+
   return (
     <Modal onClose={close} align="top" width={500}>
       <div className="nt__head">
@@ -115,30 +121,6 @@ export function NewSessionDialog() {
 
       {step === "folder" && (
         <div className="nt__body">
-          {folders.length > 0 && (
-            <>
-              <div className="nt__label">Folders already in Anchor</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                {folders.map((f) => {
-                  const count = sessions.filter((s) => s.folderId === f.id).length;
-                  return (
-                    <button key={f.id} className="nt__row" onClick={() => useFolder(f)}>
-                      <span className="nt__chip" />
-                      <span style={{ flex: 1, minWidth: 0 }}>
-                        <span className="nt__rowTitle">{f.name}</span>
-                        <span className="nt__rowPath">{f.path}</span>
-                      </span>
-                      <span className="nt__count">
-                        {count === 0 ? "no sessions" : count === 1 ? "1 session" : `${count} sessions`}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="a-menu__divider" style={{ margin: "9px 7px" }} />
-            </>
-          )}
-
           <div className="nt__label">Add a folder</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             <button className="nt__row" onClick={() => void browse()} disabled={busy}>
@@ -157,6 +139,30 @@ export function NewSessionDialog() {
               </span>
             </button>
           </div>
+
+          {folders.length > 0 && (
+            <>
+              <div className="a-menu__divider" style={{ margin: "9px 7px" }} />
+              <div className="nt__label">Folders already in Anchor</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {folders.map((f) => {
+                  const count = sessions.filter((s) => s.folderId === f.id).length;
+                  return (
+                    <button key={f.id} className="nt__row" onClick={() => useFolder(f)}>
+                      <span className="nt__chip" />
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span className="nt__rowTitle">{f.name}</span>
+                        <span className="nt__rowPath">{f.path}</span>
+                      </span>
+                      <span className="nt__count">
+                        {count === 0 ? "no sessions" : count === 1 ? "1 session" : `${count} sessions`}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -236,6 +242,19 @@ export function NewSessionDialog() {
                 </div>
               );
             })}
+            {settings.customHarnesses.some((harness) => harness.enabled) && (
+              <>
+                <div className="a-menu__divider" style={{ margin: "8px 7px" }} />
+                <div className="nt__label">Custom harnesses</div>
+                {settings.customHarnesses.filter((harness) => harness.enabled).map((harness) => (
+                  <button key={harness.id} className="tool-item" onClick={() => launchCustom(harness.id)}>
+                    <span className="nt__icon" style={{ width: 26, height: 26 }}>⌘</span>
+                    <span style={{ flex: 1 }}>{harness.name}</span>
+                    <span className="tool-item__meta">{harness.kind}</span>
+                  </button>
+                ))}
+              </>
+            )}
           </div>
         </>
       )}

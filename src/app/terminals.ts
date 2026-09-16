@@ -9,13 +9,42 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { TERMINAL_THEME } from "../components/lib/tokens";
-import type { PtyReplay, PtyResize, TerminalSize } from "../ipc/types";
+import type { PtyReplay, PtyResize, TerminalSize, TerminalTheme } from "../ipc/types";
+import { DEFAULT_TERMINAL_THEME } from "./workspaces";
 
 const CTRL_V = "\x16";
+const CTRL_SLASH = "\x1f";
 // Mirrors the backend's retained-output cap closely enough for UTF-8 text while
 // preventing a stalled webview boot from becoming an unbounded second buffer.
 const MAX_PENDING_OUTPUT_CHARS = 256 * 1024;
+let currentTheme: TerminalTheme = DEFAULT_TERMINAL_THEME;
+
+function xtermTheme(theme: TerminalTheme) {
+  return {
+    background: theme.background,
+    foreground: theme.foreground,
+    cursor: theme.cursor,
+    cursorAccent: theme.cursorAccent,
+    selectionBackground: theme.selectionBackground,
+    selectionForeground: theme.selectionForeground,
+    black: theme.black,
+    red: theme.red,
+    green: theme.green,
+    yellow: theme.yellow,
+    blue: theme.blue,
+    magenta: theme.magenta,
+    cyan: theme.cyan,
+    white: theme.white,
+    brightBlack: theme.brightBlack,
+    brightRed: theme.brightRed,
+    brightGreen: theme.brightGreen,
+    brightYellow: theme.brightYellow,
+    brightBlue: theme.brightBlue,
+    brightMagenta: theme.brightMagenta,
+    brightCyan: theme.brightCyan,
+    brightWhite: theme.brightWhite,
+  };
+}
 
 interface PendingOutput {
   chunks: string[];
@@ -138,12 +167,7 @@ function terminalOptions(disableStdin = false, size?: TerminalSize) {
     fontFamily: '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace',
     fontSize: readFontSize(),
     lineHeight: 1.2,
-    theme: {
-      background: "#00000000",
-      foreground: TERMINAL_THEME.foreground,
-      cursor: "#d6417a",
-      selectionBackground: "rgba(214,65,122,.3)",
-    },
+    theme: xtermTheme(currentTheme),
     // FitAddon accounts for scrollbar width from this option. The viewport
     // probe must match session terminals even though it never receives output.
     scrollback: 10000,
@@ -208,6 +232,19 @@ export class TerminalManager {
     // Ctrl+C without a selection stays in xterm as the terminal interrupt.
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
+      // xterm does not encode Ctrl+/ itself, but terminal apps expect the
+      // conventional C0 Unit Separator byte for this chord.
+      if (
+        event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        event.key === "/"
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.onInput(id, CTRL_SLASH);
+        return false;
+      }
       const modifier = event.ctrlKey || event.metaKey;
       if (!modifier || event.altKey) return true;
       const key = event.key.toLowerCase();
@@ -822,6 +859,13 @@ export class TerminalManager {
       this.viewport.term.options.fontSize = px;
       this.measureViewport();
     }
+  }
+
+  setTheme(theme: TerminalTheme): void {
+    currentTheme = theme;
+    const next = xtermTheme(theme);
+    for (const handle of this.handles.values()) handle.term.options.theme = next;
+    if (this.viewport) this.viewport.term.options.theme = next;
   }
 
   /** Match a retained xterm to the grid the resumed PTY will use before spawn. */

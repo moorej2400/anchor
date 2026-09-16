@@ -8,11 +8,12 @@ interface RadioGroupProps<T extends string> {
   value: T;
   options: RadioOption<T>[];
   onChange: (value: T) => void;
+  ariaLabel?: string;
 }
 
-export function RadioGroup<T extends string>({ value, options, onChange }: RadioGroupProps<T>) {
+export function RadioGroup<T extends string>({ value, options, onChange, ariaLabel }: RadioGroupProps<T>) {
   return (
-    <div className="a-radios" role="radiogroup">
+    <div className="a-radios" role="radiogroup" aria-label={ariaLabel}>
       {options.map((o) => (
         <button
           key={o.value}

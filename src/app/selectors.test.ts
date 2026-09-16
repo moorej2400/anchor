@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { Folder, Session, Status, Tool } from "../ipc/types";
 import {
+  EMPTY_FOLDER_HIDE_AFTER_MS,
+  favoriteSessions,
   foldersWithSessions,
+  moveFolderId,
+  moveOrderedId,
+  orderFolders,
+  orderIds,
+  reconcileEmptyFolderSinceMs,
+  responseIndicator,
   sessionDisplayTitle,
   sessionMatches,
+  splitHiddenFolders,
   statusCounts,
 } from "./selectors";
 
@@ -30,7 +39,7 @@ function s(id: string, folderId: string, tool: Tool, title: string, status: Stat
 }
 
 describe("foldersWithSessions", () => {
-  it("keeps registry order when the user has typed in nothing", () => {
+  it("keeps registry order when the user has submitted nothing", () => {
     const sessions = [
       s("a", "f1", "claude", "running one", "running"),
       s("b", "f1", "codex", "stopped one", "stopped"),
@@ -58,7 +67,7 @@ describe("foldersWithSessions", () => {
     );
   });
 
-  it("promotes the most recently typed-in session to the top of its folder", () => {
+  it("promotes the most recently submitted session to the top of its folder", () => {
     const sessions = [
       s("a", "f1", "claude", "one", "running"),
       s("b", "f1", "codex", "two", "running"),
@@ -68,7 +77,7 @@ describe("foldersWithSessions", () => {
     expect(g.sessions.map((x) => x.id)).toEqual(["c", "a", "b"]);
   });
 
-  it("orders several typed-in sessions most-recent-first", () => {
+  it("orders several submitted sessions most-recent-first", () => {
     const sessions = [
       s("a", "f1", "claude", "one", "running"),
       s("b", "f1", "codex", "two", "running"),
@@ -78,7 +87,7 @@ describe("foldersWithSessions", () => {
     expect(g.sessions.map((x) => x.id)).toEqual(["b", "c", "a"]);
   });
 
-  it("keeps never-typed sessions in registry order below typed ones", () => {
+  it("keeps never-submitted sessions in registry order below submitted ones", () => {
     const sessions = [
       s("a", "f1", "claude", "one", "running"),
       s("b", "f1", "codex", "two", "running"),
@@ -117,6 +126,95 @@ describe("sessionMatches", () => {
     expect(sessionMatches(sess, folders[0], "Claude Code")).toBe(true);
     expect(sessionMatches(sess, folders[0], "a-sid")).toBe(true);
     expect(sessionMatches(sess, folders[0], "nope")).toBe(false);
+  });
+});
+
+describe("folder ordering", () => {
+  it("applies saved order and appends newly discovered folders", () => {
+    const third: Folder = { id: "f3", name: "new", path: "~/dev/new" };
+    expect(orderFolders([...folders, third], ["f2", "f1"]).map((folder) => folder.id)).toEqual([
+      "f2", "f1", "f3",
+    ]);
+  });
+
+  it("moves a folder before or after a target", () => {
+    expect(moveFolderId(["f1", "f2", "f3"], "f3", "f1", false)).toEqual(["f3", "f1", "f2"]);
+    expect(moveFolderId(["f1", "f2", "f3"], "f1", "f2", true)).toEqual(["f2", "f1", "f3"]);
+  });
+});
+
+describe("generic id ordering", () => {
+  it("restores saved ids first and appends ids missing from the saved order", () => {
+    expect(orderIds(["a", "b", "c"], ["c", "a", "stale"])).toEqual(["c", "a", "b"]);
+  });
+
+  it("moves an id before or after a target", () => {
+    expect(moveOrderedId(["a", "b", "c"], "c", "a", false)).toEqual(["c", "a", "b"]);
+    expect(moveOrderedId(["a", "b", "c"], "a", "c", true)).toEqual(["b", "c", "a"]);
+  });
+});
+
+describe("empty folder hiding", () => {
+  const now = Date.UTC(2026, 0, 2, 12);
+
+  it("records only currently empty folders and preserves their original empty time", () => {
+    const sessions = [s("a", "f1", "claude", "one", "stopped")];
+    const previous = { f1: now - 1_000, f2: now - 2_000, stale: now - 3_000 };
+
+    expect(reconcileEmptyFolderSinceMs(folders, sessions, previous, now)).toEqual({
+      f2: now - 2_000,
+    });
+  });
+
+  it("starts a fresh 12-hour window for a newly empty folder", () => {
+    expect(reconcileEmptyFolderSinceMs([folders[0]], [], {}, now)).toEqual({ f1: now });
+  });
+
+  it("moves only continuously empty folders older than 12 hours into Hidden", () => {
+    const groups = foldersWithSessions(folders, [], "");
+    const split = splitHiddenFolders(groups, {
+      f1: now - EMPTY_FOLDER_HIDE_AFTER_MS,
+      f2: now - EMPTY_FOLDER_HIDE_AFTER_MS + 1,
+    }, now);
+
+    expect(split.hidden.map((folder) => folder.id)).toEqual(["f1"]);
+    expect(split.visible.map((folder) => folder.id)).toEqual(["f2"]);
+  });
+
+  it("never hides a folder that contains a session", () => {
+    const groups = foldersWithSessions(folders, [s("a", "f1", "claude", "one", "stopped")], "");
+    const split = splitHiddenFolders(groups, { f1: 0, f2: 0 }, now);
+
+    expect(split.hidden.map((folder) => folder.id)).toEqual(["f2"]);
+    expect(split.visible.map((folder) => folder.id)).toEqual(["f1"]);
+  });
+});
+
+describe("favorites", () => {
+  it("keeps explicit favorite order and ignores stale ids", () => {
+    const sessions = [
+      s("a", "f1", "claude", "one", "running"),
+      s("b", "f2", "codex", "two", "running"),
+    ];
+    expect(favoriteSessions(sessions, folders, ["missing", "b", "a"], "").map((session) => session.id)).toEqual([
+      "b", "a",
+    ]);
+  });
+
+  it("uses the normal session filter", () => {
+    const sessions = [
+      s("a", "f1", "claude", "one", "running"),
+      s("b", "f2", "codex", "two", "running"),
+    ];
+    expect(favoriteSessions(sessions, folders, ["a", "b"], "payments").map((session) => session.id)).toEqual(["b"]);
+  });
+});
+
+describe("responseIndicator", () => {
+  it("hides closed chats and distinguishes open from response-ready chats", () => {
+    expect(responseIndicator("a", [], { a: true })).toBeNull();
+    expect(responseIndicator("a", ["a"], {})).toBe("idle");
+    expect(responseIndicator("a", ["a"], { a: true })).toBe("ready");
   });
 });
 

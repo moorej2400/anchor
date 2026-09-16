@@ -5,6 +5,8 @@
 // ahead of their Phase 2 call sites.
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +62,114 @@ pub struct EnvVar {
     pub value: String,
 }
 
+pub const DEFAULT_WORKSPACE_ID: &str = "00000000-0000-4000-8000-000000000001";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Workspace {
+    pub id: String,
+    pub name: String,
+    pub pinned: bool,
+    pub archived: bool,
+    #[serde(default)]
+    pub favorite_session_ids: Vec<String>,
+    #[serde(default)]
+    pub folder_order: Vec<String>,
+    #[serde(default)]
+    pub tab_order: Vec<String>,
+    #[serde(default)]
+    pub collapsed_folder_ids: Vec<String>,
+}
+
+impl Default for Workspace {
+    fn default() -> Self {
+        Self {
+            id: DEFAULT_WORKSPACE_ID.into(),
+            name: "Default".into(),
+            pinned: true,
+            archived: false,
+            favorite_session_ids: Vec::new(),
+            folder_order: Vec::new(),
+            tab_order: Vec::new(),
+            collapsed_folder_ids: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalTheme {
+    pub background: String,
+    pub foreground: String,
+    pub cursor: String,
+    pub cursor_accent: String,
+    pub selection_background: String,
+    pub selection_foreground: String,
+    pub black: String,
+    pub red: String,
+    pub green: String,
+    pub yellow: String,
+    pub blue: String,
+    pub magenta: String,
+    pub cyan: String,
+    pub white: String,
+    pub bright_black: String,
+    pub bright_red: String,
+    pub bright_green: String,
+    pub bright_yellow: String,
+    pub bright_blue: String,
+    pub bright_magenta: String,
+    pub bright_cyan: String,
+    pub bright_white: String,
+}
+
+impl Default for TerminalTheme {
+    fn default() -> Self {
+        Self {
+            background: "#0c0e0d".into(),
+            foreground: "#cbd0ce".into(),
+            cursor: "#88a99d".into(),
+            cursor_accent: "#0c0e0d".into(),
+            selection_background: "#34413c".into(),
+            selection_foreground: "#eef2f0".into(),
+            black: "#151817".into(),
+            red: "#cf7373".into(),
+            green: "#92bd94".into(),
+            yellow: "#d0b57a".into(),
+            blue: "#78a9d1".into(),
+            magenta: "#aea1c5".into(),
+            cyan: "#77b2ba".into(),
+            white: "#cbd0ce".into(),
+            bright_black: "#68716d".into(),
+            bright_red: "#e38a8a".into(),
+            bright_green: "#add3ae".into(),
+            bright_yellow: "#e3ca91".into(),
+            bright_blue: "#94bee0".into(),
+            bright_magenta: "#c5b5dc".into(),
+            bright_cyan: "#91c8ce".into(),
+            bright_white: "#eef2f0".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessDefinition {
+    pub id: String,
+    pub name: String,
+    pub executable: String,
+    #[serde(default)]
+    pub launch_args: Vec<String>,
+    #[serde(default)]
+    pub resume_args: Vec<String>,
+    pub session_id_strategy: String,
+    pub working_directory: String,
+    #[serde(default)]
+    pub data_directory: String,
+    pub kind: String,
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -79,12 +189,49 @@ pub struct Settings {
     pub font_size: u32,
     pub accent: String,
     pub notify_on_waiting: bool,
+    #[serde(default = "default_response_read_delay_ms")]
+    pub response_read_delay_ms: u32,
+    #[serde(default)]
+    pub favorite_session_ids: Vec<String>,
+    #[serde(default)]
+    pub folder_order: Vec<String>,
+    #[serde(default)]
+    pub tab_order: Vec<String>,
+    /// Stable key order keeps settings and their recovery checksum deterministic.
+    #[serde(default)]
+    pub empty_folder_since_ms: BTreeMap<String, u64>,
+    #[serde(default = "default_workspaces")]
+    pub workspaces: Vec<Workspace>,
+    #[serde(default = "default_active_workspace_id")]
+    pub active_workspace_id: String,
+    #[serde(default)]
+    pub session_workspace_ids: BTreeMap<String, String>,
+    #[serde(default)]
+    pub workspace_pane_keep_open: bool,
+    #[serde(default)]
+    pub terminal_theme: TerminalTheme,
+    #[serde(default)]
+    pub custom_harnesses: Vec<HarnessDefinition>,
+    #[serde(default)]
+    pub session_harness_ids: BTreeMap<String, String>,
 }
 
 /// Serde default so settings.json files written before this field existed
 /// still load instead of failing validation.
 pub fn default_projects_dir() -> String {
     "~/Documents/Anchor/Projects".into()
+}
+
+pub fn default_response_read_delay_ms() -> u32 {
+    1_000
+}
+
+pub fn default_workspaces() -> Vec<Workspace> {
+    vec![Workspace::default()]
+}
+
+pub fn default_active_workspace_id() -> String {
+    DEFAULT_WORKSPACE_ID.into()
 }
 
 impl Default for Settings {
@@ -102,8 +249,20 @@ impl Default for Settings {
             theme: "graphite".into(),
             density: "comfortable".into(),
             font_size: 13,
-            accent: "#d6417a".into(),
+            accent: "#88a99d".into(),
             notify_on_waiting: false,
+            response_read_delay_ms: default_response_read_delay_ms(),
+            favorite_session_ids: Vec::new(),
+            folder_order: Vec::new(),
+            tab_order: Vec::new(),
+            empty_folder_since_ms: BTreeMap::new(),
+            workspaces: default_workspaces(),
+            active_workspace_id: default_active_workspace_id(),
+            session_workspace_ids: BTreeMap::new(),
+            workspace_pane_keep_open: false,
+            terminal_theme: TerminalTheme::default(),
+            custom_harnesses: Vec::new(),
+            session_harness_ids: BTreeMap::new(),
         }
     }
 }

@@ -1,9 +1,9 @@
 /** ⌘K command palette — fuzzy jump to any session. */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Badge, Modal, StatusDot, TextInput } from "../components/lib";
+import { AttentionDot, Badge, Modal, TextInput } from "../components/lib";
 import { useAnchor } from "../app/store";
 import { folderOf, toolName } from "../app/display";
-import { sessionDisplayTitle } from "../app/selectors";
+import { responseIndicator, sessionDisplayTitle } from "../app/selectors";
 
 export function CommandPalette() {
   const { state, actions } = useAnchor();
@@ -51,7 +51,9 @@ export function CommandPalette() {
               <div style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sessionDisplayTitle(s, state.sessions)}</div>
               <div className="palette__meta">{folder?.name ?? "—"} · {s.cliSessionId ?? "no id"}</div>
             </div>
-            <StatusDot status={s.status} />
+            {responseIndicator(s.id, state.openTabs, state.unreadResponses) && (
+              <AttentionDot ready={Boolean(state.unreadResponses[s.id])} />
+            )}
           </button>
         ))}
         {items.length === 0 && (

@@ -1,0 +1,624 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Anchor — implementation mock</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --canvas:#101111;
+      --chrome:#161817;
+      --panel:#191b1a;
+      --panel-2:#1e201f;
+      --terminal:#0c0e0d;
+      --terminal-text:#cbd0ce;
+      --line:#2b2e2c;
+      --line-strong:#3a3e3b;
+      --text:#d5d9d8;
+      --text-soft:#afb5b2;
+      --muted:#7f8783;
+      --faint:#59605c;
+      --selected:#292c29;
+      --hover:#222522;
+      --control:#202321;
+      --accent:#88a99d;
+      --accent-text:#0e1714;
+      --notice:#62aef5;
+      --danger:#cf7373;
+      --green:#92bd94;
+      --cyan:#77b2ba;
+      --purple:#aea1c5;
+      --yellow:#d0b57a;
+      --radius:5px;
+      --terminal-font-size:13px;
+      --sidebar-width:244px;
+      --workspace-width:188px;
+      --settings-nav-width:220px;
+    }
+    .app[data-theme="obsidian"] {--canvas:#0d0e10;--chrome:#141518;--panel:#17181b;--panel-2:#1d1e22;--terminal:#090a0c;--line:#292b31;--selected:#27292f;--hover:#202227}
+    .app[data-theme="nebula"] {--canvas:#101013;--chrome:#17171b;--panel:#1a1a1e;--panel-2:#202025;--terminal:#0b0b0e;--line:#2f2d35;--selected:#2c2a31;--hover:#242228}
+    .app[data-density="comfortable"] {--sidebar-width:254px}
+    .app[data-density="comfortable"] .session-row,.app[data-density="comfortable"] .session-select {min-height:33px;height:33px}
+    .app[data-density="comfortable"] .project-head,.app[data-density="comfortable"] .project-toggle {min-height:34px;height:34px}
+    * {box-sizing:border-box}
+    html,body {height:100%;margin:0;overflow:hidden;background:#0b0c0c;color:var(--text);font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13px}
+    button,input,select,textarea {font:inherit}
+    button {color:inherit}
+    button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible {outline:2px solid var(--accent);outline-offset:1px}
+    svg {display:block;width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+    .app {display:grid;grid-template-rows:45px minmax(0,1fr);height:100%;min-width:800px;background:var(--canvas)}
+    .topbar {display:flex;align-items:center;border-bottom:1px solid var(--line);background:var(--chrome);user-select:none}
+    .brand {display:flex;align-items:center;gap:9px;width:var(--sidebar-width);padding:0 14px;color:#e3e6e5;font-weight:650;letter-spacing:-.1px}
+    .rail-visible:not(.settings-open) .brand {width:calc(var(--workspace-width) + var(--sidebar-width))}
+    .settings-open .brand {width:var(--settings-nav-width)}
+    .brand svg {color:#9ba39f}
+    .crumb {display:flex;align-items:center;gap:8px;min-width:0;padding-left:12px;color:var(--muted);font-size:12px}
+    .crumb strong {overflow:hidden;color:#cbd0ce;font-weight:540;text-overflow:ellipsis;white-space:nowrap}
+    .top-actions {display:flex;align-items:center;gap:7px;margin-left:auto;padding-right:12px}
+    .button,.icon-button {display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:var(--radius);background:var(--control);color:#b9bfbc;cursor:pointer}
+    .button {height:30px;gap:7px;padding:0 11px;font-size:11px}
+    .button:hover,.icon-button:hover {border-color:var(--line-strong);background:#292c2a;color:#e0e3e2}
+    .button.primary {border-color:color-mix(in srgb,var(--accent),#111311 25%);background:color-mix(in srgb,var(--accent),#111311 35%);color:#f2f5f3;font-weight:630}
+    .button.primary:hover {border-color:color-mix(in srgb,var(--accent),#e9eeeb 24%);background:color-mix(in srgb,var(--accent),#111311 23%);color:#fff}
+    .button.danger {border-color:#704646;background:#2a1c1c;color:#e6a2a2}
+    .button.ghost {background:transparent}
+    .icon-button {width:28px;height:28px;padding:0}
+    .shortcut {padding:2px 5px;border:1px solid #343735;border-radius:3px;background:#121413;color:#777e7a;font:9px ui-monospace,SFMono-Regular,Consolas,monospace}
+    .shell {display:flex;min-height:0}
+
+    .workspace-rail {display:flex;flex:0 0 var(--workspace-width);flex-direction:column;min-width:0;border-right:1px solid var(--line);background:#141615}
+    .workspace-rail[hidden] {display:none}
+    .rail-head {display:flex;align-items:center;justify-content:space-between;padding:12px 10px 9px 13px;color:#c6cbc8;font-size:12px;font-weight:590}
+    .rail-search,.sidebar-search {display:flex;align-items:center;gap:7px;height:31px;margin:0 8px 6px;padding:0 8px;border:1px solid var(--line);border-radius:var(--radius);background:#0f1110;color:#69716d}
+    .rail-search:focus-within,.sidebar-search:focus-within {border-color:#515854}
+    .rail-search input,.sidebar-search input {min-width:0;flex:1;border:0;outline:0;background:transparent;color:#c9cecb;font-size:11px}
+    .rail-search input::placeholder,.sidebar-search input::placeholder {color:#626965}
+    .rail-list {min-height:0;flex:1;overflow:auto;padding:2px 7px}
+    .rail-label,.section-label {display:flex;align-items:center;gap:8px;color:#747c78;font-size:9px;font-weight:630;letter-spacing:1px;text-transform:uppercase}
+    .rail-label {padding:10px 7px 5px}
+    .section-label {margin:13px 6px 6px}
+    .section-label::after {height:1px;flex:1;background:var(--line);content:""}
+    .workspace-item {display:flex;align-items:center;gap:8px;width:100%;min-height:31px;padding:0 7px;border:0;border-radius:4px;background:transparent;color:#929a96;cursor:pointer;text-align:left;font-size:11px}
+    .workspace-item:hover {background:var(--hover);color:#c4cac6}
+    .workspace-item.active {background:var(--selected);color:#d8dcda}
+    .workspace-item span {min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .workspace-item small {color:#68706c;font:9px ui-monospace,SFMono-Regular,Consolas,monospace}
+    .rail-actions {padding:7px;border-top:1px solid var(--line)}
+    .rail-action {display:flex;align-items:center;gap:8px;width:100%;height:31px;padding:0 7px;border:0;border-radius:4px;background:transparent;color:#87908b;cursor:pointer;text-align:left;font-size:10.5px}
+    .rail-action:hover {background:var(--hover);color:#cbd0cd}
+
+    .sidebar {display:flex;flex:0 0 var(--sidebar-width);flex-direction:column;min-width:0;border-right:1px solid var(--line);background:var(--panel)}
+    .current-workspace {display:flex;align-items:center;gap:8px;width:calc(100% - 16px);min-height:44px;margin:8px 8px 3px;padding:7px 8px;border:1px solid var(--line);border-radius:var(--radius);background:#202220;color:#cdd2cf;cursor:pointer;text-align:left}
+    .current-workspace:hover {border-color:var(--line-strong);background:#252825}
+    .current-workspace .workspace-copy {min-width:0;flex:1}
+    .current-workspace small {display:block;margin-bottom:2px;color:#818985;font-size:8px;font-weight:650;letter-spacing:1.05px}
+    .current-workspace strong {display:block;overflow:hidden;font-size:12px;font-weight:540;text-overflow:ellipsis;white-space:nowrap}
+    .current-workspace .chevron {color:#7d8581;transition:transform 150ms ease}
+    .rail-visible .current-workspace .chevron {transform:rotate(180deg)}
+    .session-lists {min-height:0;flex:1;overflow:auto;padding:0 7px 9px}
+    .empty-copy {padding:10px;color:#777f7b;font-size:11px;line-height:1.45}
+    .project {margin-bottom:4px}
+    .project.dragging {opacity:.45}
+    .project.drop-before {box-shadow:inset 0 2px var(--accent)}
+    .project-head {display:flex;align-items:center;min-height:30px;border-radius:3px}
+    .project-head:hover,.project-head:focus-within {background:var(--hover)}
+    .project-toggle {display:flex;align-items:center;gap:6px;min-width:0;flex:1;height:30px;padding:0;border:0;background:transparent;color:#bec4c0;cursor:pointer;text-align:left}
+    .disclosure {display:grid;place-items:center;width:22px;height:22px;flex:none;border:1px solid #343835;border-radius:var(--radius);background:#171918;color:#858d89}
+    .project-head:hover .disclosure {border-color:#454a46;background:#232623;color:#bdc3bf}
+    .project-name {min-width:0;overflow:hidden;font-size:12px;font-weight:430;text-overflow:ellipsis;white-space:nowrap}
+    .project.hidden-project .project-name {color:#686f6b}
+    .project-actions {display:flex;align-items:center;flex:none;padding-right:2px;opacity:.48}
+    .project-head:hover .project-actions,.project-head:focus-within .project-actions {opacity:1}
+    .project-actions .icon-button {width:23px;height:23px;border:0;background:transparent;color:#7f8783}
+    .project-actions .icon-button:hover {background:#303431;color:#d5dad6}
+    .session-row {position:relative;display:flex;align-items:center;min-height:29px;margin-bottom:1px;border-radius:3px;color:#929a96}
+    .session-row:hover {background:var(--hover);color:#c8cdca}
+    .session-row.active {background:var(--selected);color:#e0e3e1}
+    .session-select {display:flex;align-items:center;gap:7px;min-width:0;flex:1;height:29px;padding:0 7px 0 28px;border:0;background:transparent;color:inherit;cursor:pointer;text-align:left;font-size:11px}
+    .session-title {min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .attention {width:6px;height:6px;flex:none;border-radius:50%;background:#6b726e}
+    .attention.unread {background:var(--notice);box-shadow:0 0 0 2px #62aef51b}
+    .session-actions {display:none;align-items:center;padding-right:2px}
+    .session-row:hover .session-actions,.session-row:focus-within .session-actions {display:flex}
+    .session-actions .icon-button {width:23px;height:23px;border:0;background:transparent;color:#858d89}
+    .session-actions .icon-button:hover {background:#313431;color:#d8dcda}
+    .session-row:hover .attention,.session-row:focus-within .attention {display:none}
+    .hidden-toggle {display:flex;align-items:center;gap:7px;width:100%;height:30px;margin-top:7px;padding:0 7px;border:0;border-top:1px solid var(--line);background:transparent;color:#69716d;cursor:pointer;text-align:left;font-size:10px}
+    .hidden-toggle span {flex:1}
+    .sidebar-foot {display:flex;align-items:center;gap:4px;height:38px;padding:0 8px;border-top:1px solid var(--line);background:#161817}
+    .sidebar-foot .settings-link {display:flex;align-items:center;gap:7px;height:28px;margin-left:auto;padding:0 8px;border:0;border-radius:4px;background:transparent;color:#89918d;cursor:pointer;font-size:10.5px}
+    .sidebar-foot button:hover {background:var(--hover);color:#d1d5d3}
+
+    .main {display:flex;min-width:0;flex:1;flex-direction:column;background:var(--terminal)}
+    .tabs {display:flex;align-items:flex-end;gap:2px;height:41px;padding:5px 8px 0 0;overflow-x:auto;overflow-y:hidden;border-bottom:1px solid var(--line);background:#151716;scrollbar-width:thin}
+    .tab {position:relative;display:flex;width:176px;min-width:124px;max-width:176px;height:35px;border:1px solid transparent;border-bottom:0;border-radius:4px 4px 0 0;color:#858d89}
+    .tab:hover:not(.active) {background:#1a1d1b;color:#b7bdb9}
+    .tab.active {border-color:var(--line);background:var(--terminal);color:#e0e4e2}
+    .tab.active::before {position:absolute;z-index:1;top:-1px;right:8px;left:8px;height:2px;border-radius:2px;background:var(--accent);content:""}
+    .tab.active::after {position:absolute;right:0;bottom:-1px;left:0;height:1px;background:var(--terminal);content:""}
+    .tab.dragging {opacity:.4}
+    .tab.drop-before {box-shadow:inset 2px 0 var(--accent)}
+    .tab.drop-after {box-shadow:inset -2px 0 var(--accent)}
+    .tab-select {display:flex;align-items:center;gap:8px;min-width:0;flex:1;padding:0 5px 0 12px;border:0;background:transparent;color:inherit;cursor:pointer;text-align:left;font-size:11px}
+    .tab-title {min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .tab .icon-button {width:23px;height:23px;margin:auto 5px auto 0;border:0;background:transparent;color:#69716d;opacity:0}
+    .tab.active .icon-button {opacity:.55}
+    .tab:hover .icon-button,.tab:focus-within .icon-button {opacity:1}
+    .tab .icon-button:hover {background:#292c2a;color:#e0e4e2}
+    .tab .attention {background:var(--notice)}
+    .new-tab {display:grid;place-items:center;width:27px;height:27px;margin:0 0 4px 4px;flex:none;border:1px solid transparent;border-radius:4px;background:transparent;color:#747c78;cursor:pointer}
+    .new-tab:hover {border-color:var(--line);background:#202321;color:#d2d6d4}
+    .terminal {display:flex;min-height:0;flex:1;flex-direction:column;background:var(--terminal)}
+    .terminal-output {min-height:0;flex:1;overflow:auto;padding:22px 28px 14px;color:var(--terminal-text);font:var(--terminal-font-size)/1.58 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;white-space:pre-wrap}
+    .terminal-output p {margin:0 0 12px}
+    .terminal-output .welcome {color:var(--cyan)}
+    .terminal-output .muted {color:#78817c}
+    .terminal-output .command {display:inline-block;padding:4px 8px;border:1px solid #3c4440;border-radius:4px;background:#121513;color:#d8dcda}
+    .terminal-output .success {color:var(--green)}
+    .terminal-output .purple {color:var(--purple)}
+    .terminal-output .warning {color:var(--yellow)}
+    .prompt {display:flex;align-items:center;gap:8px;margin:0 20px 13px;padding:7px 8px;border:1px solid var(--line);border-radius:var(--radius);background:#111312;color:#77807b}
+    .prompt:focus-within {border-color:#4d5651}
+    .prompt input {min-width:0;flex:1;border:0;outline:0;background:transparent;color:#d6dad8;font:12px ui-monospace,SFMono-Regular,Consolas,monospace}
+    .prompt button {display:grid;place-items:center;width:27px;height:27px;border:0;border-radius:4px;background:#b7bcb7;color:#111412;cursor:pointer}
+    .empty-state,.repair-card {display:grid;min-height:0;flex:1;place-items:center;padding:30px;text-align:center}
+    .empty-state h2,.repair-card h2 {margin:0 0 8px;font-size:16px;font-weight:560}
+    .empty-state p,.repair-card p {max-width:470px;margin:0 0 18px;color:var(--muted);font-size:11.5px;line-height:1.55}
+    .repair-panel {width:min(470px,100%);padding:25px;border:1px solid var(--line);border-radius:7px;background:#151817}
+    .repair-panel .meta {margin:17px 0;padding:10px;border:1px solid #282c2a;border-radius:4px;background:#101211;color:#858d89;font:10px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;text-align:left}
+    .statusbar {display:flex;align-items:center;gap:9px;height:29px;padding:0 10px;border-top:1px solid #242725;background:#141615;color:#777f7b;font-size:9.5px}
+    .statusbar .push {margin-left:auto}
+    .status-chip {padding:2px 6px;border:1px solid #313532;border-radius:3px;color:#939b97;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+
+    .settings-shell {display:grid;grid-template-columns:var(--settings-nav-width) minmax(0,1fr);min-width:0;flex:1;background:#121413}
+    .settings-nav {display:flex;min-height:0;flex-direction:column;padding:17px 10px 10px;border-right:1px solid var(--line);background:#171918}
+    .settings-nav h2 {margin:0 9px 14px;color:#dce0de;font-size:16px;font-weight:560}
+    .settings-nav button[data-settings-section] {display:flex;align-items:center;gap:9px;width:100%;height:34px;padding:0 9px;border:0;border-radius:4px;background:transparent;color:#8d9591;cursor:pointer;text-align:left;font-size:11.5px}
+    .settings-nav button[data-settings-section]:hover {background:var(--hover);color:#cbd0cd}
+    .settings-nav button.active {background:var(--selected);color:#e0e3e1}
+    .settings-nav > button[data-action="close-settings"] {display:flex;align-items:center;gap:9px;width:100%;height:34px;padding:0 9px;border:0;border-radius:4px;background:transparent;color:#8d9591;cursor:pointer;text-align:left;font-size:11.5px}
+    .settings-nav > button[data-action="close-settings"]:hover {background:var(--hover);color:#cbd0cd}
+    .settings-nav .nav-spacer {flex:1}
+    .settings-version {padding:12px 9px 4px;border-top:1px solid var(--line);color:#6f7773;font:9.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+    .settings-main {min-width:0;overflow:auto;background:#111312}
+    .settings-content {width:min(800px,calc(100% - 52px));margin:0 auto;padding:35px 0 70px}
+    .settings-heading {display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:25px}
+    .settings-heading h1 {margin:0 0 6px;color:#e0e4e2;font-size:22px;font-weight:550;letter-spacing:-.35px}
+    .settings-heading p {margin:0;color:var(--muted);font-size:11.5px;line-height:1.5}
+    .settings-group {margin-bottom:24px}
+    .settings-group h3 {margin:0 0 8px;color:#9ba39f;font-size:10px;font-weight:650;letter-spacing:1px;text-transform:uppercase}
+    .settings-card {overflow:hidden;border:1px solid var(--line);border-radius:6px;background:#181a19}
+    .setting-row {display:flex;align-items:center;gap:20px;min-height:58px;padding:11px 14px;border-bottom:1px solid #272a28}
+    .setting-row:last-child {border-bottom:0}
+    .setting-copy {min-width:0;flex:1}
+    .setting-copy strong {display:block;color:#cbd0ce;font-size:12px;font-weight:520}
+    .setting-copy small {display:block;margin-top:3px;color:#747c78;font-size:10.5px;line-height:1.4}
+    .setting-control {flex:none}
+    .text-input,.select {height:32px;border:1px solid #343835;border-radius:4px;background:#101211;color:#cbd0cd;font-size:11px}
+    .text-input {width:260px;padding:0 9px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+    .select {min-width:155px;padding:0 27px 0 9px}
+    .switch {position:relative;width:35px;height:20px;cursor:pointer}
+    .switch input {position:absolute;opacity:0}
+    .switch span {position:absolute;inset:0;border:1px solid #3a3e3b;border-radius:12px;background:#252825;transition:120ms}
+    .switch span::after {position:absolute;top:3px;left:3px;width:12px;height:12px;border-radius:50%;background:#878f8a;content:"";transition:120ms}
+    .switch input:checked+span {border-color:var(--accent);background:color-mix(in srgb,var(--accent),#151817 28%)}
+    .switch input:checked+span::after {left:18px;background:#e2e6e3}
+    .segment {display:flex;padding:2px;border:1px solid #343835;border-radius:5px;background:#101211}
+    .segment button {height:27px;padding:0 9px;border:0;border-radius:3px;background:transparent;color:#77807b;cursor:pointer;font-size:10px}
+    .segment button.active {background:#303431;color:#d7dbd8}
+    .color-list {display:flex;gap:7px}
+    .swatch {width:25px;height:25px;border:2px solid transparent;border-radius:50%;cursor:pointer}
+    .swatch.active {border-color:#e1e5e2;box-shadow:0 0 0 2px #111312}
+    .color-picker {width:34px;height:28px;padding:2px;border:1px solid #3a3e3b;border-radius:4px;background:#111312;cursor:pointer}
+    input[type=range] {width:190px;accent-color:var(--accent)}
+    .range-label {display:inline-block;width:45px;color:#aeb5b1;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;text-align:right}
+    .terminal-preview {padding:15px 16px;background:var(--terminal);color:var(--terminal-text);font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}
+    .harness-row {display:grid;grid-template-columns:minmax(130px,1fr) minmax(180px,1.4fr) auto;align-items:center;gap:14px;min-height:62px;padding:10px 14px;border-bottom:1px solid #272a28}
+    .harness-row:last-child {border-bottom:0}
+    .harness-row strong {font-size:12px;font-weight:520}
+    .harness-row code {overflow:hidden;color:#848d88;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}
+    .settings-note {margin-top:9px;color:#6f7773;font-size:10px;line-height:1.5}
+    .shortcut-list .setting-row {min-height:47px}
+    .keys {display:flex;gap:4px}
+    .keys kbd {min-width:25px;padding:4px 7px;border:1px solid #3a3e3b;border-bottom-color:#505650;border-radius:4px;background:#222522;color:#aeb5b1;font:10px ui-monospace,SFMono-Regular,Consolas,monospace;text-align:center}
+    .about-mark {display:flex;align-items:center;gap:11px;padding:17px 14px}
+    .about-mark svg {width:25px;height:25px;color:#aab1ad}
+    .about-mark strong {display:block;font-size:14px;font-weight:570}
+    .about-mark small {color:#77807b;font:10px ui-monospace,SFMono-Regular,Consolas,monospace}
+
+    .cover {position:fixed;z-index:50;inset:0;display:grid;place-items:center;padding:18px;background:#070808d9;backdrop-filter:blur(2px)}
+    .dialog {width:min(580px,calc(100vw - 36px));max-height:min(720px,calc(100vh - 36px));overflow:auto;border:1px solid #363a37;border-radius:7px;background:#181a19;box-shadow:0 30px 80px #000c}
+    .dialog.small {width:min(430px,calc(100vw - 36px))}
+    .dialog-head {display:flex;align-items:flex-start;justify-content:space-between;padding:18px 19px 15px;border-bottom:1px solid var(--line)}
+    .dialog-head h2 {margin:0;color:#e0e4e1;font-size:16px;font-weight:550}
+    .dialog-head p {margin:5px 0 0;color:#7e8682;font-size:10.5px;line-height:1.45}
+    .dialog-body {padding:15px 18px 18px}
+    .dialog-footer {display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 18px;border-top:1px solid var(--line);background:#151716}
+    .wizard-kicker {margin-bottom:10px;color:#717975;font-size:9px;font-weight:650;letter-spacing:1px;text-transform:uppercase}
+    .choice {display:flex;align-items:center;gap:11px;width:100%;min-height:54px;margin-bottom:6px;padding:8px 10px;border:1px solid var(--line);border-radius:5px;background:#141615;color:#bdc3bf;cursor:pointer;text-align:left}
+    .choice:hover {border-color:#424743;background:#202320;color:#e0e3e1}
+    .choice > svg {color:#8a928e}
+    .choice span {min-width:0;flex:1}
+    .choice strong {display:block;font-size:11.5px;font-weight:530}
+    .choice small {display:block;overflow:hidden;margin-top:3px;color:#737b77;font:9.5px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}
+    .dialog-divider {display:flex;align-items:center;gap:10px;margin:16px 0 9px;color:#6f7773;font-size:9px;font-weight:650;letter-spacing:1px;text-transform:uppercase}
+    .dialog-divider::after {height:1px;flex:1;background:var(--line);content:""}
+    .field {display:block;margin-bottom:13px;color:#8f9792;font-size:10.5px}
+    .field input,.field select,.field textarea {width:100%;margin-top:6px;padding:0 9px;border:1px solid #353936;border-radius:4px;background:#101211;color:#d1d5d3}
+    .field input,.field select {height:34px}
+    .field textarea {min-height:78px;padding-top:8px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;resize:vertical}
+    .menu {position:fixed;z-index:60;width:205px;padding:4px;border:1px solid #393d3a;border-radius:5px;background:#202321;box-shadow:0 14px 35px #000a}
+    .menu button {display:flex;align-items:center;gap:9px;width:100%;height:32px;padding:0 8px;border:0;border-radius:3px;background:transparent;color:#c3c9c5;cursor:pointer;text-align:left;font-size:11px}
+    .menu button:hover {background:#303431;color:#e4e7e5}
+    .menu button.danger-item {color:#d38a8a}
+    .menu hr {height:1px;margin:4px;border:0;background:#343835}
+    .workspace-dialog-tools {display:flex;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}
+    .workspace-dialog-tools .rail-search {flex:1;margin:0}
+    .workspace-results {max-height:380px;overflow:auto;padding:8px 10px}
+    .workspace-result {display:flex;align-items:center;min-height:47px;border-radius:4px}
+    .workspace-result:hover {background:var(--hover)}
+    .workspace-result.current {background:var(--selected)}
+    .workspace-result-main {display:flex;align-items:center;gap:10px;min-width:0;flex:1;height:47px;padding:0 9px;border:0;background:transparent;color:#cbd0ce;cursor:pointer;text-align:left}
+    .workspace-result-main .folder-box {display:grid;place-items:center;width:28px;height:28px;flex:none;border:1px solid #353a36;border-radius:4px;background:#1b1e1c;color:#8b938e}
+    .workspace-result-main span:nth-child(2) {min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px}
+    .workspace-result small {display:inline-flex;align-items:center;gap:5px;margin-right:8px;color:#818985;font-size:9px}
+    .workspace-result small svg {width:13px;height:13px}
+    .code-block {max-height:340px;overflow:auto;padding:14px;border:1px solid var(--line);border-radius:4px;background:#0d0f0e;color:#aeb6b1;font:10.5px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap}
+    .toast {position:fixed;z-index:100;bottom:42px;left:50%;padding:8px 11px;border:1px solid #3b403c;border-radius:5px;background:#262a27;color:#d7dbd8;box-shadow:0 10px 30px #0008;font-size:10.5px;transform:translateX(-50%)}
+    @media (max-width:980px) {.workspace-rail{position:absolute;z-index:20;top:45px;bottom:0;left:0;box-shadow:18px 0 45px #000a}.settings-content{width:calc(100% - 34px)}.topbar .button .shortcut{display:none}}
+  </style>
+</head>
+<body>
+  <div id="app" class="app"></div>
+  <script>
+  (() => {
+    'use strict';
+    const app=document.querySelector('#app');
+    const icons={
+      anchor:'<path d="M12 3v18M8 7h8M5 12a7 7 0 0 0 14 0M3 12h4M17 12h4"/>',
+      archive:'<path d="M4 7h16v13H4zM3 4h18v3H3zM9 11h6"/>',
+      check:'<path d="m5 12 4 4L19 6"/>',
+      chevron:'<path d="m9 18 6-6-6-6"/>',
+      close:'<path d="m7 7 10 10M17 7 7 17"/>',
+      down:'<path d="m6 9 6 6 6-6"/>',
+      download:'<path d="M12 3v12m-5-5 5 5 5-5M5 21h14"/>',
+      edit:'<path d="m4 20 4-1 11-11-3-3L5 16l-1 4Z"/>',
+      folder:'<path d="M3 6h7l2 2h9v11H3z"/>',
+      keyboard:'<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M18 10h.01M7 14h10"/>',
+      minimize:'<path d="M6 9h12M12 5v14m-4-4 4 4 4-4"/>',
+      more:'<circle cx="5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none"/>',
+      palette:'<circle cx="12" cy="12" r="9"/><circle cx="8" cy="9" r="1"/><circle cx="12" cy="7" r="1"/><circle cx="16" cy="9" r="1"/><path d="M12 21a3 3 0 0 1 0-6h2a2 2 0 0 0 2-2"/>',
+      panel:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>',
+      plus:'<path d="M12 5v14M5 12h14"/>',
+      search:'<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
+      send:'<path d="m4 4 17 8-17 8 3-8-3-8Z"/><path d="M7 12h14"/>',
+      settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/>',
+      star:'<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/>',
+      trash:'<path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/>',
+      upload:'<path d="M12 15V3m-5 5 5-5 5 5M5 21h14"/>',
+      wrench:'<path d="M14 6a4 4 0 0 0-5 5L3 17l4 4 6-6a4 4 0 0 0 5-5l-3 3-3-3 2-4Z"/>'
+    };
+    const icon=name=>'<svg aria-hidden="true" viewBox="0 0 24 24">'+(icons[name]||icons.chevron)+'</svg>';
+    const esc=value=>String(value??'').replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+    const spaces=[
+      {id:'default',name:'Default',pinned:true,archived:false},
+      {id:'release',name:'Release planning',pinned:true,archived:false},
+      {id:'research',name:'Research lab',pinned:false,archived:false},
+      {id:'archive',name:'2025 archive',pinned:false,archived:true}
+    ];
+    const projects=[
+      {id:'orion',name:'Orion API',path:'/workspace/orion-api'},
+      {id:'beacon',name:'Beacon Web',path:'/workspace/beacon-web'},
+      {id:'atlas',name:'Atlas CLI',path:'/workspace/atlas-cli'},
+      {id:'legacy',name:'Archive Tools',path:'/workspace/archive-tools',emptySince:Date.now()-13*60*60*1000}
+    ];
+    const sessions=[
+      {id:'path',workspace:'default',project:'orion',title:'Path Resolver',tool:'Codex',open:true,unread:false,favorite:true,status:'waiting',cliId:'cx-7ad2'},
+      {id:'cleanup',workspace:'default',project:'orion',title:'Session Cleanup',tool:'Claude Code',open:true,unread:true,favorite:false,status:'waiting',cliId:'cc-31ef'},
+      {id:'keyboard',workspace:'default',project:'beacon',title:'Keyboard Navigation',tool:'Copilot',open:true,unread:false,favorite:true,status:'running',cliId:'co-924b'},
+      {id:'retry',workspace:'default',project:'atlas',title:'Retry Handling',tool:'opencode',open:false,unread:false,favorite:false,status:'stopped',cliId:'oc-812c'},
+      {id:'identity',workspace:'default',project:'atlas',title:'Missing Session Identity',tool:'Codex',open:false,unread:false,favorite:false,status:'stopped',cliId:''},
+      {id:'release-notes',workspace:'release',project:'orion',title:'Release Notes',tool:'Claude Code',open:true,unread:false,favorite:true,status:'waiting',cliId:'cc-119d'},
+      {id:'smoke',workspace:'release',project:'beacon',title:'Windows Smoke Test',tool:'Copilot',open:false,unread:false,favorite:false,status:'stopped',cliId:'co-41aa'},
+      {id:'sources',workspace:'research',project:'atlas',title:'Provider Comparison',tool:'Terminal',open:true,unread:false,favorite:false,status:'running',cliId:''}
+    ];
+    const state={
+      workspace:'default',activeByWorkspace:{default:'path',release:'release-notes',research:'sources'},
+      railOpen:true,railPinned:false,view:'terminal',settingsSection:'general',filter:'',hiddenOpen:false,
+      collapsed:new Set(),tabOrder:{default:['path','cleanup','keyboard'],release:['release-notes'],research:['sources']},
+      projectOrder:['orion','beacon','atlas','legacy'],drafts:{},logs:{},sequence:20,menu:null,modal:null,dragTab:null,dragProject:null,dragSession:null,readTimer:null,
+      settings:{shell:'pwsh.exe',projectsDir:'~/Documents/Anchor/Projects',autoRestore:true,confirmClose:true,stopOnClose:true,notifyOnWaiting:false,responseReadDelayMs:1000,railAutoCollapse:true,hideEmptyHours:12,theme:'graphite',accent:'#88a99d',density:'compact',fontSize:13,terminalBackground:'#0c0e0d',terminalForeground:'#cbd0ce',terminalGreen:'#92bd94',terminalCyan:'#77b2ba',terminalPurple:'#aea1c5',terminalYellow:'#d0b57a',restoreScrollback:true,retentionDays:30,backupPath:'~/.anchor/sessions',autoTitle:true,reuseTitleSessions:true},
+      harnesses:[
+        {id:'claude',name:'Claude Code',executable:'claude',launchArgs:'',args:'--resume {sessionId}',strategy:'output discovery',idQuery:'provider output event',workingDir:'{projectPath}',dataDir:'<platform data>/claude'},
+        {id:'codex',name:'Codex',executable:'codex',launchArgs:'',args:'resume {sessionId}',strategy:'preassigned or rollout discovery',idQuery:'rollout metadata lookup',workingDir:'{projectPath}',dataDir:'<platform data>/codex'},
+        {id:'copilot',name:'Copilot',executable:'copilot',launchArgs:'',args:'--resume {sessionId}',strategy:'output discovery',idQuery:'provider output event',workingDir:'{projectPath}',dataDir:'<platform data>/copilot'},
+        {id:'opencode',name:'opencode',executable:'opencode',launchArgs:'',args:'--session {sessionId}',strategy:'provider store lookup',idQuery:'provider session store',workingDir:'{projectPath}',dataDir:'<platform data>/opencode'},
+        {id:'terminal',name:'Generic terminal',executable:'{defaultShell}',launchArgs:'',args:'',strategy:'not applicable',idQuery:'none',workingDir:'{projectPath}',dataDir:'<platform data>/anchor/terminal'}
+      ]
+    };
+    const currentSpace=()=>spaces.find(item=>item.id===state.workspace);
+    const currentId=()=>state.activeByWorkspace[state.workspace]||null;
+    const current=()=>sessions.find(item=>item.id===currentId());
+    const project=id=>projects.find(item=>item.id===id);
+    const visible=()=>sessions.filter(item=>item.workspace===state.workspace);
+    const orderedTabs=()=>{
+      const open=visible().filter(item=>item.open);
+      const order=state.tabOrder[state.workspace]||[];
+      return [...open].sort((a,b)=>{
+        const ai=order.indexOf(a.id),bi=order.indexOf(b.id);
+        return (ai<0?999:ai)-(bi<0?999:bi);
+      });
+    };
+    const orderedSessions=projectId=>visible().filter(item=>item.project===projectId).sort((a,b)=>(b.lastSubmitted||0)-(a.lastSubmitted||0));
+    function topbar(){
+      const active=current();
+      return '<header class="topbar"><div class="brand">'+icon('anchor')+'<span>Anchor</span></div><div class="crumb"><span>'+esc(state.view==='settings'?'Settings':currentSpace().name)+'</span><span>/</span><strong>'+esc(state.view==='settings'?settingsTitle():project(active?.project)?.name||'Sessions')+'</strong></div><div class="top-actions">'+(state.view==='settings'?'<button class="button ghost" data-action="close-settings">'+icon('close')+'Close settings</button>':'<button class="button ghost" data-action="open-palette">'+icon('search')+'Search <kbd class="shortcut">⌘ K</kbd></button><button class="button primary" data-action="new-session">'+icon('plus')+'New session</button>')+'</div></header>';
+    }
+    function workspaceRail(){
+      const group=(label,items)=>'<div class="rail-label">'+label+'</div>'+items.map(item=>'<button class="workspace-item '+(item.id===state.workspace?'active':'')+'" data-action="switch-workspace" data-id="'+item.id+'" data-workspace="'+item.id+'">'+icon('folder')+'<span>'+esc(item.name)+'</span><small>'+sessions.filter(s=>s.workspace===item.id).length+'</small></button>').join('');
+      return '<aside class="workspace-rail" '+(!state.railOpen?'hidden':'')+' aria-label="Workspaces"><div class="rail-head"><span>Workspaces</span><button class="icon-button" data-action="manage-workspaces" aria-label="Manage workspaces" title="Manage workspaces">'+icon('more')+'</button></div><label class="rail-search">'+icon('search')+'<input type="search" data-workspace-filter placeholder="Find workspace" aria-label="Find workspace"></label><div class="rail-list">'+group('Pinned',spaces.filter(w=>w.pinned&&!w.archived))+group('Other workspaces',spaces.filter(w=>!w.pinned&&!w.archived))+'</div><div class="rail-actions"><button class="rail-action" data-action="new-workspace">'+icon('plus')+'New workspace</button><button class="rail-action" data-action="manage-workspaces">'+icon('archive')+'Archived workspaces</button></div></aside>';
+    }
+    function sessionRow(item,isFavorite=false){
+      const attention=item.open?'<span class="attention '+(item.unread?'unread':'')+'" aria-label="'+(item.unread?'Response ready':'Open tab')+'"></span>':'';
+      return '<div class="session-row '+(item.id===currentId()?'active':'')+'" draggable="true" data-session="'+item.id+'"><button class="session-select" data-action="select-session" data-id="'+item.id+'"><span class="session-title">'+esc(item.title)+'</span>'+attention+'</button><div class="session-actions"><button class="icon-button" data-action="'+(item.open?'minimize-session':'delete-session')+'" data-id="'+item.id+'" aria-label="'+(item.open?'Close tab':'Delete session')+'" title="'+(item.open?'Close tab':'Delete session')+'">'+icon(item.open?'minimize':'trash')+'</button><button class="icon-button" data-action="session-menu" data-id="'+item.id+'" aria-label="Session options" title="Session options">'+icon('more')+'</button></div></div>';
+    }
+    function projectGroup(item,hidden=false){
+      const rows=orderedSessions(item.id).filter(session=>matches(session));
+      const collapsed=state.collapsed.has(item.id);
+      return '<section class="project '+(hidden?'hidden-project':'')+'" draggable="'+(!hidden)+'" data-project="'+item.id+'"><div class="project-head"><button class="project-toggle" data-action="toggle-project" data-id="'+item.id+'" aria-expanded="'+(!collapsed)+'"><span class="disclosure">'+icon(collapsed?'chevron':'down')+'</span><span class="project-name">'+esc(item.name)+'</span></button><div class="project-actions"><button class="icon-button" data-action="new-in-project" data-id="'+item.id+'" aria-label="New session in '+esc(item.name)+'" title="New session">'+icon('plus')+'</button><button class="icon-button" data-action="project-menu" data-id="'+item.id+'" aria-label="Project options" title="Project options">'+icon('more')+'</button></div></div>'+(collapsed?'':rows.map(row=>sessionRow(row)).join(''))+'</section>';
+    }
+    function matches(item){const term=state.filter.trim().toLowerCase();return !term||(item.title+' '+item.tool+' '+project(item.project)?.name).toLowerCase().includes(term)}
+    function sessionSidebar(){
+      const favorites=visible().filter(item=>item.favorite&&matches(item));
+      const allProjects=state.projectOrder.map(id=>project(id)).filter(Boolean);
+      const hideAfterMs=state.settings.hideEmptyHours*60*60*1000;
+      const hidden=allProjects.filter(item=>!orderedSessions(item.id).length&&item.emptySince&&Date.now()-item.emptySince>=hideAfterMs);
+      const activeProjects=allProjects.filter(item=>!hidden.includes(item)&&(orderedSessions(item.id).length||!item.emptySince||Date.now()-item.emptySince<hideAfterMs||state.filter));
+      const groups=activeProjects.map(item=>projectGroup(item)).join('');
+      return '<aside class="sidebar" aria-label="Sessions"><button class="current-workspace" data-action="toggle-workspace-rail" aria-expanded="'+state.railOpen+'">'+icon('folder')+'<span class="workspace-copy"><small>WORKSPACE · SWITCH</small><strong>'+esc(currentSpace().name)+'</strong></span><span class="chevron">'+icon('chevron')+'</span></button><label class="sidebar-search">'+icon('search')+'<input type="search" data-session-filter placeholder="Search sessions" value="'+esc(state.filter)+'" aria-label="Search sessions"></label><div class="session-lists"><div class="section-label">Favorites</div>'+(favorites.length?favorites.map(item=>sessionRow(item,true)).join(''):'<p class="empty-copy">Favorite chats appear here.</p>')+'<div class="section-label">All chats</div>'+groups+(hidden.length?'<button class="hidden-toggle" data-action="toggle-hidden"><span>Hidden</span><small>'+hidden.length+'</small>'+icon(state.hiddenOpen?'down':'chevron')+'</button>':'')+(state.hiddenOpen?hidden.map(item=>projectGroup(item,true)).join(''):'')+'</div><footer class="sidebar-foot"><button class="icon-button" data-action="toggle-workspace-rail" aria-label="Toggle workspaces" title="Toggle workspaces">'+icon('panel')+'</button><button class="settings-link" data-action="open-settings">'+icon('settings')+'Settings</button></footer></aside>';
+    }
+    function tabs(){
+      return '<nav class="tabs" role="tablist" aria-label="Open sessions">'+orderedTabs().map(item=>'<div class="tab '+(item.id===currentId()?'active':'')+'" role="tab" aria-selected="'+(item.id===currentId())+'" draggable="true" data-tab="'+item.id+'"><button class="tab-select" data-action="select-session" data-id="'+item.id+'"><span class="tab-title">'+esc(item.title)+'</span>'+(item.unread?'<span class="attention" aria-label="Unread response"></span>':'')+'</button><button class="icon-button" data-action="close-tab" data-id="'+item.id+'" aria-label="Close '+esc(item.title)+'" title="Close tab">'+icon('close')+'</button></div>').join('')+'<button class="new-tab" data-action="new-session" aria-label="New session" title="New session">'+icon('plus')+'</button></nav>';
+    }
+    function transcript(item){
+      const samples={
+        path:['Fix the path handling and add regression tests.','I found the issue in the working-directory resolver. Windows paths were passed to the shell before the extended prefix was removed.','Updated src/path-resolver.ts\nAdded drive-letter and mapped-folder coverage','All 30 path and session tests passed.'],
+        cleanup:['Check the close and delete behavior.','Closing a tab now keeps its saved conversation. Deleting a closed session removes it in one confirmed action.','Added lifecycle regression coverage','The session registry stays consistent after ConPTY shutdown.'],
+        keyboard:['Make the command menu work with the keyboard.','Arrow keys move the selection. Enter opens the chat, and Escape closes the menu.','Focus returns to the terminal','Keyboard navigation is ready for review.'],
+        'release-notes':['Draft concise release notes.','The draft covers session recovery, workspace navigation, and Windows path handling.','No private paths or provider data included','Release notes are ready for review.'],
+        sources:['Compare the provider adapters.','Each harness uses the same launch contract while keeping provider-specific identity discovery in configuration.','claude  codex  copilot  opencode','Adapter comparison complete.']
+      };
+      const content=samples[item.id]||['Open this saved conversation.','This is a safe demo transcript. No external process is running.','Sample state only','Ready for your next message.'];
+      const log=(state.logs[item.id]||[]).map(line=>'<p class="'+(line.user?'command':'success')+'">'+esc(line.text)+'</p>').join('');
+      return '<p class="welcome">'+esc(item.tool)+' <span class="muted">/ '+esc(item.title)+'</span></p><p class="muted">'+esc(project(item.project)?.path) + '  ·  main</p><p class="command">› '+esc(content[0])+'</p><p>'+esc(content[1])+'</p><p class="muted">• '+esc(content[2])+'</p><p class="success">'+esc(content[3])+'</p>'+log;
+    }
+    function closeTab(id,force=false){
+      const item=sessions.find(session=>session.id===id);if(!item)return;
+      if(item.awaiting&&!force&&state.settings.confirmClose){state.modal={kind:'confirm-close',id};render();return;}
+      const open=orderedTabs(),index=open.findIndex(tab=>tab.id===id);item.open=false;
+      state.tabOrder[state.workspace]=(state.tabOrder[state.workspace]||[]).filter(tabId=>tabId!==id);
+      if(currentId()===id){const remaining=open.filter(tab=>tab.id!==id);state.activeByWorkspace[state.workspace]=remaining[Math.min(index,remaining.length-1)]?.id||remaining.at(-1)?.id||null;}
+      clearTimeout(state.readTimer);render();
+    }
+    function cycleTab(offset){const tabs=orderedTabs();if(tabs.length<2)return;const index=Math.max(0,tabs.findIndex(item=>item.id===currentId())),next=tabs[(index+offset+tabs.length)%tabs.length];selectSession(next.id)}
+    function resumeCurrent(){const item=current();if(!item||item.status!=='stopped')return;if(!item.cliId)item.cliId='demo-repaired-'+(++state.sequence);item.status='running';render();toast('Session resumed')}
+    // Selection opens a tab but never changes chat order; only a submitted message can promote a chat.
+    function selectSession(id,markRead=true){
+      const item=sessions.find(session=>session.id===id);if(!item)return;
+      if(item.workspace!==state.workspace)switchWorkspace(item.workspace);
+      item.open=true;state.activeByWorkspace[state.workspace]=id;state.view='terminal';state.modal=null;state.menu=null;
+      const order=state.tabOrder[state.workspace]||=[];if(!order.includes(id))order.push(id);
+      render();clearTimeout(state.readTimer);
+      if(item.unread&&markRead){state.readTimer=setTimeout(()=>{if(currentId()===id&&item.open){item.unread=false;render();}},state.settings.responseReadDelayMs);}
+    }
+    function terminalView(){
+      const item=current();
+      if(!item)return '<main class="main">'+tabs()+'<section class="empty-state"><div><h2>No tab open</h2><p>Open a saved chat from the sidebar or start a new session.</p><button class="button primary" data-action="new-session">'+icon('plus')+'New session</button></div></section><footer class="statusbar"><span>Sample data · no live CLI</span><span class="push">⌘ K Search</span></footer></main>';
+      if(item.status==='stopped'&&!item.cliId)return '<main class="main">'+tabs()+'<section class="repair-card"><div class="repair-panel">'+icon('wrench')+'<h2>This chat has no saved CLI session ID</h2><p>Start a new provider conversation inside this existing Anchor chat. Anchor will attach the new ID here and keep one visible record.</p><div class="meta">Harness  '+esc(item.tool)+'\nFolder   '+esc(project(item.project)?.path)+'\nRecord   '+esc(item.id)+'</div><button class="button primary" data-action="repair-session" data-id="'+item.id+'">Start new chat in this session</button></div></section><footer class="statusbar"><span>'+esc(item.title)+'</span><span class="push">Identity repair required</span></footer></main>';
+      return '<main class="main">'+tabs()+'<section class="terminal" aria-label="'+esc(item.title)+' terminal"><div class="terminal-output" role="log">'+transcript(item)+'</div><form class="prompt" data-prompt><span>›</span><input name="message" value="'+esc(state.drafts[item.id]||'')+'" placeholder="Message '+esc(item.tool)+'…" autocomplete="off" aria-label="Message '+esc(item.tool)+'"><button aria-label="Send message" title="Send">'+icon('send')+'</button></form></section><footer class="statusbar"><span>'+esc(item.title)+'</span><span>'+esc(item.tool)+'</span><span class="status-chip">'+esc(item.cliId||'local terminal')+'</span><span class="push">'+(item.awaiting?'AI responding':'Ready')+'</span><span class="status-chip">'+esc(item.status)+'</span></footer></main>';
+    }
+    const settingsNav=[['general','settings','General'],['appearance','palette','Appearance'],['notifications','check','Notifications'],['terminal','panel','Terminal'],['harnesses','wrench','Harnesses'],['storage','archive','Persistence & backup'],['shortcuts','keyboard','Keyboard shortcuts'],['about','anchor','About']];
+    function settingsTitle(){return settingsNav.find(item=>item[0]===state.settingsSection)?.[2]||'General'}
+    function toggle(key,label,help){return '<div class="setting-row"><div class="setting-copy"><strong>'+label+'</strong><small>'+help+'</small></div><label class="switch setting-control"><input type="checkbox" data-setting="'+key+'" '+(state.settings[key]?'checked':'')+'><span></span></label></div>'}
+    function settingsGeneral(){
+      const emptyDelayOptions=[[12,'After 12 hours'],[24,'After 24 hours'],[168,'After 7 days']]
+        .map(([value,label])=>'<option value="'+value+'" '+(state.settings.hideEmptyHours===value?'selected':'')+'>'+label+'</option>').join('');
+      return '<div class="settings-group"><h3>Launch</h3><div class="settings-card"><div class="setting-row"><div class="setting-copy"><strong>Default shell</strong><small>Used for generic terminals and harness launch commands.</small></div><input class="text-input setting-control" data-setting="shell" value="'+esc(state.settings.shell)+'"></div><div class="setting-row"><div class="setting-copy"><strong>Projects directory</strong><small>New projects are created inside this directory.</small></div><input class="text-input setting-control" data-setting="projectsDir" value="'+esc(state.settings.projectsDir)+'"></div>'+toggle('autoRestore','Restore open tabs on launch','Reopen saved tabs and resume their sessions after Anchor starts.')+toggle('confirmClose','Confirm before interrupting an AI response','Idle provider processes close without a warning.')+toggle('stopOnClose','Stop session when its tab closes','The saved chat remains available in the sidebar.')+'</div></div><div class="settings-group"><h3>Workspaces and titles</h3><div class="settings-card">'+toggle('railAutoCollapse','Auto-collapse the workspace rail','Close the workspace list after you choose a workspace.')+'<div class="setting-row"><div class="setting-copy"><strong>Hide empty projects</strong><small>Move empty project groups into Hidden after this period.</small></div><select class="select setting-control" data-setting="hideEmptyHours">'+emptyDelayOptions+'</select></div>'+toggle('autoTitle','Name chats from the first message','Generate a concise 3–5 word title after the first submitted message.')+toggle('reuseTitleSessions','Reuse one hidden title session per harness','Keep title-generation sessions outside the visible session manager and in a dedicated directory.')+'</div></div>';
+    }
+    function settingsAppearance(){
+      const swatches=['#88a99d','#8ea4bd','#a49abb','#b09b83'];
+      const terminalColors=[['terminalBackground','Terminal background'],['terminalForeground','Terminal text'],['terminalGreen','Success'],['terminalCyan','Provider'],['terminalPurple','Accent output'],['terminalYellow','Warning']]
+        .map(([key,label])=>'<div class="setting-row"><div class="setting-copy"><strong>'+label+'</strong><small>'+state.settings[key]+'</small></div><input class="color-picker" type="color" data-setting="'+key+'" value="'+state.settings[key]+'" aria-label="'+label+'"></div>').join('');
+      return '<div class="settings-group"><h3>Interface</h3><div class="settings-card"><div class="setting-row"><div class="setting-copy"><strong>Theme</strong><small>All Anchor themes use dark, flat surfaces without gradients.</small></div><div class="segment">'+['graphite','obsidian','nebula'].map(value=>'<button data-action="set-theme" data-value="'+value+'" class="'+(state.settings.theme===value?'active':'')+'">'+value[0].toUpperCase()+value.slice(1)+'</button>').join('')+'</div></div><div class="setting-row"><div class="setting-copy"><strong>Accent color</strong><small>Used for focus, active tabs, switches, and primary controls.</small></div><div class="color-list">'+swatches.map(value=>'<button class="swatch '+(state.settings.accent===value?'active':'')+'" style="background:'+value+'" data-action="set-accent" data-value="'+value+'" aria-label="Use '+value+'"></button>').join('')+'</div></div><div class="setting-row"><div class="setting-copy"><strong>Interface density</strong><small>Controls the spacing in lists and settings.</small></div><div class="segment"><button data-action="set-density" data-value="compact" class="'+(state.settings.density==='compact'?'active':'')+'">Compact</button><button data-action="set-density" data-value="comfortable" class="'+(state.settings.density==='comfortable'?'active':'')+'">Comfortable</button></div></div></div></div><div class="settings-group"><h3>Terminal</h3><div class="settings-card"><div class="setting-row"><div class="setting-copy"><strong>Terminal font size</strong><small>Applies to all live and restored terminal views.</small></div><div><input type="range" min="11" max="18" value="'+state.settings.fontSize+'" data-setting="fontSize"><span class="range-label">'+state.settings.fontSize+' px</span></div></div>'+terminalColors+'<div class="terminal-preview"><span style="color:var(--cyan)">codex</span> <span style="color:var(--muted)">/ workspace</span>\n<span style="color:var(--green)">✓</span> Tests passed. <span style="color:var(--purple)">Ready</span> for your next message.</div></div></div>';
+    }
+    function settingsNotifications(){return '<div class="settings-group"><h3>Response attention</h3><div class="settings-card">'+toggle('notifyOnWaiting','Notify when a session needs attention','Show an operating-system notification when a background response finishes.')+'<div class="setting-row"><div class="setting-copy"><strong>Mark a response as read</strong><small>Keep the blue indicator visible until the tab has stayed active for this long.</small></div><select class="select setting-control" data-setting="responseReadDelayMs"><option value="0" '+(state.settings.responseReadDelayMs===0?'selected':'')+'>Instant</option><option value="1000" '+(state.settings.responseReadDelayMs===1000?'selected':'')+'>1 second</option><option value="2500" '+(state.settings.responseReadDelayMs===2500?'selected':'')+'>2.5 seconds</option><option value="5000" '+(state.settings.responseReadDelayMs===5000?'selected':'')+'>5 seconds</option></select></div></div><p class="settings-note">Blue appears only when a background tab has a completed response. Closed tabs show no status color. Switching tabs during automatic close selection does not mark a response as read.</p></div>'}
+    function settingsTerminal(){return '<div class="settings-group"><h3>Session behavior</h3><div class="settings-card">'+toggle('restoreScrollback','Save and restore terminal scrollback','Restore generic terminal output when a saved session resumes.')+'<div class="setting-row"><div class="setting-copy"><strong>Scrollback retention</strong><small>Remove stored terminal output after the selected period.</small></div><div><input type="range" min="1" max="90" value="'+state.settings.retentionDays+'" data-setting="retentionDays"><span class="range-label">'+state.settings.retentionDays+' days</span></div></div></div></div><div class="settings-group"><h3>Environment variables</h3><div class="settings-card"><div class="setting-row"><div class="setting-copy"><strong>Shared launch environment</strong><small>Values are stored locally and masked in the interface.</small></div><button class="button" data-action="demo-toast" data-message="Environment editor opened">Manage variables</button></div></div></div>'}
+    function settingsHarnesses(){return '<div class="settings-group"><h3>Configured harnesses</h3><div class="settings-card">'+state.harnesses.map(item=>'<div class="harness-row"><strong>'+esc(item.name)+'</strong><code>'+esc(item.executable+' '+item.launchArgs)+'</code><button class="button ghost" data-action="edit-harness" data-id="'+item.id+'">Edit</button></div>').join('')+'</div><p class="settings-note">Harness definitions describe the executable, launch and resume arguments, session identity strategy, provider data location, and working-directory rules. Built-in definitions ship as defaults and can be overridden locally.</p></div><button class="button primary" data-action="add-harness">'+icon('plus')+'Add custom harness</button>'}
+    function settingsStorage(){return '<div class="settings-group"><h3>Persistence</h3><div class="settings-card"><div class="setting-row"><div class="setting-copy"><strong>Backup location</strong><small>Session registry and retained terminal scrollback.</small></div><input class="text-input setting-control" data-setting="backupPath" value="'+esc(state.settings.backupPath)+'"></div><div class="setting-row"><div class="setting-copy"><strong>Saved sessions</strong><small>'+sessions.length+' demo session records across '+projects.length+' project folders.</small></div><button class="button ghost" data-action="demo-toast" data-message="Backup location selected">Browse</button></div></div></div><div class="settings-group"><h3>Transfer</h3><div class="settings-card"><div class="setting-row"><div class="setting-copy"><strong>Export sessions</strong><small>Create a portable copy of the session registry.</small></div><button class="button" data-action="demo-toast" data-message="Demo export completed">'+icon('download')+'Export…</button></div><div class="setting-row"><div class="setting-copy"><strong>Import sessions</strong><small>Merge another Anchor registry by stable session ID.</small></div><button class="button" data-action="demo-toast" data-message="Demo import opened">'+icon('upload')+'Import…</button></div></div></div>'}
+    function settingsShortcuts(){const rows=[['Command palette',['⌘','K']],['Settings',['⌘',',']],['Close tab',['⌘','W']],['Next or previous tab',['⌃','⇥']],['Resume selected session',['⌘','↩']],['New generic terminal',['⌘','T']],['Focus session filter',['⌘','F']]];return '<div class="settings-group"><h3>Keyboard shortcuts</h3><div class="settings-card shortcut-list">'+rows.map(row=>'<div class="setting-row"><div class="setting-copy"><strong>'+row[0]+'</strong></div><span class="keys">'+row[1].map(key=>'<kbd>'+key+'</kbd>').join('')+'</span></div>').join('')+'</div><p class="settings-note">Use Ctrl instead of Command on Windows and Linux.</p></div>'}
+    function settingsAbout(){return '<div class="settings-group"><h3>Application</h3><div class="settings-card"><div class="about-mark">'+icon('anchor')+'<span><strong>Anchor</strong><small>Version 0.2.0 · implementation mock</small></span></div><div class="setting-row"><div class="setting-copy"><strong>Settings file</strong><small>&lt;platform config&gt;/anchor/settings.json</small></div><button class="button" data-action="show-settings-json">View JSON</button></div><div class="setting-row"><div class="setting-copy"><strong>Diagnostics</strong><small>Provider detection and local configuration status.</small></div><button class="button" data-action="demo-toast" data-message="All five demo harnesses detected">Run checks</button></div></div></div>'}
+    function settingsBody(){return ({general:settingsGeneral,appearance:settingsAppearance,notifications:settingsNotifications,terminal:settingsTerminal,harnesses:settingsHarnesses,storage:settingsStorage,shortcuts:settingsShortcuts,about:settingsAbout}[state.settingsSection]||settingsGeneral)()}
+    function settingsView(){return '<div class="settings-shell"><nav class="settings-nav" aria-label="Settings sections"><h2>Settings</h2>'+settingsNav.map(item=>'<button data-settings-section="'+item[0]+'" class="'+(state.settingsSection===item[0]?'active':'')+'">'+icon(item[1])+'<span>'+item[2]+'</span></button>').join('')+'<div class="nav-spacer"></div><button data-action="close-settings">'+icon('chevron')+'<span>Back to sessions</span></button><div class="settings-version">Anchor 0.2.0<br>Local settings only</div></nav><main class="settings-main"><div class="settings-content"><header class="settings-heading"><div><h1>'+settingsTitle()+'</h1><p>'+({general:'Startup, workspace, and chat behavior.',appearance:'Dark surfaces, density, and terminal presentation.',notifications:'Control when finished responses ask for attention.',terminal:'Shell behavior, environment, and scrollback.',harnesses:'Built-in and custom terminal-provider definitions.',storage:'Local session persistence, import, and export.',shortcuts:'Available application keyboard commands.',about:'Version and local configuration details.'}[state.settingsSection])+'</p></div></header>'+settingsBody()+'</div></main></div>'}
+    function render(){
+      app.classList.toggle('rail-visible',state.railOpen);
+      app.classList.toggle('settings-open',state.view==='settings');
+      app.dataset.theme=state.settings.theme;
+      app.dataset.density=state.settings.density;
+      app.style.setProperty('--terminal-font-size',state.settings.fontSize+'px');
+      app.style.setProperty('--accent',state.settings.accent);
+      app.style.setProperty('--terminal',state.settings.terminalBackground);
+      app.style.setProperty('--terminal-text',state.settings.terminalForeground);
+      app.style.setProperty('--green',state.settings.terminalGreen);
+      app.style.setProperty('--cyan',state.settings.terminalCyan);
+      app.style.setProperty('--purple',state.settings.terminalPurple);
+      app.style.setProperty('--yellow',state.settings.terminalYellow);
+      app.innerHTML=topbar()+(state.view==='settings'?settingsView():'<div class="shell">'+workspaceRail()+sessionSidebar()+terminalView()+'</div>')+modalMarkup()+(state.menu?menuMarkup():'');
+      if(state.menu)requestAnimationFrame(positionMenu);
+    }
+    function modalMarkup(){
+      if(!state.modal)return '';
+      const modal=state.modal;
+      if(modal.kind==='new-session')return newSessionModal(modal);
+      if(modal.kind==='workspaces')return workspacesModal(modal);
+      if(modal.kind==='confirm-close'){const item=sessions.find(s=>s.id===modal.id);return cover('Interrupt the active response?','The AI is still responding in '+esc(item?.title)+'. Closing this top tab will stop the session.','<button class="button ghost" data-action="dismiss-modal">Keep open</button><button class="button danger" data-action="force-close" data-id="'+modal.id+'">Stop and close</button>','small')}
+      if(modal.kind==='delete'){const item=sessions.find(s=>s.id===modal.id);return cover('Delete this session?','The saved session ID for '+esc(item?.title)+' will be removed.','<button class="button ghost" data-action="dismiss-modal">Cancel</button><button class="button danger" data-action="confirm-delete" data-id="'+modal.id+'">Delete session</button>','small')}
+      if(modal.kind==='set-id'){const item=sessions.find(s=>s.id===modal.id);return '<div class="cover"><form class="dialog small" data-form="set-id" role="dialog" aria-modal="true"><header class="dialog-head"><div><h2>Set session ID</h2><p>Attach an existing '+esc(item?.tool)+' conversation to this stopped Anchor chat.</p></div><button type="button" class="icon-button" data-action="dismiss-modal" aria-label="Close">'+icon('close')+'</button></header><div class="dialog-body"><input type="hidden" name="id" value="'+modal.id+'"><label class="field">CLI session ID<input name="cliId" value="'+esc(item?.cliId)+'" required maxlength="160" pattern="[A-Za-z0-9._:-]+" placeholder="provider-session-id"></label></div><footer class="dialog-footer"><button type="button" class="button ghost" data-action="dismiss-modal">Cancel</button><button class="button primary">Save ID</button></footer></form></div>'}
+      if(modal.kind==='harness')return harnessModal(modal);
+      if(modal.kind==='palette')return paletteModal();
+      if(modal.kind==='rename')return renameModal(modal);
+      if(modal.kind==='workspace-create')return workspaceCreateModal();
+      if(modal.kind==='remove-project')return removeProjectModal(modal);
+      if(modal.kind==='settings-json')return cover('settings.json','This preview uses synthetic values. Secrets and provider data never belong in this file.','<button class="button" data-action="dismiss-modal">Close</button>','settings-json');
+      return '';
+    }
+    function cover(title,copy,actions,variant=''){const settingsDocument={...state.settings,harnesses:state.harnesses};const body=variant==='settings-json'?'<div class="code-block">'+esc(JSON.stringify(settingsDocument,null,2))+'</div>':'';return '<div class="cover"><section class="dialog '+(variant==='small'?'small':'')+'" role="dialog" aria-modal="true"><header class="dialog-head"><div><h2>'+title+'</h2><p>'+copy+'</p></div><button class="icon-button" data-action="dismiss-modal" aria-label="Close">'+icon('close')+'</button></header>'+('<div class="dialog-body">'+body+'</div>')+'<footer class="dialog-footer">'+actions+'</footer></section></div>'}
+    function paletteModal(){return '<div class="cover"><section class="dialog small" role="dialog" aria-modal="true" aria-label="Command palette"><header class="dialog-head"><div><h2>Command palette</h2><p>Find a chat in '+esc(currentSpace().name)+'.</p></div><button class="icon-button" data-action="dismiss-modal" aria-label="Close">'+icon('close')+'</button></header><div class="dialog-body"><label class="rail-search" style="margin:0 0 10px">'+icon('search')+'<input type="search" data-palette-filter placeholder="Search chats" aria-label="Search chats" autofocus></label><div data-palette-results>'+visible().map(item=>'<button class="choice" data-action="select-session" data-id="'+item.id+'"><span><strong>'+esc(item.title)+'</strong><small>'+esc(project(item.project)?.name)+' · '+esc(item.tool)+'</small></span>'+icon('chevron')+'</button>').join('')+'</div></div></section></div>'}
+    function renameModal(modal){const item=modal.target==='session'?sessions.find(session=>session.id===modal.id):project(modal.id),value=modal.target==='session'?item?.title:item?.name;return '<div class="cover"><form class="dialog small" data-form="rename" role="dialog" aria-modal="true"><header class="dialog-head"><div><h2>Rename '+esc(modal.target)+'</h2><p>Update the name shown inside Anchor.</p></div><button type="button" class="icon-button" data-action="dismiss-modal" aria-label="Close">'+icon('close')+'</button></header><div class="dialog-body"><input type="hidden" name="target" value="'+esc(modal.target)+'"><input type="hidden" name="id" value="'+esc(modal.id)+'"><label class="field">Name<input name="name" value="'+esc(value)+'" required maxlength="80" autofocus></label></div><footer class="dialog-footer"><button type="button" class="button ghost" data-action="dismiss-modal">Cancel</button><button class="button primary">Save name</button></footer></form></div>'}
+    function workspaceCreateModal(){return '<div class="cover"><form class="dialog small" data-form="workspace" role="dialog" aria-modal="true"><header class="dialog-head"><div><h2>New workspace</h2><p>Projects stay shared. Chats, favorites, and open tabs stay separate.</p></div><button type="button" class="icon-button" data-action="dismiss-modal" aria-label="Close">'+icon('close')+'</button></header><div class="dialog-body"><label class="field">Workspace name<input name="name" required maxlength="50" placeholder="Release planning" autofocus></label></div><footer class="dialog-footer"><button type="button" class="button ghost" data-action="dismiss-modal">Cancel</button><button class="button primary">Create workspace</button></footer></form></div>'}
+    function removeProjectModal(modal){const item=project(modal.id),count=sessions.filter(session=>session.project===modal.id).length;return '<div class="cover"><section class="dialog small" role="dialog" aria-modal="true"><header class="dialog-head"><div><h2>Remove '+esc(item?.name)+'?</h2><p>This removes the group and its '+count+' saved chat'+(count===1?'':'s')+' from this demo.</p></div><button class="icon-button" data-action="dismiss-modal" aria-label="Close">'+icon('close')+'</button></header><div class="dialog-body"><label class="choice"><input type="checkbox" data-remove-ack> <span><strong>I understand these chats will be removed</strong><small>The real app requires the same explicit acknowledgement.</small></span></label></div><footer class="dialog-footer"><button class="button ghost" data-action="dismiss-modal">Cancel</button><button class="button danger" data-action="confirm-remove-project" data-id="'+modal.id+'" disabled>Remove group</button></footer></section></div>'}
+    function newSessionModal(modal){
+      const step=modal.step||'folder';
+      let body='';
+      if(step==='folder')body='<div class="wizard-kicker">Add a folder</div><button class="choice" data-action="choose-folder">'+icon('folder')+'<span><strong>Choose an existing folder…</strong><small>Open the native operating-system folder picker</small></span>'+icon('chevron')+'</button><button class="choice" data-action="create-project-step">'+icon('plus')+'<span><strong>Create a new project</strong><small>'+esc(state.settings.projectsDir)+'</small></span>'+icon('chevron')+'</button><div class="dialog-divider">Folders already in Anchor</div>'+projects.map(p=>'<button class="choice" data-action="choose-project" data-id="'+p.id+'">'+icon('folder')+'<span><strong>'+esc(p.name)+'</strong><small>'+esc(p.path)+'</small></span><small>'+orderedSessions(p.id).length+' chats</small></button>').join('');
+      if(step==='create')body='<form data-form="create-project"><label class="field">Project name<input name="name" required maxlength="60" placeholder="my-new-project" autofocus></label><p class="settings-note">Anchor will create this folder at '+esc(state.settings.projectsDir)+'/&lt;project-name&gt;.</p><div class="dialog-footer" style="margin:18px -18px -18px"><button type="button" class="button ghost" data-action="wizard-back">Back</button><button class="button primary">Create project</button></div></form>';
+      if(step==='tool'){const chosen=project(modal.projectId);body='<div class="wizard-kicker">Launch in '+esc(chosen?.name||'project')+'</div>'+state.harnesses.map(harness=>'<button class="choice" data-action="launch-session" data-tool="'+esc(harness.name)+'" data-id="'+modal.projectId+'">'+icon(harness.id==='terminal'?'panel':'anchor')+'<span><strong>'+esc(harness.name)+'</strong><small>'+(harness.id==='terminal'?'Generic shell session':'Saved provider conversation')+'</small></span>'+icon('chevron')+'</button>').join('')+'<button class="button ghost" data-action="wizard-back">Change folder</button>';}
+      return '<div class="cover"><section class="dialog" role="dialog" aria-modal="true" aria-label="New session"><header class="dialog-head"><div><h2>New session</h2><p>'+({folder:'Choose where this conversation should run.',create:'Create a project folder for this workspace.',tool:'Choose a terminal harness.'}[step])+'</p></div><button class="icon-button" data-action="dismiss-modal" aria-label="Close">'+icon('close')+'</button></header><div class="dialog-body">'+body+'</div></section></div>';
+    }
+    function workspacesModal(modal){
+      const items=spaces.filter(space=>modal.showArchived?space.archived:!space.archived);
+      const rows=items.map(space=>'<div class="workspace-result '+(space.id===state.workspace?'current':'')+'" data-workspace="'+space.id+'"><button class="workspace-result-main" data-action="switch-workspace" data-id="'+space.id+'" '+(space.archived?'disabled':'')+'><span class="folder-box">'+icon('folder')+'</span><span>'+esc(space.name)+'</span></button>'+(space.id===state.workspace?'<small>'+icon('check')+' Current</small>':'<button class="icon-button" data-action="workspace-menu" data-id="'+space.id+'" aria-label="Workspace options">'+icon('more')+'</button>')+'</div>').join('');
+      return '<div class="cover"><section class="dialog" role="dialog" aria-modal="true" aria-label="Your workspaces"><header class="dialog-head"><div><span class="wizard-kicker">WORKSPACES</span><h2>Your workspaces</h2><p>Each workspace keeps separate chats, favorites, and open tabs. Projects remain available everywhere.</p></div><button class="icon-button" data-action="dismiss-modal" aria-label="Close">'+icon('close')+'</button></header><div class="workspace-dialog-tools"><label class="rail-search">'+icon('search')+'<input type="search" data-modal-workspace-filter placeholder="Find workspace" aria-label="Find workspace"></label><button class="button primary" data-action="new-workspace">'+icon('plus')+'New workspace</button></div><div class="workspace-results">'+rows+'</div><footer class="dialog-footer"><button class="button ghost" data-action="toggle-archived">'+icon('archive')+(modal.showArchived?'Show active':'Archived workspaces')+'</button></footer></section></div>';
+    }
+    function harnessModal(modal){
+      const item=state.harnesses.find(harness=>harness.id===modal.id)||{id:'',name:'',executable:'',launchArgs:'',args:'',strategy:'output discovery',idQuery:'provider output event',workingDir:'{projectPath}',dataDir:''};
+      return '<div class="cover"><form class="dialog" data-form="harness" role="dialog" aria-modal="true"><header class="dialog-head"><div><h2>'+(modal.id?'Edit harness':'Add custom harness')+'</h2><p>Define how Anchor starts, resumes, and identifies this terminal provider.</p></div><button type="button" class="icon-button" data-action="dismiss-modal" aria-label="Close">'+icon('close')+'</button></header><div class="dialog-body"><input type="hidden" name="id" value="'+esc(item.id)+'"><label class="field">Display name<input name="name" value="'+esc(item.name)+'" required placeholder="Hermes"></label><label class="field">Executable<input name="executable" value="'+esc(item.executable)+'" required placeholder="hermes"></label><label class="field">Launch arguments<input name="launchArgs" value="'+esc(item.launchArgs)+'" placeholder="--new"></label><label class="field">Resume arguments<input name="args" value="'+esc(item.args)+'" placeholder="--resume {sessionId}"></label><label class="field">Session ID strategy<select name="strategy"><option '+(item.strategy==='output discovery'?'selected':'')+'>output discovery</option><option '+(item.strategy==='provider store lookup'?'selected':'')+'>provider store lookup</option><option '+(item.strategy==='preassigned ID'?'selected':'')+'>preassigned ID</option><option '+(item.strategy==='not applicable'?'selected':'')+'>not applicable</option></select></label><label class="field">Session ID extraction or query<input name="idQuery" value="'+esc(item.idQuery)+'" placeholder="provider output event"></label><label class="field">Working-directory rule<input name="workingDir" value="'+esc(item.workingDir)+'" placeholder="{projectPath}"></label><label class="field">Dedicated data directory<input name="dataDir" value="'+esc(item.dataDir)+'" placeholder="&lt;platform data&gt;/anchor/harnesses/hermes"></label><p class="settings-note">Use placeholders such as {sessionId}, {projectPath}, and {workingDirectory}. Anchor validates values before it starts a process.</p></div><footer class="dialog-footer"><button type="button" class="button ghost" data-action="dismiss-modal">Cancel</button><button class="button primary">Save harness</button></footer></form></div>';
+    }
+    function menuMarkup(){
+      const menu=state.menu;if(!menu)return '';
+      const item=menu.type==='session'?sessions.find(session=>session.id===menu.id):project(menu.id);
+      let content='';
+      if(menu.type==='session')content='<button data-action="toggle-favorite" data-id="'+item.id+'">'+icon('star')+(item.favorite?'Remove from favorites':'Add to favorites')+'</button><button data-action="rename-session" data-id="'+item.id+'">'+icon('edit')+'Rename session</button><button data-action="copy-session-id" data-id="'+item.id+'">'+icon('anchor')+'Copy session ID</button>'+(!['Terminal','Generic terminal'].includes(item.tool)&&item.status==='stopped'?'<button data-action="set-session-id" data-id="'+item.id+'">'+icon('wrench')+'Set session ID</button>':'')+'<hr><button data-action="'+(item.open?'minimize-session':'delete-session')+'" data-id="'+item.id+'" class="'+(item.open?'':'danger-item')+'">'+icon(item.open?'minimize':'trash')+(item.open?'Close tab':'Delete session')+'</button>';
+      if(menu.type==='project')content='<button data-action="new-in-project" data-id="'+item.id+'">'+icon('plus')+'New session</button><button data-action="rename-project" data-id="'+item.id+'">'+icon('edit')+'Rename group</button><button data-action="copy-project-path" data-id="'+item.id+'">'+icon('folder')+'Copy folder path</button><button data-action="toggle-project" data-id="'+item.id+'">'+icon('chevron')+(state.collapsed.has(item.id)?'Expand group':'Collapse group')+'</button><hr><button class="danger-item" data-action="remove-project" data-id="'+item.id+'">'+icon('trash')+'Remove group</button>';
+      if(menu.type==='workspace'){const space=spaces.find(workspace=>workspace.id===menu.id);content='<button data-action="toggle-pin-workspace" data-id="'+space.id+'">'+icon('star')+(space.pinned?'Unpin workspace':'Pin workspace')+'</button>'+(space.id==='default'?'':'<button data-action="toggle-archive-workspace" data-id="'+space.id+'">'+icon('archive')+(space.archived?'Restore workspace':'Archive workspace')+'</button>');}
+      return '<div class="menu" role="menu" data-menu>'+content+'</div>';
+    }
+    function positionMenu(){const menu=document.querySelector('[data-menu]');if(!menu||!state.menu)return;const anchor=state.menu.anchor;const width=205,height=menu.offsetHeight||150;menu.style.left=Math.max(6,Math.min(anchor.x,window.innerWidth-width-6))+'px';menu.style.top=Math.max(6,Math.min(anchor.y,window.innerHeight-height-6))+'px'}
+    function openMenu(type,id,target,point){const rect=target?.getBoundingClientRect();state.menu={type,id,anchor:point||{x:rect?.right-195||10,y:(rect?.bottom||10)+3}};render()}
+    function openNew(projectId){state.menu=null;state.modal={kind:'new-session',step:projectId?'tool':'folder',projectId:projectId||null};render()}
+    function launchHarness(tool,projectId){const harness=state.harnesses.find(item=>item.name===tool),newId='session-'+(++state.sequence);sessions.push({id:newId,workspace:state.workspace,project:projectId,title:'New '+tool+' chat',tool,open:true,unread:false,favorite:false,status:'running',cliId:harness?.id==='terminal'?'':'demo-'+state.sequence});(state.tabOrder[state.workspace]||=[]).push(newId);state.modal=null;selectSession(newId);toast(tool+' session started')}
+    function switchWorkspace(id){const space=spaces.find(item=>item.id===id&&!item.archived);if(!space)return;state.workspace=id;state.view='terminal';state.menu=null;state.modal=null;if(state.settings.railAutoCollapse&&!state.railPinned)state.railOpen=false;const active=current();if(!active?.open)state.activeByWorkspace[id]=orderedTabs()[0]?.id||null;render()}
+    function demoTitle(message){const words=message.replace(/[^A-Za-z0-9 -]/g,' ').trim().split(/\s+/).filter(Boolean).slice(0,4);while(words.length<3)words.push(words.length===1?'Work':'Session');return words.map(word=>word[0].toUpperCase()+word.slice(1)).join(' ')}
+    function toast(message){document.querySelector('.toast')?.remove();const node=document.createElement('div');node.className='toast';node.setAttribute('role','status');node.textContent=message;document.body.append(node);setTimeout(()=>node.remove(),2200)}
+    function rename(kind,id){state.menu=null;state.modal={kind:'rename',target:kind,id};render()}
+    app.addEventListener('click',async event=>{
+      const button=event.target.closest('[data-action]');if(!button){if(state.menu){state.menu=null;render()}return}
+      const action=button.dataset.action,id=button.dataset.id;
+      if(!['session-menu','project-menu','workspace-menu'].includes(action))state.menu=null;
+      if(action==='toggle-workspace-rail'){state.railOpen=!state.railOpen;render()}
+      else if(action==='switch-workspace')switchWorkspace(id);
+      else if(action==='manage-workspaces') {state.modal={kind:'workspaces',showArchived:false};render()}
+      else if(action==='new-workspace'){state.modal={kind:'workspace-create'};render()}
+      else if(action==='toggle-archived'){state.modal.showArchived=!state.modal.showArchived;render()}
+      else if(action==='workspace-menu')openMenu('workspace',id,button);
+      else if(action==='toggle-pin-workspace'){const item=spaces.find(w=>w.id===id);item.pinned=!item.pinned;render()}
+      else if(action==='toggle-archive-workspace'){const item=spaces.find(w=>w.id===id);item.archived=!item.archived;state.menu=null;state.modal={kind:'workspaces',showArchived:item.archived};render()}
+      else if(action==='select-session')selectSession(id);
+      else if(action==='toggle-project'){state.collapsed.has(id)?state.collapsed.delete(id):state.collapsed.add(id);render()}
+      else if(action==='toggle-hidden'){state.hiddenOpen=!state.hiddenOpen;render()}
+      else if(action==='new-session')openNew();
+      else if(action==='new-in-project')openNew(id);
+      else if(action==='session-menu')openMenu('session',id,button);
+      else if(action==='project-menu')openMenu('project',id,button);
+      else if(action==='minimize-session')closeTab(id,true);
+      else if(action==='close-tab')closeTab(id,false);
+      else if(action==='force-close'){state.modal=null;closeTab(id,true)}
+      else if(action==='delete-session'){state.modal={kind:'delete',id};render()}
+      else if(action==='confirm-delete'){const index=sessions.findIndex(s=>s.id===id);if(index>=0)sessions.splice(index,1);state.modal=null;render();toast('Session deleted')}
+      else if(action==='toggle-favorite'){const item=sessions.find(s=>s.id===id);item.favorite=!item.favorite;render()}
+      else if(action==='rename-session')rename('session',id);
+      else if(action==='rename-project')rename('project',id);
+      else if(action==='remove-project'){state.modal={kind:'remove-project',id};render()}
+      else if(action==='confirm-remove-project'){const ids=sessions.filter(session=>session.project===id).map(session=>session.id);for(let index=sessions.length-1;index>=0;index--)if(ids.includes(sessions[index].id))sessions.splice(index,1);const projectIndex=projects.findIndex(item=>item.id===id);if(projectIndex>=0)projects.splice(projectIndex,1);state.projectOrder=state.projectOrder.filter(projectId=>projectId!==id);for(const spaceId of Object.keys(state.tabOrder))state.tabOrder[spaceId]=state.tabOrder[spaceId].filter(sessionId=>!ids.includes(sessionId));for(const spaceId of Object.keys(state.activeByWorkspace))if(ids.includes(state.activeByWorkspace[spaceId]))state.activeByWorkspace[spaceId]=state.tabOrder[spaceId]?.[0]||null;state.modal=null;render();toast('Project group removed')}
+      else if(action==='copy-session-id'){const item=sessions.find(s=>s.id===id);if(!item.cliId){toast('No session ID saved');return}try{await navigator.clipboard.writeText(item.cliId);toast('Session ID copied')}catch{toast('Session ID: '+item.cliId)}}
+      else if(action==='copy-project-path'){const path=project(id)?.path;try{await navigator.clipboard.writeText(path);toast('Folder path copied')}catch{toast('Folder path: '+path)}}
+      else if(action==='set-session-id'){state.modal={kind:'set-id',id};render()}
+      else if(action==='repair-session'){const item=sessions.find(s=>s.id===id);item.cliId='cx-demo-'+(++state.sequence);item.status='running';toast('New provider chat attached');render()}
+      else if(action==='open-settings'){state.view='settings';state.menu=null;state.modal=null;render()}
+      else if(action==='close-settings'){state.view='terminal';render()}
+      else if(action==='open-palette'){state.modal={kind:'palette'};render();requestAnimationFrame(()=>document.querySelector('[data-palette-filter]')?.focus())}
+      else if(action==='focus-search'){document.querySelector('[data-session-filter]')?.focus()}
+      else if(action==='dismiss-modal'){state.modal=null;render()}
+      else if(action==='choose-folder'){toast('Native folder picker would open here')}
+      else if(action==='create-project-step'){state.modal.step='create';render()}
+      else if(action==='choose-project'){state.modal.step='tool';state.modal.projectId=id;render()}
+      else if(action==='wizard-back'){state.modal.step='folder';render()}
+      else if(action==='launch-session')launchHarness(button.dataset.tool,id);
+      else if(action==='set-theme'){state.settings.theme=button.dataset.value;render()}
+      else if(action==='set-accent'){state.settings.accent=button.dataset.value;render()}
+      else if(action==='set-density'){state.settings.density=button.dataset.value;render()}
+      else if(action==='edit-harness'){state.modal={kind:'harness',id};render()}
+      else if(action==='add-harness'){state.modal={kind:'harness',id:null};render()}
+      else if(action==='show-settings-json'){state.modal={kind:'settings-json'};render()}
+      else if(action==='demo-toast')toast(button.dataset.message);
+    });
+    app.addEventListener('contextmenu',event=>{const row=event.target.closest('[data-session]');if(!row)return;event.preventDefault();openMenu('session',row.dataset.session,null,{x:event.clientX,y:event.clientY})});
+    app.addEventListener('input',event=>{
+      if(event.target.matches('[data-session-filter]')){state.filter=event.target.value;document.querySelector('.session-lists').innerHTML=sessionSidebar().match(/<div class="session-lists">([\s\S]*)<\/div><footer/)[1]}
+      if(event.target.matches('[data-workspace-filter],[data-modal-workspace-filter]')){const term=event.target.value.trim().toLowerCase(),scope=event.target.matches('[data-modal-workspace-filter]')?document.querySelector('.workspace-results'):document.querySelector('.rail-list');scope?.querySelectorAll('[data-workspace]').forEach(row=>{row.style.display=row.textContent.toLowerCase().includes(term)?'':'none'})}
+      if(event.target.matches('[data-palette-filter]')){const term=event.target.value.trim().toLowerCase();document.querySelectorAll('[data-palette-results] .choice').forEach(row=>{row.style.display=row.textContent.toLowerCase().includes(term)?'':'none'})}
+      if(event.target.matches('[data-prompt] input')&&currentId())state.drafts[currentId()]=event.target.value;
+      if(event.target.dataset.setting){
+        const key=event.target.dataset.setting,value=event.target.type==='range'||['responseReadDelayMs','hideEmptyHours'].includes(key)?Number(event.target.value):event.target.value;
+        state.settings[key]=value;
+        const terminalVars={terminalBackground:'--terminal',terminalForeground:'--terminal-text',terminalGreen:'--green',terminalCyan:'--cyan',terminalPurple:'--purple',terminalYellow:'--yellow'};
+        if(terminalVars[key]){app.style.setProperty(terminalVars[key],value);const label=event.target.closest('.setting-row')?.querySelector('small');if(label)label.textContent=value;}
+        if(key==='fontSize'||key==='retentionDays')render();
+      }
+    });
+    app.addEventListener('change',event=>{if(event.target.dataset.setting&&event.target.type==='checkbox')state.settings[event.target.dataset.setting]=event.target.checked;if(event.target.matches('[data-remove-ack]'))document.querySelector('[data-action="confirm-remove-project"]').disabled=!event.target.checked});
+    app.addEventListener('submit',event=>{
+      event.preventDefault();
+      if(event.target.matches('[data-prompt]')){const input=event.target.elements.message,message=input.value.trim(),item=current();if(!message||!item)return;(state.logs[item.id]||=[]).push({user:true,text:'› '+message});state.drafts[item.id]='';item.awaiting=true;item.status='running';item.lastSubmitted=Date.now();if(state.settings.autoTitle&&/^New .+ chat$/.test(item.title))item.title=demoTitle(message);render();setTimeout(()=>{item.awaiting=false;item.status='waiting';(state.logs[item.id]||=[]).push({user:false,text:'Demo response complete. The session is waiting for your input.'});if(currentId()!==item.id)item.unread=true;render()},1300)}
+      if(event.target.matches('[data-form="set-id"]')){const data=new FormData(event.target),item=sessions.find(s=>s.id===data.get('id'));item.cliId=String(data.get('cliId')).trim();state.modal=null;render();toast('Session ID saved')}
+      if(event.target.matches('[data-form="rename"]')){const data=new FormData(event.target),target=String(data.get('target')),id=String(data.get('id')),name=String(data.get('name')).trim(),item=target==='session'?sessions.find(session=>session.id===id):project(id);if(target==='session')item.title=name;else item.name=name;state.modal=null;render();toast('Name updated')}
+      if(event.target.matches('[data-form="workspace"]')){const data=new FormData(event.target),name=String(data.get('name')).trim(),id='workspace-'+(++state.sequence);spaces.push({id,name,pinned:false,archived:false});state.activeByWorkspace[id]=null;state.tabOrder[id]=[];state.modal={kind:'workspaces',showArchived:false};render();toast('Workspace created')}
+      if(event.target.matches('[data-form="create-project"]')){const data=new FormData(event.target),name=String(data.get('name')).trim(),id='project-'+(++state.sequence);projects.push({id,name,path:'/workspace/'+name.toLowerCase().replace(/[^a-z0-9]+/g,'-')});state.projectOrder.push(id);state.modal={kind:'new-session',step:'tool',projectId:id};render()}
+      if(event.target.matches('[data-form="harness"]')){const data=new FormData(event.target),id=String(data.get('id'))||'custom-'+(++state.sequence),item=state.harnesses.find(h=>h.id===id),values={id,name:String(data.get('name')),executable:String(data.get('executable')),launchArgs:String(data.get('launchArgs')),args:String(data.get('args')),strategy:String(data.get('strategy')),idQuery:String(data.get('idQuery')),workingDir:String(data.get('workingDir')),dataDir:String(data.get('dataDir'))};if(item)Object.assign(item,values);else state.harnesses.push(values);state.modal=null;render();toast('Harness saved')}
+    });
+    app.addEventListener('click',event=>{const nav=event.target.closest('[data-settings-section]');if(nav){state.settingsSection=nav.dataset.settingsSection;render()}});
+    // Chromium requires a data payload to keep the native drag sequence alive through the drop event.
+    app.addEventListener('dragstart',event=>{const tab=event.target.closest('[data-tab]'),row=event.target.closest('[data-session]'),group=event.target.closest('[data-project]');if(tab){state.dragTab=tab.dataset.tab;tab.classList.add('dragging');event.dataTransfer.setData('text/plain',tab.dataset.tab);event.dataTransfer.effectAllowed='move'}else if(row){state.dragSession=row.dataset.session;event.dataTransfer.setData('text/plain',row.dataset.session);event.dataTransfer.effectAllowed='move'}else if(group){state.dragProject=group.dataset.project;group.classList.add('dragging');event.dataTransfer.effectAllowed='move'}});
+    app.addEventListener('dragover',event=>{const tab=event.target.closest('[data-tab]'),group=event.target.closest('[data-project]');if(tab&&state.dragTab){event.preventDefault();const after=event.clientX>tab.getBoundingClientRect().left+tab.offsetWidth/2;tab.classList.toggle('drop-before',!after);tab.classList.toggle('drop-after',after)}if(group&&state.dragProject&&!state.dragSession){event.preventDefault();group.classList.add('drop-before')}const workspace=event.target.closest('[data-workspace]');if(workspace&&state.dragSession)event.preventDefault()});
+    app.addEventListener('dragleave',event=>{const tab=event.target.closest('[data-tab]');tab?.classList.remove('drop-before','drop-after');event.target.closest('[data-project]')?.classList.remove('drop-before')});
+    // A workspace move changes only ownership; the saved provider identity, transcript, and favorite state remain on the same record.
+    app.addEventListener('drop',event=>{const tab=event.target.closest('[data-tab]'),group=event.target.closest('[data-project]'),workspace=event.target.closest('[data-workspace]');if(tab&&state.dragTab){event.preventDefault();const order=state.tabOrder[state.workspace],moving=state.dragTab,target=tab.dataset.tab;if(moving!==target){order.splice(order.indexOf(moving),1);const targetIndex=order.indexOf(target),after=event.clientX>tab.getBoundingClientRect().left+tab.offsetWidth/2;order.splice(targetIndex+(after?1:0),0,moving)}}else if(workspace&&state.dragSession){event.preventDefault();const item=sessions.find(session=>session.id===state.dragSession),destination=workspace.dataset.workspace;if(item&&destination&&destination!==item.workspace){const source=item.workspace;item.workspace=destination;if(state.activeByWorkspace[source]===item.id)state.activeByWorkspace[source]=visible().find(session=>session.open&&session.id!==item.id)?.id||null;toast('Moved to '+spaces.find(space=>space.id===destination)?.name)}}else if(group&&state.dragProject){event.preventDefault();const from=state.projectOrder.indexOf(state.dragProject),to=state.projectOrder.indexOf(group.dataset.project);state.projectOrder.splice(from,1);state.projectOrder.splice(to,0,state.dragProject)}state.dragTab=null;state.dragProject=null;state.dragSession=null;render()});
+    document.addEventListener('keydown',event=>{
+      const command=event.metaKey||event.ctrlKey,key=event.key.toLowerCase();
+      if(state.modal?.kind==='palette'&&['ArrowDown','ArrowUp'].includes(event.key)){
+        event.preventDefault();
+        const choices=[...document.querySelectorAll('[data-palette-results] .choice')].filter(item=>item.style.display!=='none'),active=choices.indexOf(document.activeElement);
+        const next=active<0?(event.key==='ArrowDown'?0:choices.length-1):(active+(event.key==='ArrowDown'?1:-1)+choices.length)%choices.length;
+        choices[next]?.focus();
+        return;
+      }
+      if(state.modal?.kind==='palette'&&event.key==='Enter'){
+        event.preventDefault();
+        const active=document.activeElement?.closest?.('[data-palette-results] .choice'),first=[...document.querySelectorAll('[data-palette-results] .choice')].find(item=>item.style.display!=='none');
+        (active||first)?.click();
+        return;
+      }
+      if(event.ctrlKey&&event.key==='Tab'){event.preventDefault();cycleTab(event.shiftKey?-1:1);return}
+      if(command&&event.key===','){event.preventDefault();state.view='settings';state.modal=null;render();return}
+      if(command&&key==='k'){event.preventDefault();state.view='terminal';state.modal={kind:'palette'};render();requestAnimationFrame(()=>document.querySelector('[data-palette-filter]')?.focus());return}
+      if(command&&key==='w'&&state.view==='terminal'){event.preventDefault();if(currentId())closeTab(currentId());return}
+      if(command&&key==='t'){event.preventDefault();if(state.view==='settings')state.view='terminal';launchHarness('Generic terminal',current()?.project||projects[0]?.id);return}
+      if(command&&event.key==='Enter'){event.preventDefault();resumeCurrent();return}
+      if(command&&key==='f'){event.preventDefault();if(state.view==='settings')state.view='terminal';render();requestAnimationFrame(()=>document.querySelector('[data-session-filter]')?.focus());return}
+      if(event.key==='Escape'){if(state.menu||state.modal){state.menu=null;state.modal=null;render()}else if(state.view==='settings'){state.view='terminal';render()}}
+    });
+    render();
+  })();
+  </script>
+</body>
+</html>

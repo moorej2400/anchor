@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 vi.mock("@xterm/addon-fit", () => ({
   FitAddon: class {
@@ -26,6 +26,7 @@ const terminalWrites: string[] = [];
 const terminalSizesAtWrite: Array<{ cols: number; rows: number }> = [];
 const terminalInstances: Array<{ cols: number; rows: number }> = [];
 const terminalWriteCallbacks: Array<() => void> = [];
+const terminalInputHandlers: Array<(data: string) => void> = [];
 let deferTerminalWrites = false;
 let terminalDisposeCalls = 0;
 vi.mock("@xterm/xterm", () => ({
@@ -42,7 +43,10 @@ vi.mock("@xterm/xterm", () => ({
     loadAddon(addon: { activate?: (terminal: unknown) => void }) {
       addon.activate?.(this);
     }
-    onData() {}
+    onData(handler: (data: string) => void) {
+      terminalInputHandlers.push(handler);
+      return { dispose() {} };
+    }
     attachCustomKeyEventHandler() {}
     open() {}
     write(data: string, callback?: () => void) {
@@ -84,6 +88,7 @@ const getCodexProfilesMock = vi.fn();
 const setCodexProfileMock = vi.fn();
 const setSessionIdMock = vi.fn();
 const generateSessionTitleMock = vi.fn();
+const writePtyMock = vi.fn();
 
 vi.mock("../ipc/commands", () => ({
   ipc: {
@@ -105,6 +110,7 @@ vi.mock("../ipc/commands", () => ({
     setCodexProfile: (...a: unknown[]) => setCodexProfileMock(...a),
     setSessionId: (...a: unknown[]) => setSessionIdMock(...a),
     generateSessionTitle: (...a: unknown[]) => generateSessionTitleMock(...a),
+    writePty: (...a: unknown[]) => writePtyMock(...a),
   },
 }));
 
@@ -136,6 +142,7 @@ vi.mock("../ipc/events", () => ({
 import type { Folder, Session, Settings, TerminalSize } from "../ipc/types";
 import App from "../App";
 import { AnchorProvider } from "./store";
+import { DEFAULT_TERMINAL_THEME, DEFAULT_WORKSPACE } from "./workspaces";
 
 const SETTINGS: Settings = {
   shell: "/bin/zsh",
@@ -150,8 +157,20 @@ const SETTINGS: Settings = {
   theme: "graphite",
   density: "comfortable",
   fontSize: 13,
-  accent: "#d6417a",
+  accent: "#88a99d",
   notifyOnWaiting: false,
+  responseReadDelayMs: 1000,
+  favoriteSessionIds: [],
+  folderOrder: [],
+  tabOrder: [],
+  emptyFolderSinceMs: {},
+  workspaces: [DEFAULT_WORKSPACE],
+  activeWorkspaceId: DEFAULT_WORKSPACE.id,
+  sessionWorkspaceIds: {},
+  workspacePaneKeepOpen: false,
+  terminalTheme: DEFAULT_TERMINAL_THEME,
+  customHarnesses: [],
+  sessionHarnessIds: {},
 };
 
 const FOLDER: Folder = { id: "folder-1", name: "synthetic", path: "~/synthetic" };
@@ -182,6 +201,14 @@ function stoppedAiSession(id: string, cliSessionId: string | null): Session {
   };
 }
 
+function runningAiSession(id: string): Session {
+  return {
+    ...runningSession(id),
+    tool: "codex",
+    cliSessionId: `${id}-provider`,
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -198,6 +225,7 @@ beforeEach(() => {
   terminalSizesAtWrite.length = 0;
   terminalInstances.length = 0;
   terminalWriteCallbacks.length = 0;
+  terminalInputHandlers.length = 0;
   deferTerminalWrites = false;
   terminalDisposeCalls = 0;
   ptyOutputHandler = null;
@@ -248,6 +276,7 @@ beforeEach(() => {
   setCodexProfileMock.mockResolvedValue(undefined);
   setSessionIdMock.mockResolvedValue(undefined);
   generateSessionTitleMock.mockResolvedValue(undefined);
+  writePtyMock.mockResolvedValue(undefined);
 
   vi.stubGlobal(
     "ResizeObserver",
@@ -718,6 +747,59 @@ describe("closeTab", () => {
   });
 });
 
+describe("tab ordering", () => {
+  it("restores the persisted order", async () => {
+    await renderRunningSessionApp(["session-a", "session-b", "session-c"], {
+      tabOrder: ["session-c", "session-a"],
+    });
+
+    const titles = Array.from(document.querySelectorAll(".a-tab__title"))
+      .map((element) => element.textContent);
+    expect(titles).toEqual(["session-c", "session-a", "session-b"]);
+  });
+
+  it("reorders tabs by drag and persists the result without changing the active tab", async () => {
+    await renderRunningSessionApp(["session-a", "session-b", "session-c"]);
+    const tabs = Array.from(document.querySelectorAll<HTMLElement>(".a-tab"));
+    const dataTransfer = {
+      effectAllowed: "none",
+      dropEffect: "none",
+      setData: vi.fn(),
+    };
+    vi.spyOn(tabs[2], "getBoundingClientRect").mockReturnValue({
+      left: 0,
+      right: 230,
+      top: 0,
+      bottom: 36,
+      width: 230,
+      height: 36,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.dragStart(tabs[0], { dataTransfer });
+    const dragOver = createEvent.dragOver(tabs[2], { dataTransfer });
+    Object.defineProperty(dragOver, "clientX", { value: 200 });
+    fireEvent(tabs[2], dragOver);
+    expect(tabs[2]).toHaveAttribute("data-drop", "after");
+    const drop = createEvent.drop(tabs[2], { dataTransfer });
+    Object.defineProperty(drop, "clientX", { value: 200 });
+    fireEvent(tabs[2], drop);
+
+    await waitFor(() => expect(setSettingsMock).toHaveBeenCalled());
+    const titles = Array.from(document.querySelectorAll(".a-tab__title"))
+      .map((element) => element.textContent);
+    expect(titles).toEqual(["session-b", "session-c", "session-a"]);
+    const [saved] = setSettingsMock.mock.calls[setSettingsMock.mock.calls.length - 1] as [Settings];
+    expect(saved.tabOrder).toEqual(["session-b", "session-c", "session-a"]);
+    expect(document.querySelector('[data-terminal-active="true"]')).toHaveAttribute(
+      "data-terminal-session-id",
+      "session-a",
+    );
+  });
+});
+
 describe("sidebar folder groups", () => {
   it("hides the path and collapse marker while the folder name toggles its sessions", async () => {
     const view = await renderRunningSessionApp();
@@ -743,6 +825,228 @@ describe("sidebar folder groups", () => {
     expect(screen.getByRole("button", { name: /Rename session$/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Copy session ID$/ })).toBeInTheDocument();
   });
+
+  it("uses a neutral sidebar action to close an open tab without confirmation", async () => {
+    getSettingsMock.mockResolvedValue({ ...SETTINGS, confirmClose: true, stopOnClose: true });
+    getStateMock.mockImplementation(async () => ({
+      folders: [FOLDER],
+      sessions: [runningAiSession("synthetic-session")],
+    }));
+    render(<AnchorProvider><App /></AnchorProvider>);
+    await waitFor(() => expect(terminalInputHandlers).toHaveLength(1));
+
+    await act(async () => {
+      terminalInputHandlers[0]("do work\r");
+      await Promise.resolve();
+    });
+
+    const row = screen.getByText("synthetic-session", { selector: ".folder__sessions .a-row__title" }).closest<HTMLElement>(".a-row")!;
+    fireEvent.mouseEnter(row);
+    const closeFromSidebar = within(row).getByRole("button", { name: "Close tab from sidebar" });
+    expect(closeFromSidebar).not.toHaveClass("a-iconbtn--danger");
+    expect(within(row).queryByRole("button", { name: "Delete session" })).not.toBeInTheDocument();
+
+    fireEvent.click(closeFromSidebar);
+
+    expect(setTabOpenMock).toHaveBeenCalledWith("synthetic-session", false);
+    expect(screen.queryByRole("button", { name: "Close session" })).not.toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Delete session" })).toBeInTheDocument();
+  });
+
+  it("reorders sessions only after submitted input", async () => {
+    await renderRunningSessionApp(["session-a", "session-b"]);
+    const sidebarOrder = () => Array.from(document.querySelectorAll(".folder__sessions .a-row__title"))
+      .map((element) => element.textContent);
+
+    expect(sidebarOrder()).toEqual(["session-a", "session-b"]);
+    fireEvent.click(screen.getByText("session-b", { selector: ".folder__sessions .a-row__title" }));
+    expect(sidebarOrder()).toEqual(["session-a", "session-b"]);
+
+    act(() => terminalInputHandlers[1]?.("draft"));
+    expect(sidebarOrder()).toEqual(["session-a", "session-b"]);
+    act(() => terminalInputHandlers[1]?.("\r"));
+    await waitFor(() => expect(sidebarOrder()).toEqual(["session-b", "session-a"]));
+    expect(writePtyMock).toHaveBeenCalledWith("session-b", "\r");
+  });
+
+  it("does not reorder when the submitted PTY write fails", async () => {
+    writePtyMock.mockRejectedValue(new Error("synthetic write failure"));
+    await renderRunningSessionApp(["session-a", "session-b"]);
+    const sidebarOrder = () => Array.from(document.querySelectorAll(".folder__sessions .a-row__title"))
+      .map((element) => element.textContent);
+
+    await act(async () => {
+      terminalInputHandlers[1]("unsent message\r");
+      await Promise.resolve();
+    });
+    expect(sidebarOrder()).toEqual(["session-a", "session-b"]);
+  });
+
+  it("shows blue only for completed background responses and clears it after the read delay", async () => {
+    const closed = { ...runningAiSession("closed-session"), wasOpenInTab: false };
+    generateSessionTitleMock.mockImplementation(async (id: string) => runningAiSession(id));
+    getSettingsMock.mockResolvedValue({ ...SETTINGS, confirmClose: false });
+    getStateMock.mockImplementation(async () => ({
+      folders: [FOLDER],
+      sessions: [runningAiSession("session-a"), runningAiSession("session-b"), closed],
+    }));
+    render(<AnchorProvider><App /></AnchorProvider>);
+    await waitFor(() => expect(terminalInputHandlers).toHaveLength(3));
+
+    const firstTab = screen.getByText("session-a", { selector: ".a-tab__title" }).closest<HTMLElement>(".a-tab")!;
+    expect(firstTab.querySelector(".a-dot")).toBeNull();
+
+    await act(async () => {
+      terminalInputHandlers[0]("do work\r");
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByText("session-b", { selector: ".a-tab__title" }));
+    act(() => sessionStatusHandler?.({ sessionId: "session-a", status: "waiting", exitCode: null }));
+
+    const firstSidebarRow = screen.getByText("session-a", { selector: ".folder__sessions .a-row__title" }).closest<HTMLElement>(".a-row")!;
+    const closedSidebarRow = screen.getByText("closed-session", { selector: ".folder__sessions .a-row__title" }).closest<HTMLElement>(".a-row")!;
+    expect(within(firstTab).getByLabelText("AI response ready")).toBeInTheDocument();
+    expect(within(firstSidebarRow).getByLabelText("AI response ready")).toBeInTheDocument();
+    expect(closedSidebarRow.querySelector(".a-dot")).toBeNull();
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByText("session-a", { selector: ".a-tab__title" }));
+      act(() => vi.advanceTimersByTime(500));
+      fireEvent.click(screen.getByText("session-b", { selector: ".a-tab__title" }));
+      act(() => vi.advanceTimersByTime(1000));
+      expect(within(firstSidebarRow).getByLabelText("AI response ready")).toBeInTheDocument();
+      fireEvent.click(screen.getByText("session-a", { selector: ".a-tab__title" }));
+      act(() => vi.advanceTimersByTime(1000));
+      expect(within(firstSidebarRow).getByLabelText("Open chat")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps an unread response blue when closing another tab selects it automatically", async () => {
+    generateSessionTitleMock.mockImplementation(async (id: string) => runningAiSession(id));
+    getSettingsMock.mockResolvedValue({ ...SETTINGS, confirmClose: false });
+    getStateMock.mockImplementation(async () => ({
+      folders: [FOLDER],
+      sessions: [runningAiSession("session-a"), runningAiSession("session-b")],
+    }));
+    render(<AnchorProvider><App /></AnchorProvider>);
+    await waitFor(() => expect(terminalInputHandlers).toHaveLength(2));
+
+    await act(async () => {
+      terminalInputHandlers[0]("do work\r");
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByText("session-b", { selector: ".a-tab__title" }));
+    act(() => sessionStatusHandler?.({ sessionId: "session-a", status: "waiting", exitCode: null }));
+
+    const firstSidebarRow = screen.getByText("session-a", { selector: ".folder__sessions .a-row__title" }).closest<HTMLElement>(".a-row")!;
+    expect(within(firstSidebarRow).getByLabelText("AI response ready")).toBeInTheDocument();
+
+    vi.useFakeTimers();
+    try {
+      const secondTab = screen.getByText("session-b", { selector: ".a-tab__title" }).closest<HTMLElement>(".a-tab")!;
+      fireEvent.click(within(secondTab).getByRole("button", { name: "Close tab" }));
+      act(() => vi.advanceTimersByTime(5000));
+      expect(within(firstSidebarRow).getByLabelText("AI response ready")).toBeInTheDocument();
+
+      // Clicking the already visible tab is still an explicit read action.
+      fireEvent.click(screen.getByText("session-a", { selector: ".a-tab__title" }));
+      act(() => vi.advanceTimersByTime(1000));
+      expect(within(firstSidebarRow).getByLabelText("Open chat")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("adds a chat to Favorites without removing it from All chats", async () => {
+    await renderRunningSessionApp();
+    const row = screen.getByText("synthetic-session", { selector: ".folder__sessions .a-row__title" }).closest(".a-row")!;
+    fireEvent.contextMenu(row);
+    fireEvent.click(screen.getByRole("button", { name: /Add to favorites/ }));
+
+    await waitFor(() => expect(setSettingsMock).toHaveBeenCalled());
+    expect(document.querySelector(".sidebar__favorites .a-row__title")).toHaveTextContent("synthetic-session");
+    expect(screen.getAllByText("synthetic-session", { selector: ".a-row__title" })).toHaveLength(2);
+  });
+
+  it("persists folder drag order", async () => {
+    const secondFolder: Folder = { id: "folder-2", name: "second synthetic", path: "~/second" };
+    getSettingsMock.mockResolvedValue({ ...SETTINGS, confirmClose: false });
+    getStateMock.mockImplementation(async () => ({
+      folders: [FOLDER, secondFolder],
+      sessions: [runningSession("session-a"), { ...runningSession("session-b"), folderId: secondFolder.id }],
+    }));
+    render(<AnchorProvider><App /></AnchorProvider>);
+    await screen.findByRole("button", { name: secondFolder.name });
+
+    const source = screen.getByRole("button", { name: secondFolder.name }).closest(".folder")!;
+    const target = screen.getByRole("button", { name: FOLDER.name }).closest(".folder")!;
+    vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
+      x: 0, y: 0, top: 0, left: 0, right: 200, bottom: 20, width: 200, height: 20,
+      toJSON: () => ({}),
+    });
+    const dataTransfer = {
+      effectAllowed: "none",
+      dropEffect: "none",
+      setData: vi.fn(),
+      getData: vi.fn(() => secondFolder.id),
+    };
+    fireEvent.dragStart(source.querySelector(".folder__head")!, { dataTransfer });
+    fireEvent.dragOver(target, { dataTransfer, clientY: 1 });
+    fireEvent.drop(target, { dataTransfer, clientY: 1 });
+
+    await waitFor(() => expect(setSettingsMock).toHaveBeenCalled());
+    const saved = setSettingsMock.mock.calls[setSettingsMock.mock.calls.length - 1][0] as Settings;
+    expect(saved.folderOrder).toEqual([secondFolder.id, FOLDER.id]);
+  });
+
+  it("keeps a folder visible for 12 hours after it becomes empty", async () => {
+    getStateMock.mockResolvedValue({ folders: [FOLDER], sessions: [] });
+    render(<AnchorProvider><App /></AnchorProvider>);
+
+    const folderName = await screen.findByRole("button", { name: FOLDER.name });
+    expect(folderName).toBeInTheDocument();
+    await waitFor(() => expect(setSettingsMock).toHaveBeenCalled());
+    const saved = setSettingsMock.mock.calls[setSettingsMock.mock.calls.length - 1][0] as Settings;
+    expect(saved.emptyFolderSinceMs[FOLDER.id]).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /Hidden/ })).toBeNull();
+  });
+
+  it("collapses empty folders older than 12 hours into a gray Hidden group", async () => {
+    const oldEmptyFolder: Folder = { id: "folder-2", name: "archived synthetic", path: "~/archived" };
+    getSettingsMock.mockResolvedValue({
+      ...SETTINGS,
+      emptyFolderSinceMs: { [oldEmptyFolder.id]: Date.now() - 12 * 60 * 60 * 1000 },
+    });
+    getStateMock.mockResolvedValue({
+      folders: [FOLDER, oldEmptyFolder],
+      sessions: [runningSession("synthetic-session")],
+    });
+    render(<AnchorProvider><App /></AnchorProvider>);
+
+    const hiddenToggle = await screen.findByRole("button", { name: /Hidden/ });
+    expect(hiddenToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: oldEmptyFolder.name })).toBeNull();
+
+    fireEvent.click(hiddenToggle);
+
+    expect(hiddenToggle).toHaveAttribute("aria-expanded", "true");
+    const hiddenFolderName = screen.getByRole("button", { name: oldEmptyFolder.name });
+    expect(hiddenFolderName.closest(".folder")).toHaveClass("folder--hidden");
+  });
+});
+
+describe("new-session folder chooser", () => {
+  it("shows Add a folder before folders already in Anchor", async () => {
+    await renderRunningSessionApp();
+    fireEvent.click(screen.getByRole("button", { name: "New session" }));
+
+    const modal = document.querySelector(".a-modal")!;
+    const labels = Array.from(modal.querySelectorAll(".nt__label")).map((label) => label.textContent);
+    expect(labels.slice(0, 2)).toEqual(["Add a folder", "Folders already in Anchor"]);
+  });
 });
 
 describe("settings exposure", () => {
@@ -750,7 +1054,7 @@ describe("settings exposure", () => {
     await renderRunningSessionApp();
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
 
-    expect(screen.getByText("Anchor v0.1.8")).toBeInTheDocument();
+    expect(screen.getByText("Anchor v0.2.0")).toBeInTheDocument();
   });
 
   it("lets the user turn on waiting notifications", async () => {
@@ -767,6 +1071,16 @@ describe("settings exposure", () => {
     const calls = setSettingsMock.mock.calls;
     const [patch] = calls[calls.length - 1] as [Settings];
     expect(patch.notifyOnWaiting).toBe(true);
+  });
+
+  it("lets the user set the response read delay", async () => {
+    await renderRunningSessionApp();
+    fireEvent.click(screen.getByRole("button", { name: /settings/i }));
+    fireEvent.click(screen.getByRole("radio", { name: "2.5 seconds" }));
+
+    await waitFor(() => expect(setSettingsMock).toHaveBeenCalled());
+    const saved = setSettingsMock.mock.calls[setSettingsMock.mock.calls.length - 1][0] as Settings;
+    expect(saved.responseReadDelayMs).toBe(2500);
   });
 });
 
@@ -816,7 +1130,7 @@ describe("launch and resume failures", () => {
     setSessionIdMock.mockResolvedValue(updated);
     await renderStoppedAiSession("old-synthetic-id");
 
-    const row = screen.getByText("codex-session", { selector: ".a-row__title" }).closest(".a-row")!;
+    const row = screen.getByText("codex-session", { selector: ".a-row__title" }).closest<HTMLElement>(".a-row")!;
     fireEvent.contextMenu(row);
     fireEvent.click(screen.getByRole("button", { name: /Set session ID/ }));
     const input = screen.getByRole("textbox", { name: "Provider session ID" });
@@ -1016,8 +1330,9 @@ describe("launch and resume failures", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /resume session/i }));
     await waitFor(() => expect(resumeSessionMock).toHaveBeenCalledTimes(1));
-    const row = screen.getByText("codex-session", { selector: ".a-row__title" }).closest(".a-row")!;
+    const row = screen.getByText("codex-session", { selector: ".a-row__title" }).closest<HTMLElement>(".a-row")!;
     fireEvent.mouseEnter(row);
+    fireEvent.click(within(row).getByRole("button", { name: "Close tab from sidebar" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete session" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(deleteSessionMock).toHaveBeenCalledWith("codex-session"));
@@ -1094,13 +1409,14 @@ describe("launch and resume failures", () => {
     deleteSessionMock.mockRejectedValue("SESSION_DELETE_FAILED: synthetic failure");
     await renderStoppedAiSession("synthetic-session-id");
 
-    const row = screen.getByText("codex-session", { selector: ".a-row__title" }).closest(".a-row")!;
+    const row = screen.getByText("codex-session", { selector: ".a-row__title" }).closest<HTMLElement>(".a-row")!;
     fireEvent.mouseEnter(row);
+    fireEvent.click(within(row).getByRole("button", { name: "Close tab from sidebar" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete session" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() => expect(deleteSessionMock).toHaveBeenCalledWith("codex-session"));
-    expect(screen.getByText("codex-session", { selector: ".a-row__title" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("codex-session", { selector: ".a-row__title" }));
     expect(screen.getByRole("button", { name: /resume session/i })).toBeEnabled();
   });
 
@@ -1232,8 +1548,28 @@ describe("Codex profiles", () => {
 describe("confirmClose", () => {
   const confirmButton = () => screen.getByRole("button", { name: "Close session" });
 
-  it("asks before closing a running session and sends nothing until answered", async () => {
-    await renderRunningSessionApp(["synthetic-session"], { confirmClose: true });
+  async function renderInFlightAiSessionApp(settings: Partial<Settings> = {}) {
+    generateSessionTitleMock.mockResolvedValue(runningAiSession("synthetic-session"));
+    getStateMock.mockImplementation(async () => ({
+      folders: [FOLDER],
+      sessions: [runningAiSession("synthetic-session")],
+    }));
+    getSettingsMock.mockImplementation(async () => ({
+      ...SETTINGS,
+      confirmClose: true,
+      ...settings,
+    }));
+    render(<AnchorProvider><App /></AnchorProvider>);
+    await screen.findByRole("button", { name: "Close tab" });
+    await waitFor(() => expect(terminalInputHandlers).toHaveLength(1));
+    await act(async () => {
+      terminalInputHandlers[0]("do work\r");
+      await Promise.resolve();
+    });
+  }
+
+  it("asks before closing an in-progress AI response and sends nothing until answered", async () => {
+    await renderInFlightAiSessionApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
 
@@ -1246,7 +1582,7 @@ describe("confirmClose", () => {
   it("closes immediately once confirmed, still with one lifecycle request", async () => {
     const close = deferred<void>();
     setTabOpenMock.mockReturnValue(close.promise);
-    await renderRunningSessionApp(["synthetic-session"], { confirmClose: true });
+    await renderInFlightAiSessionApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
     fireEvent.click(confirmButton());
@@ -1260,7 +1596,7 @@ describe("confirmClose", () => {
   });
 
   it("keeps the tab when the confirmation is dismissed", async () => {
-    await renderRunningSessionApp(["synthetic-session"], { confirmClose: true });
+    await renderInFlightAiSessionApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -1290,8 +1626,54 @@ describe("confirmClose", () => {
     expect(setTabOpenMock).toHaveBeenCalledTimes(1);
   });
 
-  it("also guards the ⌘W shortcut, not just the tab's close button", async () => {
+  it("does not ask for a live but idle AI session", async () => {
+    getStateMock.mockImplementation(async () => ({
+      folders: [FOLDER],
+      sessions: [runningAiSession("synthetic-session")],
+    }));
+    getSettingsMock.mockImplementation(async () => ({ ...SETTINGS, confirmClose: true }));
+    render(<AnchorProvider><App /></AnchorProvider>);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
+
+    expect(screen.queryByRole("button", { name: "Close session" })).not.toBeInTheDocument();
+    expect(setTabOpenMock).toHaveBeenCalledWith("synthetic-session", false);
+  });
+
+  it("does not ask for a live generic terminal", async () => {
     await renderRunningSessionApp(["synthetic-session"], { confirmClose: true });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
+
+    expect(screen.queryByRole("button", { name: "Close session" })).not.toBeInTheDocument();
+    expect(setTabOpenMock).toHaveBeenCalledWith("synthetic-session", false);
+  });
+
+  it("does not ask after the AI response finishes", async () => {
+    await renderInFlightAiSessionApp();
+    act(() => sessionStatusHandler?.({
+      sessionId: "synthetic-session",
+      status: "waiting",
+      exitCode: null,
+    }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
+
+    expect(screen.queryByRole("button", { name: "Close session" })).not.toBeInTheDocument();
+    expect(setTabOpenMock).toHaveBeenCalledWith("synthetic-session", false);
+  });
+
+  it("does not ask when closing leaves the in-progress response running", async () => {
+    await renderInFlightAiSessionApp({ stopOnClose: false });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
+
+    expect(screen.queryByRole("button", { name: "Close session" })).not.toBeInTheDocument();
+    expect(setTabOpenMock).toHaveBeenCalledWith("synthetic-session", false);
+  });
+
+  it("also guards the ⌘W shortcut, not just the tab's close button", async () => {
+    await renderInFlightAiSessionApp();
 
     fireEvent.keyDown(window, { key: "w", metaKey: true });
 
@@ -1300,7 +1682,7 @@ describe("confirmClose", () => {
   });
 
   it("dismisses the confirmation on Escape", async () => {
-    await renderRunningSessionApp(["synthetic-session"], { confirmClose: true });
+    await renderInFlightAiSessionApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Close tab" }));
     fireEvent.keyDown(window, { key: "Escape" });

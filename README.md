@@ -13,7 +13,7 @@ launch environments.
 
 - **[docs/SPEC.md](docs/SPEC.md)** — the single source of truth (product,
   architecture, IPC contract, phases).
-- **[docs/Anchor.dc.html](docs/Anchor.dc.html)** — authoritative UI mock (open
+- **[docs/Anchor-Implementation-Mock.html](docs/Anchor-Implementation-Mock.html)** — authoritative UI mock (open
   in a browser). The app must be built to this mock.
 
 ## Stack

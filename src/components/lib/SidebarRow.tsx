@@ -1,4 +1,4 @@
-/** A session row in the sidebar. Active rows get the gradient left edge. */
+/** A session row in the sidebar. Active rows get a flat accent edge. */
 import type { HTMLAttributes, ReactNode } from "react";
 import { cx } from "./cx";
 

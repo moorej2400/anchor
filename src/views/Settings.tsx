@@ -11,6 +11,7 @@ import { ipc } from "../ipc/commands";
 import { useAnchor } from "../app/store";
 import { statusCounts } from "../app/selectors";
 import type { SettingsSection } from "../app/store";
+import type { ResponseReadDelayMs } from "../ipc/types";
 import packageJson from "../../package.json";
 
 const NAV: { id: SettingsSection; label: string }[] = [
@@ -130,8 +131,8 @@ export function Settings() {
           onChange={(v) => void actions.updateSettings({ autoRestore: v })}
         />
         <ToggleRow
-          title="Confirm before closing a running session"
-          desc="Prevents accidentally killing an active AI run."
+          title="Confirm before interrupting an AI response"
+          desc="Warns only when closing the tab would stop an AI that is still responding."
           on={settings.confirmClose}
           onChange={(v) => void actions.updateSettings({ confirmClose: v })}
         />
@@ -147,6 +148,26 @@ export function Settings() {
           on={settings.notifyOnWaiting}
           onChange={(v) => void actions.updateSettings({ notifyOnWaiting: v })}
         />
+
+        <div className="settings__field">
+          <div className="settings__fieldlabel" style={{ marginBottom: 4 }}>Mark response as read after</div>
+          <div style={{ fontSize: 12, color: "var(--text-3)", marginBottom: 10 }}>
+            A blue dot clears only after the chat stays selected for this long.
+          </div>
+          <RadioGroup
+            ariaLabel="Mark response as read after"
+            value={String(settings.responseReadDelayMs)}
+            onChange={(value) => void actions.updateSettings({
+              responseReadDelayMs: Number(value) as ResponseReadDelayMs,
+            })}
+            options={[
+              { value: "0", label: "Instant" },
+              { value: "1000", label: "1 second" },
+              { value: "2500", label: "2.5 seconds" },
+              { value: "5000", label: "5 seconds" },
+            ]}
+          />
+        </div>
       </div>
     );
   }

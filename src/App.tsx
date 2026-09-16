@@ -8,19 +8,20 @@ import { Toast } from "./components/lib";
 import type { Folder } from "./ipc/types";
 import { useAnchor } from "./app/store";
 import { sessionById } from "./app/selectors";
-import { folderPathOf } from "./app/display";
 import { WindowChrome } from "./views/WindowChrome";
 import { Sidebar } from "./views/Sidebar";
 import { TabStrip } from "./views/TabStrip";
 import { TerminalPane } from "./views/TerminalPane";
 import { StatusBar } from "./views/StatusBar";
-import { Settings } from "./views/Settings";
+import { SettingsPage } from "./views/SettingsPage";
 import { CommandPalette } from "./views/CommandPalette";
 import { NewSessionDialog } from "./views/NewSessionDialog";
 import { RemoveFolderModal } from "./views/RemoveFolderModal";
 import { CloseSessionModal } from "./views/CloseSessionModal";
 import { CodexProfileModal } from "./views/CodexProfileModal";
 import { SessionIdModal } from "./views/SessionIdModal";
+import { WorkspaceRail } from "./views/WorkspaceRail";
+import { activeWorkspace, workspaceIdForSession } from "./app/workspaces";
 
 export default function App() {
   const { state, actions } = useAnchor();
@@ -51,7 +52,10 @@ export default function App() {
         return active ? state.folders.find((f) => f.id === active.folderId) ?? state.folders[0] : state.folders[0];
       }
       function cycleTab(dir: number) {
-        const tabs = state.openTabs;
+        const workspace = activeWorkspace(state.settings);
+        const tabs = state.openTabs.filter((id) =>
+          workspaceIdForSession(state.settings, id) === workspace.id
+        );
         if (tabs.length === 0 || !state.activeId) return;
         const i = tabs.indexOf(state.activeId);
         const next = tabs[(i + dir + tabs.length) % tabs.length];
@@ -69,7 +73,7 @@ export default function App() {
   if (state.fatalError) {
     return (
       <div className="app">
-        <WindowChrome activePath={null} />
+      <WindowChrome />
         <div className="fatal">Failed to reach the Anchor core:<br />{state.fatalError}</div>
       </div>
     );
@@ -77,24 +81,27 @@ export default function App() {
 
   return (
     <div className="app">
-      <WindowChrome activePath={active ? folderPathOf(active, state.folders) : null} />
-      <div className="app__body">
-        <Sidebar onRemoveFolder={setRemoveTarget} onSetCodexProfile={setCodexProfileTarget} onSetSessionId={setSessionIdTarget} />
-        <main className="main">
-          {state.view === "terminal" ? (
+      <WindowChrome />
+      <div className="app__body" data-settings-open={state.view === "settings" || undefined} data-workspace-rail={state.workspacePaneOpen || undefined}>
+        {state.view === "terminal" ? (
+          <>
+            <WorkspaceRail />
+            <Sidebar onRemoveFolder={setRemoveTarget} onSetCodexProfile={setCodexProfileTarget} onSetSessionId={setSessionIdTarget} />
+            <main className="main">
             <div className="term-view">
               <TabStrip />
-              <div className="pane-wrap">
-                <div className="pane">
-                  <TerminalPane active={active} />
-                </div>
+              <div className="pane">
+                <TerminalPane active={active} />
               </div>
               <StatusBar active={active} />
             </div>
-          ) : (
-            <Settings />
-          )}
-        </main>
+            </main>
+          </>
+        ) : (
+          <main className="main">
+            <SettingsPage />
+          </main>
+        )}
       </div>
 
       <CommandPalette />

@@ -5,7 +5,7 @@
  * repo; never put real paths, keys, or session IDs here.
  */
 import type { AppState, CliInfo, Folder, Session, Settings, Status, Tool } from "./types";
-import { EVENT } from "./types";
+import { DEFAULT_WORKSPACE_ID, EVENT } from "./types";
 
 const now = () => new Date().toISOString();
 
@@ -21,6 +21,7 @@ const folders: Folder[] = [
   { id: "f2", name: "payments-api", path: "~/dev/payments-api" },
   { id: "f3", name: "mobile-app", path: "~/dev/mobile-app" },
   { id: "f4", name: "infra", path: "~/work/infra" },
+  { id: "f5", name: "design-tokens", path: "~/dev/design-tokens" },
 ];
 
 function mk(
@@ -74,8 +75,75 @@ const settings: Settings = {
   theme: "graphite",
   density: "comfortable",
   fontSize: 13,
-  accent: "#d6417a",
+  accent: "#88a99d",
   notifyOnWaiting: false,
+  responseReadDelayMs: 1000,
+  favoriteSessionIds: ["api-codex"],
+  folderOrder: ["f2", "f1", "f3", "f4", "f5"],
+  tabOrder: ["w-claude", "api-codex", "w-copilot"],
+  emptyFolderSinceMs: { f5: Date.now() - 13 * 60 * 60 * 1000 },
+  workspaces: [{
+    id: DEFAULT_WORKSPACE_ID,
+    name: "Default",
+    pinned: true,
+    archived: false,
+    favoriteSessionIds: ["api-codex"],
+    folderOrder: ["f2", "f1", "f3", "f4", "f5"],
+    tabOrder: ["w-claude", "api-codex", "w-copilot"],
+    collapsedFolderIds: [],
+  }, {
+    id: "00000000-0000-4000-8000-000000000002",
+    name: "Release planning",
+    pinned: true,
+    archived: false,
+    favoriteSessionIds: ["m-claude"],
+    folderOrder: ["f3", "f1", "f2", "f4", "f5"],
+    tabOrder: [],
+    collapsedFolderIds: [],
+  }, {
+    id: "00000000-0000-4000-8000-000000000003",
+    name: "Provider research",
+    pinned: false,
+    archived: false,
+    favoriteSessionIds: [],
+    folderOrder: ["f4", "f2", "f1", "f3", "f5"],
+    tabOrder: [],
+    collapsedFolderIds: [],
+  }],
+  activeWorkspaceId: DEFAULT_WORKSPACE_ID,
+  sessionWorkspaceIds: {
+    "m-copilot": "00000000-0000-4000-8000-000000000002",
+    "m-claude": "00000000-0000-4000-8000-000000000002",
+    "i-term": "00000000-0000-4000-8000-000000000003",
+    "i-oc": "00000000-0000-4000-8000-000000000003",
+  },
+  workspacePaneKeepOpen: false,
+  terminalTheme: {
+    background: "#0c0e0d",
+    foreground: "#cbd0ce",
+    cursor: "#88a99d",
+    cursorAccent: "#0c0e0d",
+    selectionBackground: "#34413c",
+    selectionForeground: "#eef2f0",
+    black: "#151817",
+    red: "#cf7373",
+    green: "#92bd94",
+    yellow: "#d0b57a",
+    blue: "#78a9d1",
+    magenta: "#aea1c5",
+    cyan: "#77b2ba",
+    white: "#cbd0ce",
+    brightBlack: "#68716d",
+    brightRed: "#e38a8a",
+    brightGreen: "#add3ae",
+    brightYellow: "#e3ca91",
+    brightBlue: "#94bee0",
+    brightMagenta: "#c5b5dc",
+    brightCyan: "#91c8ce",
+    brightWhite: "#eef2f0",
+  },
+  customHarnesses: [],
+  sessionHarnessIds: {},
 };
 
 const MODEL_FOR: Record<Tool, string> = {
@@ -211,6 +279,27 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
     case "resume_session": {
       const s = find(a.sessionId as string);
       if (!s) return Promise.reject("SESSION_NOT_FOUND: unknown id");
+      goRunning(s);
+      return Promise.resolve({ ...s } as T);
+    }
+    case "launch_custom_session": {
+      const harness = settings.customHarnesses.find((item) => item.id === a.harnessId);
+      if (!harness || !harness.enabled) {
+        return Promise.reject("HARNESS_NOT_FOUND: saved custom harness is unavailable");
+      }
+      const id = `n${(seq += 1)}`;
+      const cliSessionId = harness.sessionIdStrategy === "preassigned" ? genId() : null;
+      const s = mk(
+        id,
+        a.folderId as string,
+        "terminal",
+        harness.name,
+        "running",
+        cliSessionId,
+        harness.name,
+      );
+      sessions.push(s);
+      settings.sessionHarnessIds[id] = harness.id;
       goRunning(s);
       return Promise.resolve({ ...s } as T);
     }

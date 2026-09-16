@@ -1,11 +1,11 @@
 /**
  * Design tokens — extracted from the authoritative mock (docs/Anchor.dc.html).
  * These are the TypeScript mirror of tokens.css, for the few places that need
- * token values in dynamic inline styles (tool badges, status dots, the xterm
+ * token values in dynamic inline styles (tool badges, attention dots, xterm
  * color palette). UI styling flows through the CSS variables in tokens.css so
  * theme / accent / density settings apply globally, not per component.
  */
-import type { Status, Tool } from "../../ipc/types";
+import type { Tool } from "../../ipc/types";
 
 /** Per-tool badge: short label, foreground, translucent background. */
 export const TOOL_BADGE: Record<Tool, { label: string; fg: string; bg: string; name: string }> = {
@@ -16,17 +16,10 @@ export const TOOL_BADGE: Record<Tool, { label: string; fg: string; bg: string; n
   terminal: { label: "›_", fg: "rgba(255,255,255,.7)", bg: "rgba(255,255,255,.08)", name: "Terminal" },
 };
 
-/** Status indicator color. `stopped` renders no dot (null). */
-export const STATUS_COLOR: Record<Status, string | null> = {
-  running: "#5fb891",
-  waiting: "#d4a35f",
-  stopped: null,
-};
-
-export const STATUS_LABEL: Record<Status, string> = {
-  running: "running",
-  waiting: "waiting",
-  stopped: "stopped",
+/** Open-chat response attention: neutral gray until an unread response is ready. */
+export const ATTENTION_COLOR = {
+  idle: "#717b8f",
+  ready: "#5aa7ff",
 };
 
 /** Informational fallback model label per tool (used only when backend model is null). */
@@ -40,12 +33,12 @@ export const TOOL_MODEL_FALLBACK: Record<Tool, string> = {
 
 /** Accent swatch options offered in Appearance settings. */
 export const ACCENT_SWATCHES = [
-  "#d6417a",
-  "#e0445a",
-  "#c93a8b",
-  "#a03cc0",
-  "#5b6ee0",
-  "#3ba6c0",
+  "#88a99d",
+  "#769ec2",
+  "#9a91bd",
+  "#bd847f",
+  "#b39b67",
+  "#7fa887",
 ] as const;
 
 /**

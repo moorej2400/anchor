@@ -1,11 +1,12 @@
 /**
  * Left sidebar: filter, folder groups (collapse, rename, quick-launch, remove),
- * session rows (select, rename, delete, copy id), and the status legend footer.
+ * session rows (select, close tab, rename, delete, copy id), and the status legend footer.
  * Ephemeral popover/hover/rename state is local; domain mutations go to the store.
  * Built to docs/Anchor.dc.html.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import {
+  AttentionDot,
   Badge,
   Button,
   IconButton,
@@ -14,13 +15,23 @@ import {
   MenuItem,
   MenuLabel,
   SidebarRow,
-  StatusDot,
   TextInput,
 } from "../components/lib";
 import type { Folder, Session } from "../ipc/types";
 import { useAnchor } from "../app/store";
-import { foldersWithSessions, sessionDisplayTitle, statusCounts } from "../app/selectors";
+import {
+  EMPTY_FOLDER_HIDE_AFTER_MS,
+  favoriteSessions,
+  foldersWithSessions,
+  moveFolderId,
+  orderFolders,
+  responseIndicator,
+  sessionDisplayTitle,
+  splitHiddenFolders,
+} from "../app/selectors";
 import { LAUNCHABLE, toolName } from "../app/display";
+import { activeWorkspace, sessionsForWorkspace } from "../app/workspaces";
+import { SESSION_DRAG_TYPE } from "./WorkspaceRail";
 
 interface SidebarProps {
   onRemoveFolder: (folder: Folder) => void;
@@ -30,15 +41,36 @@ interface SidebarProps {
 
 export function Sidebar({ onRemoveFolder, onSetCodexProfile, onSetSessionId }: SidebarProps) {
   const { state, actions } = useAnchor();
-  // Selecting a tab changes `activeId` only. Without memoizing, every selection
-  // would re-filter and re-sort every session before the terminal can paint.
-  const groups = useMemo(
-    () => foldersWithSessions(state.folders, state.sessions, state.filter, state.typedOrder),
-    [state.folders, state.sessions, state.filter, state.typedOrder],
+  const workspace = activeWorkspace(state.settings);
+  const workspaceSessions = useMemo(
+    () => sessionsForWorkspace(state.sessions, state.settings, workspace.id),
+    [state.sessions, state.settings, workspace.id],
   );
-  const counts = useMemo(() => statusCounts(state.sessions), [state.sessions]);
-
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const orderedFolders = useMemo(
+    () => orderFolders(state.folders, workspace.folderOrder),
+    [state.folders, workspace.folderOrder],
+  );
+  const groups = useMemo(
+    () => foldersWithSessions(orderedFolders, workspaceSessions, state.filter, state.submittedOrder),
+    [orderedFolders, workspaceSessions, state.filter, state.submittedOrder],
+  );
+  const favorites = useMemo(
+    () => favoriteSessions(
+      workspaceSessions,
+      state.folders,
+      workspace.favoriteSessionIds,
+      state.filter,
+    ),
+    [workspaceSessions, state.folders, workspace.favoriteSessionIds, state.filter],
+  );
+  const folderNames = useMemo(
+    () => new Map(state.folders.map((folder) => [folder.id, folder.name])),
+    [state.folders],
+  );
+  const [hiddenExpanded, setHiddenExpanded] = useState(false);
+  const [folderClockMs, setFolderClockMs] = useState(() => Date.now());
+  const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; after: boolean } | null>(null);
   // Only one menu/popover open at a time (mock behavior).
   const [ui, setUi] = useState<{
     folderMenu: string | null; // quick-launch (+)
@@ -58,8 +90,94 @@ export function Sidebar({ onRemoveFolder, onSetCodexProfile, onSetSessionId }: S
     return () => document.removeEventListener("click", onDoc);
   }, []);
 
+  useEffect(() => {
+    // A folder must move at the 12-hour boundary even if this app remains open
+    // and no registry or settings event causes another render.
+    const nextExpiry = groups.reduce((next, folder) => {
+      if (folder.sessions.length > 0) return next;
+      const emptySince = state.settings.emptyFolderSinceMs[folder.id];
+      const expiry = Number.isFinite(emptySince)
+        ? emptySince + EMPTY_FOLDER_HIDE_AFTER_MS
+        : Number.POSITIVE_INFINITY;
+      return expiry > folderClockMs ? Math.min(next, expiry) : next;
+    }, Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(nextExpiry)) return;
+    const timer = window.setTimeout(
+      () => setFolderClockMs(Date.now()),
+      Math.max(0, Math.min(nextExpiry - Date.now(), 2_147_483_647)),
+    );
+    return () => window.clearTimeout(timer);
+  }, [folderClockMs, groups, state.settings.emptyFolderSinceMs]);
+
+  const folderVisibility = useMemo(
+    () => splitHiddenFolders(groups, state.settings.emptyFolderSinceMs, folderClockMs),
+    [folderClockMs, groups, state.settings.emptyFolderSinceMs],
+  );
+
+  const finishFolderDrop = (targetId: string, after: boolean) => {
+    if (!draggedFolderId) return;
+    const current = orderedFolders.map((folder) => folder.id);
+    const next = moveFolderId(current, draggedFolderId, targetId, after);
+    setDraggedFolderId(null);
+    setDropTarget(null);
+    if (next !== current) void actions.reorderFolders(next);
+  };
+
+  const renderFolder = (folder: (typeof groups)[number], hidden: boolean) => (
+    <FolderGroup
+      key={folder.id}
+      folder={folder}
+      activeId={state.activeId}
+      collapsed={workspace.collapsedFolderIds.includes(folder.id)}
+      hidden={hidden}
+      ui={ui}
+      setUi={setUi}
+      onToggle={() => void actions.toggleFolderCollapsed(folder.id)}
+      onRemoveFolder={onRemoveFolder}
+      onSetCodexProfile={onSetCodexProfile}
+      onSetSessionId={onSetSessionId}
+      dragEnabled={!state.filter.trim()}
+      dragging={draggedFolderId === folder.id}
+      dropPosition={dropTarget?.id === folder.id ? (dropTarget.after ? "after" : "before") : null}
+      onDragStart={(event) => {
+        setDraggedFolderId(folder.id);
+        setDropTarget(null);
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", folder.id);
+      }}
+      onDragOver={(event) => {
+        if (!draggedFolderId || draggedFolderId === folder.id) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        const bounds = event.currentTarget.getBoundingClientRect();
+        setDropTarget({ id: folder.id, after: event.clientY >= bounds.top + bounds.height / 2 });
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        const bounds = event.currentTarget.getBoundingClientRect();
+        finishFolderDrop(folder.id, event.clientY >= bounds.top + bounds.height / 2);
+      }}
+      onDragEnd={() => {
+        setDraggedFolderId(null);
+        setDropTarget(null);
+      }}
+    />
+  );
+
   return (
     <aside className="sidebar">
+      <button
+        className="current-workspace"
+        aria-expanded={state.workspacePaneOpen}
+        onClick={() => actions.toggleWorkspacePane()}
+      >
+        <span className="current-workspace__icon" aria-hidden="true">▰</span>
+        <span className="current-workspace__copy">
+          <small>WORKSPACE · SWITCH</small>
+          <strong>{workspace.name}</strong>
+        </span>
+        <span className="current-workspace__chevron" aria-hidden="true">›</span>
+      </button>
       <div className="sidebar__filter">
         <div className="filter-box">
           <span className="filter-box__glyph">⌕</span>
@@ -68,7 +186,7 @@ export function Sidebar({ onRemoveFolder, onSetCodexProfile, onSetSessionId }: S
             variant="seamless"
             value={state.filter}
             onChange={(e) => actions.setFilter(e.target.value)}
-            placeholder="Filter sessions & folders"
+            placeholder="Search sessions"
             style={{ fontSize: 12.5 }}
           />
           <button className="kbd-chip" onClick={(e) => { e.stopPropagation(); actions.openPalette(); }}>
@@ -78,71 +196,105 @@ export function Sidebar({ onRemoveFolder, onSetCodexProfile, onSetSessionId }: S
       </div>
 
       <div className="sidebar__list">
-        {groups.map((folder) => (
-          <FolderGroup
-            key={folder.id}
-            folder={folder}
-            activeId={state.activeId}
-            collapsed={!!collapsed[folder.id]}
-            ui={ui}
-            setUi={setUi}
-            onToggle={() => setCollapsed((c) => ({ ...c, [folder.id]: !c[folder.id] }))}
-            onRemoveFolder={onRemoveFolder}
-            onSetCodexProfile={onSetCodexProfile}
-            onSetSessionId={onSetSessionId}
-          />
-        ))}
+        <SidebarSectionHeader title="Favorites" />
+        <div className="sidebar__favorites">
+          {favorites.map((session) => (
+            <SessionRow
+              key={`favorite:${session.id}`}
+              instanceKey={`favorite:${session.id}`}
+              session={session}
+              folderLabel={folderNames.get(session.folderId)}
+              active={session.id === state.activeId}
+              ui={ui}
+              setUi={setUi}
+              onSetCodexProfile={onSetCodexProfile}
+              onSetSessionId={onSetSessionId}
+            />
+          ))}
+          {favorites.length === 0 && (
+            <div className="sidebar-section__empty">
+              {state.filter.trim() ? "No favorite chats match." : "Favorite chats appear here."}
+            </div>
+          )}
+        </div>
+
+        <SidebarSectionHeader title="All chats" />
+        {folderVisibility.visible.map((folder) => renderFolder(folder, false))}
+
+        {folderVisibility.hidden.length > 0 && (
+          <div className="sidebar-hidden">
+            <button
+              className="sidebar-hidden__toggle"
+              aria-expanded={hiddenExpanded}
+              onClick={() => setHiddenExpanded((expanded) => !expanded)}
+            >
+              <span className="sidebar-hidden__chevron" aria-hidden="true">{hiddenExpanded ? "⌄" : "›"}</span>
+              <span>Hidden</span>
+              <span className="sidebar-hidden__count">{folderVisibility.hidden.length}</span>
+              <span className="sidebar-section__line" aria-hidden="true" />
+            </button>
+            {hiddenExpanded && (
+              <div className="sidebar-hidden__groups">
+                {folderVisibility.hidden.map((folder) => renderFolder(folder, true))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="sidebar__footer">
-        <div className="legend">
-          <span className="legend__item">
-            <span className="legend__dot" style={{ background: "#5fb891", boxShadow: "0 0 6px rgba(95,184,145,.6)" }} />
-            {counts.running} running
-          </span>
-          <span className="legend__item">
-            <span className="legend__dot" style={{ background: "#d4a35f", boxShadow: "0 0 6px rgba(212,163,95,.6)" }} />
-            {counts.waiting} waiting
-          </span>
-          <span className="legend__item" style={{ color: "var(--text-3)" }}>{counts.stopped} stopped</span>
-        </div>
-        <Button variant="subtle" block onClick={() => actions.openSettings()} style={{ justifyContent: "flex-start" }}>
-          <span style={{ fontSize: 14 }}>⚙</span>Settings
-        </Button>
+        <button className="sidebar__rail-toggle" onClick={() => actions.toggleWorkspacePane()} aria-label="Toggle workspaces">▥</button>
+        <button className="sidebar__settings" onClick={() => actions.openSettings()}><span>⚙</span>Settings</button>
       </div>
     </aside>
   );
 }
 
-type Ui = Parameters<typeof FolderGroup>[0]["ui"];
-type SetUi = Parameters<typeof FolderGroup>[0]["setUi"];
+function SidebarSectionHeader({ title }: { title: string }) {
+  return (
+    <div className="sidebar-section" role="heading" aria-level={2}>
+      <span>{title}</span>
+      <span className="sidebar-section__line" aria-hidden="true" />
+    </div>
+  );
+}
+
+interface Ui {
+  folderMenu: string | null;
+  folderMore: string | null;
+  folderRename: string | null;
+  /** Instance keys keep duplicate Favorite and All chats rows independent. */
+  sessionMenu: string | null;
+  sessionRename: string | null;
+  confirmDelete: string | null;
+}
+
+type SetUi = React.Dispatch<React.SetStateAction<Ui>>;
 
 function FolderGroup(props: {
   folder: Folder & { sessions: Session[] };
   activeId: string | null;
   collapsed: boolean;
-  ui: {
-    folderMenu: string | null;
-    folderMore: string | null;
-    folderRename: string | null;
-    sessionMenu: string | null;
-    sessionRename: string | null;
-    confirmDelete: string | null;
-  };
-  setUi: React.Dispatch<React.SetStateAction<{
-    folderMenu: string | null;
-    folderMore: string | null;
-    folderRename: string | null;
-    sessionMenu: string | null;
-    sessionRename: string | null;
-    confirmDelete: string | null;
-  }>>;
+  hidden: boolean;
+  ui: Ui;
+  setUi: SetUi;
   onToggle: () => void;
   onRemoveFolder: (folder: Folder) => void;
   onSetCodexProfile: (sessionId: string) => void;
   onSetSessionId: (sessionId: string) => void;
+  dragEnabled: boolean;
+  dragging: boolean;
+  dropPosition: "before" | "after" | null;
+  onDragStart: (event: DragEvent<HTMLDivElement>) => void;
+  onDragOver: (event: DragEvent<HTMLDivElement>) => void;
+  onDrop: (event: DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
 }) {
-  const { folder, activeId, collapsed, ui, setUi, onToggle, onRemoveFolder, onSetCodexProfile, onSetSessionId } = props;
+  const {
+    folder, activeId, collapsed, hidden, ui, setUi, onToggle, onRemoveFolder,
+    onSetCodexProfile, onSetSessionId, dragEnabled, dragging, dropPosition,
+    onDragStart, onDragOver, onDrop, onDragEnd,
+  } = props;
   const { state, actions } = useAnchor();
   const [hover, setHover] = useState(false);
   const [renameDraft, setRenameDraft] = useState(folder.name);
@@ -170,8 +322,22 @@ function FolderGroup(props: {
   };
 
   return (
-    <div className="folder" onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
-      <div className="folder__head">
+    <div
+      className={`folder${hidden ? " folder--hidden" : ""}`}
+      data-dragging={dragging || undefined}
+      data-drop={dropPosition ?? undefined}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
+      <div
+        className="folder__head"
+        draggable={dragEnabled && !renaming}
+        title={dragEnabled ? "Drag project group to reorder" : undefined}
+        onDragStart={onDragStart}
+        onDragEnd={onDragEnd}
+      >
         {renaming ? (
           <TextInput
             ref={renameRef}
@@ -193,10 +359,10 @@ function FolderGroup(props: {
             aria-controls={`folder-sessions-${folder.id}`}
             onClick={onToggle}
           >
-            {folder.name}
+            <span className="folder__disclosure" aria-hidden="true">{expanded ? "⌄" : "›"}</span>
+            <span className="folder__label">{folder.name}</span>
           </button>
         )}
-        <span className="folder__count">{folder.sessions.length}</span>
         {/* Both stay laid out (hidden, not unmounted) so revealing them on
             hover never reflows the header's name or count. */}
         <IconButton
@@ -256,6 +422,24 @@ function FolderGroup(props: {
                 </div>
               );
             })}
+            {state.settings.customHarnesses.some((harness) => harness.enabled) && (
+              <>
+                <MenuDivider />
+                <MenuLabel>Custom harnesses</MenuLabel>
+                {state.settings.customHarnesses.filter((harness) => harness.enabled).map((harness) => (
+                  <MenuItem
+                    key={harness.id}
+                    icon="⌘"
+                    onClick={() => {
+                      setUi((u) => ({ ...u, folderMenu: null }));
+                      void actions.launchCustomHarness(harness.id, folder.id);
+                    }}
+                  >
+                    {harness.name}
+                  </MenuItem>
+                ))}
+              </>
+            )}
           </Menu>
         )}
       </div>
@@ -265,6 +449,7 @@ function FolderGroup(props: {
           {folder.sessions.map((session) => (
             <SessionRow
               key={session.id}
+              instanceKey={`all:${session.id}`}
               session={session}
               active={session.id === activeId}
               ui={ui}
@@ -280,24 +465,29 @@ function FolderGroup(props: {
 }
 
 function SessionRow(props: {
+  instanceKey: string;
   session: Session;
+  folderLabel?: string;
   active: boolean;
   ui: Ui;
   setUi: SetUi;
   onSetCodexProfile: (sessionId: string) => void;
   onSetSessionId: (sessionId: string) => void;
 }) {
-  const { session, active, ui, setUi, onSetCodexProfile, onSetSessionId } = props;
+  const { instanceKey, session, folderLabel, active, ui, setUi, onSetCodexProfile, onSetSessionId } = props;
   const { state, actions } = useAnchor();
   const [hover, setHover] = useState(false);
   const [renameDraft, setRenameDraft] = useState(session.title);
   const renameRef = useRef<HTMLInputElement>(null);
 
-  const menuOpen = ui.sessionMenu === session.id;
-  const renaming = ui.sessionRename === session.id;
-  const confirming = ui.confirmDelete === session.id;
+  const menuOpen = ui.sessionMenu === instanceKey;
+  const renaming = ui.sessionRename === instanceKey;
+  const confirming = ui.confirmDelete === instanceKey;
   const showActions = (hover || menuOpen || confirming) && !renaming;
-  const showDot = !hover && !menuOpen && !renaming && !confirming;
+  const showIndicator = !hover && !menuOpen && !renaming && !confirming;
+  const indicator = responseIndicator(session.id, state.openTabs, state.unreadResponses);
+  const openInTab = state.openTabs.includes(session.id);
+  const favorite = activeWorkspace(state.settings).favoriteSessionIds.includes(session.id);
   const displayTitle = sessionDisplayTitle(session, state.sessions);
 
   useEffect(() => {
@@ -317,6 +507,11 @@ function SessionRow(props: {
   return (
     <SidebarRow
       active={active}
+      draggable={!renaming}
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData(SESSION_DRAG_TYPE, session.id);
+      }}
       onClick={() => actions.selectSession(session.id)}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -325,14 +520,13 @@ function SessionRow(props: {
           ...u,
           folderMenu: null,
           folderMore: null,
-          sessionMenu: session.id,
+          sessionMenu: instanceKey,
           confirmDelete: null,
         }));
       }}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      <Badge tool={session.tool} />
       <div style={{ flex: 1, minWidth: 0 }}>
         {renaming ? (
           <TextInput
@@ -348,18 +542,32 @@ function SessionRow(props: {
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <div className="a-row__title">{displayTitle}</div>
+          <>
+            <div className="a-row__title">{displayTitle}</div>
+            {folderLabel && <div className="a-row__meta">{folderLabel}</div>}
+          </>
         )}
       </div>
 
       <div className="a-row__trail" onClick={(e) => showActions && e.stopPropagation()}>
         {showActions ? (
           <>
-            <IconButton danger aria-label="Delete session" onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, confirmDelete: u.confirmDelete === session.id ? null : session.id, sessionMenu: null })); }}>✕</IconButton>
-            <IconButton aria-label="More options" style={{ fontSize: 17 }} onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, sessionMenu: u.sessionMenu === session.id ? null : session.id, confirmDelete: null })); }}>⋯</IconButton>
+            {openInTab ? (
+              <IconButton
+                aria-label="Close tab from sidebar"
+                title="Close tab"
+                style={{ fontSize: 14 }}
+                onClick={(e) => { e.stopPropagation(); void actions.closeTabImmediately(session.id); }}
+              >
+                ↓
+              </IconButton>
+            ) : (
+              <IconButton danger aria-label="Delete session" onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, confirmDelete: u.confirmDelete === instanceKey ? null : instanceKey, sessionMenu: null })); }}>✕</IconButton>
+            )}
+            <IconButton aria-label="More options" style={{ fontSize: 17 }} onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, sessionMenu: u.sessionMenu === instanceKey ? null : instanceKey, confirmDelete: null })); }}>⋯</IconButton>
           </>
         ) : (
-          showDot && <StatusDot status={session.status} />
+          showIndicator && indicator && <AttentionDot ready={indicator === "ready"} />
         )}
       </div>
 
@@ -375,10 +583,14 @@ function SessionRow(props: {
       )}
 
       {menuOpen && (
-        <Menu width={194} style={{ top: 33, right: 6 }}>
-          <MenuItem icon="✎" onClick={() => setUi((u) => ({ ...u, sessionRename: session.id, sessionMenu: null }))}>Rename session</MenuItem>
+        <Menu width={220} style={{ top: 33, right: 6 }}>
+          <MenuItem icon="✎" onClick={() => setUi((u) => ({ ...u, sessionRename: instanceKey, sessionMenu: null }))}>Rename session</MenuItem>
+          <MenuItem icon={favorite ? "★" : "☆"} onClick={() => { setUi((u) => ({ ...u, sessionMenu: null })); void actions.toggleFavoriteSession(session.id); }}>
+            {favorite ? "Remove from favorites" : "Add to favorites"}
+          </MenuItem>
+          <MenuDivider />
           <MenuItem icon="⧉" onClick={() => { if (session.cliSessionId) actions.copy(session.cliSessionId, "Session ID copied"); setUi((u) => ({ ...u, sessionMenu: null })); }}>Copy session ID</MenuItem>
-          {session.tool !== "terminal" && session.status === "stopped" && (
+          {(session.tool !== "terminal" || Boolean(state.settings.sessionHarnessIds[session.id])) && session.status === "stopped" && (
             <MenuItem icon="⌁" onClick={() => { setUi((u) => ({ ...u, sessionMenu: null })); onSetSessionId(session.id); }}>Set session ID</MenuItem>
           )}
           {session.tool === "codex" && session.status === "stopped" && (

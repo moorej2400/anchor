@@ -44,6 +44,13 @@ export const ipc = {
     extraArgs,
     codexProfile,
   }),
+  launchCustomSession: (folderId: string, harnessId: string, size: TerminalSize) =>
+    call<Session>("launch_custom_session", {
+      folderId,
+      harnessId,
+      cols: size.cols,
+      rows: size.rows,
+    }),
   resumeSession: (sessionId: string, size: TerminalSize) =>
     call<Session>("resume_session", { sessionId, cols: size.cols, rows: size.rows }),
   /** Starts a new provider chat inside an existing record that has no provider ID. */

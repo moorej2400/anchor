@@ -6,6 +6,7 @@
 import { useState } from "react";
 import {
   ACCENT_SWATCHES,
+  AttentionDot,
   Badge,
   Button,
   ConfirmPopover,
@@ -18,17 +19,15 @@ import {
   RadioGroup,
   SidebarRow,
   Slider,
-  StatusDot,
   Tab,
   TextInput,
   Toast,
   Toggle,
   Tooltip,
 } from "./lib";
-import type { Status, Tool } from "../ipc/types";
+import type { Tool } from "../ipc/types";
 
 const TOOLS: Tool[] = ["claude", "codex", "copilot", "opencode", "terminal"];
-const STATUSES: Status[] = ["running", "waiting", "stopped"];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -79,12 +78,13 @@ export function Gallery() {
         <Badge tool="claude" scale={1.35} />
       </Section>
 
-      <Section title="Status dots">
-        {STATUSES.map((s) => (
-          <span key={s} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-2)" }}>
-            <StatusDot status={s} /> {s}
-          </span>
-        ))}
+      <Section title="Attention dots">
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-2)" }}>
+          <AttentionDot /> open
+        </span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-2)" }}>
+          <AttentionDot ready /> response ready
+        </span>
       </Section>
 
       <Section title="Toggle / Radio / Slider">
@@ -139,12 +139,12 @@ export function Gallery() {
           <Tab active>
             <Badge tool="claude" />
             <span className="a-tab__title">refactor auth middleware</span>
-            <StatusDot status="running" />
+            <AttentionDot />
           </Tab>
           <Tab>
             <Badge tool="codex" />
             <span className="a-tab__title">fix checkout timers</span>
-            <StatusDot status="waiting" />
+            <AttentionDot ready />
           </Tab>
         </div>
       </Section>
@@ -154,12 +154,11 @@ export function Gallery() {
           <SidebarRow active>
             <Badge tool="claude" />
             <span className="a-row__title">refactor auth middleware</span>
-            <StatusDot status="running" />
+            <AttentionDot />
           </SidebarRow>
           <SidebarRow>
             <Badge tool="opencode" />
             <span className="a-row__title">stripe webhook retries</span>
-            <StatusDot status="stopped" />
           </SidebarRow>
         </div>
       </Section>

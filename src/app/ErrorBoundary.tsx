@@ -47,7 +47,7 @@ export class ErrorBoundary extends Component<Props, State> {
             width: 52,
             height: 52,
             borderRadius: 14,
-            background: "linear-gradient(135deg, #8a3fd0, #d6417a)",
+            background: "#88a99d",
             boxShadow: "0 8px 30px rgba(214,65,122,.35)",
             opacity: 0.85,
           }}

@@ -7,4 +7,10 @@ export function applyTheme(settings: Settings): void {
   root.dataset.density = settings.density;
   root.style.setProperty("--acc", settings.accent);
   root.style.setProperty("--tfs", `${settings.fontSize}px`);
+  root.style.setProperty("--terminal", settings.terminalTheme.background);
+  root.style.setProperty("--terminal-text", settings.terminalTheme.foreground);
+  root.style.setProperty("--terminal-green", settings.terminalTheme.green);
+  root.style.setProperty("--terminal-cyan", settings.terminalTheme.cyan);
+  root.style.setProperty("--terminal-purple", settings.terminalTheme.magenta);
+  root.style.setProperty("--terminal-yellow", settings.terminalTheme.yellow);
 }

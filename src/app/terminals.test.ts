@@ -871,6 +871,30 @@ describe("TerminalManager", () => {
     expect(input).not.toHaveBeenCalled();
   });
 
+  it("encodes Ctrl+/ as the terminal control byte expected by Codex", () => {
+    const input = vi.fn();
+    const manager = new TerminalManager(input);
+    manager.ensure("session");
+    const preventDefault = vi.fn();
+    const stopPropagation = vi.fn();
+
+    const handled = terminalInstances[0].keyHandler?.({
+      type: "keydown",
+      key: "/",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      preventDefault,
+      stopPropagation,
+    } as unknown as KeyboardEvent);
+
+    expect(handled).toBe(false);
+    expect(input).toHaveBeenCalledWith("session", "\x1f");
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(stopPropagation).toHaveBeenCalledOnce();
+  });
+
   it("lets the browser copy selected terminal text instead of sending Ctrl+C", () => {
     const input = vi.fn();
     const manager = new TerminalManager(input);

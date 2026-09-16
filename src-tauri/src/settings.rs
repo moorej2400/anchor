@@ -5,13 +5,14 @@
 
 #![allow(dead_code)] // Used by later Phase 2 orchestration tasks.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 
 use crate::durable_file::{atomic_write, sha256_hex};
-use crate::models::Settings;
+use crate::models::{Settings, Workspace, DEFAULT_WORKSPACE_ID};
 
 const SETTINGS_RECOVERY_FORMAT_VERSION: u32 = 1;
 
@@ -141,13 +142,71 @@ impl SettingsStore {
         mut settings: Settings,
         restore_primary: bool,
     ) -> Result<Settings, String> {
-        if upgrade_legacy_windows_default_shell(&mut settings) {
+        let upgraded = upgrade_legacy_windows_default_shell(&mut settings)
+            | upgrade_legacy_default_accent(&mut settings)
+            | migrate_workspace_settings(&mut settings);
+        if upgraded {
             self.save(&settings)?;
         } else if restore_primary {
             self.restore_primary(&settings)?;
         }
         Ok(settings)
     }
+}
+
+fn upgrade_legacy_default_accent(settings: &mut Settings) -> bool {
+    if settings.accent.eq_ignore_ascii_case("#d6417a") {
+        settings.accent = "#88a99d".into();
+        return true;
+    }
+    false
+}
+
+fn migrate_workspace_settings(settings: &mut Settings) -> bool {
+    let mut changed = false;
+    if settings.workspaces.is_empty() {
+        settings.workspaces.push(Workspace::default());
+        changed = true;
+    }
+    if let Some(default) = settings
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == DEFAULT_WORKSPACE_ID)
+    {
+        if default.favorite_session_ids.is_empty() && !settings.favorite_session_ids.is_empty() {
+            default.favorite_session_ids = settings.favorite_session_ids.clone();
+            changed = true;
+        }
+        if default.folder_order.is_empty() && !settings.folder_order.is_empty() {
+            default.folder_order = settings.folder_order.clone();
+            changed = true;
+        }
+        if default.tab_order.is_empty() && !settings.tab_order.is_empty() {
+            default.tab_order = settings.tab_order.clone();
+            changed = true;
+        }
+    } else {
+        let mut default = Workspace::default();
+        default.favorite_session_ids = settings.favorite_session_ids.clone();
+        default.folder_order = settings.folder_order.clone();
+        default.tab_order = settings.tab_order.clone();
+        settings.workspaces.insert(0, default);
+        changed = true;
+    }
+    if !settings
+        .workspaces
+        .iter()
+        .any(|workspace| workspace.id == settings.active_workspace_id && !workspace.archived)
+    {
+        settings.active_workspace_id = settings
+            .workspaces
+            .iter()
+            .find(|workspace| !workspace.archived)
+            .map(|workspace| workspace.id.clone())
+            .unwrap_or_else(|| DEFAULT_WORKSPACE_ID.into());
+        changed = true;
+    }
+    changed
 }
 
 fn parse_settings(bytes: &[u8]) -> Result<Settings, String> {
@@ -211,6 +270,16 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
     if !(11..=18).contains(&settings.font_size) {
         return Err("SETTINGS_INVALID: fontSize must be between 11 and 18".into());
     }
+    if !matches!(settings.response_read_delay_ms, 0 | 1_000 | 2_500 | 5_000) {
+        return Err("SETTINGS_INVALID: responseReadDelayMs is not supported".into());
+    }
+    validate_ordered_ids(&settings.favorite_session_ids, "favoriteSessionIds")?;
+    validate_ordered_ids(&settings.folder_order, "folderOrder")?;
+    validate_ordered_ids(&settings.tab_order, "tabOrder")?;
+    validate_empty_folder_times(&settings.empty_folder_since_ms)?;
+    validate_workspaces(settings)?;
+    validate_terminal_theme(settings)?;
+    validate_harnesses(settings)?;
     if settings.accent.len() != 7
         || !settings.accent.starts_with('#')
         || !settings.accent[1..]
@@ -226,6 +295,191 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
     {
         // Environment values are deliberately omitted because they may contain secrets.
         return Err("SETTINGS_INVALID: environment variable keys cannot be empty".into());
+    }
+    Ok(())
+}
+
+fn validate_workspaces(settings: &Settings) -> Result<(), String> {
+    if settings.workspaces.is_empty() || settings.workspaces.len() > 512 {
+        return Err("SETTINGS_INVALID: workspaces must contain 1 to 512 records".into());
+    }
+    let mut workspace_ids = HashSet::new();
+    for workspace in &settings.workspaces {
+        if uuid::Uuid::parse_str(&workspace.id).is_err()
+            || !workspace_ids.insert(workspace.id.as_str())
+            || workspace.name.trim().is_empty()
+            || workspace.name.len() > 80
+        {
+            return Err("SETTINGS_INVALID: workspace identity or name is invalid".into());
+        }
+        validate_ordered_ids(
+            &workspace.favorite_session_ids,
+            "workspace.favoriteSessionIds",
+        )?;
+        validate_ordered_ids(&workspace.folder_order, "workspace.folderOrder")?;
+        validate_ordered_ids(&workspace.tab_order, "workspace.tabOrder")?;
+        validate_ordered_ids(
+            &workspace.collapsed_folder_ids,
+            "workspace.collapsedFolderIds",
+        )?;
+    }
+    if !workspace_ids.contains(settings.active_workspace_id.as_str()) {
+        return Err("SETTINGS_INVALID: activeWorkspaceId does not name a workspace".into());
+    }
+    if settings.session_workspace_ids.len() > 16_384
+        || settings
+            .session_workspace_ids
+            .iter()
+            .any(|(session_id, workspace_id)| {
+                session_id.len() > 256
+                    || uuid::Uuid::parse_str(session_id).is_err()
+                    || !workspace_ids.contains(workspace_id.as_str())
+            })
+    {
+        return Err("SETTINGS_INVALID: sessionWorkspaceIds is invalid".into());
+    }
+    Ok(())
+}
+
+fn validate_terminal_theme(settings: &Settings) -> Result<(), String> {
+    let theme = &settings.terminal_theme;
+    for color in [
+        &theme.background,
+        &theme.foreground,
+        &theme.cursor,
+        &theme.cursor_accent,
+        &theme.selection_background,
+        &theme.selection_foreground,
+        &theme.black,
+        &theme.red,
+        &theme.green,
+        &theme.yellow,
+        &theme.blue,
+        &theme.magenta,
+        &theme.cyan,
+        &theme.white,
+        &theme.bright_black,
+        &theme.bright_red,
+        &theme.bright_green,
+        &theme.bright_yellow,
+        &theme.bright_blue,
+        &theme.bright_magenta,
+        &theme.bright_cyan,
+        &theme.bright_white,
+    ] {
+        if !is_hex_color(color) {
+            return Err("SETTINGS_INVALID: terminalTheme contains an invalid color".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_harnesses(settings: &Settings) -> Result<(), String> {
+    if settings.custom_harnesses.len() > 128 || settings.session_harness_ids.len() > 16_384 {
+        return Err("SETTINGS_INVALID: custom harness limits were exceeded".into());
+    }
+    let mut ids = HashSet::new();
+    for harness in &settings.custom_harnesses {
+        let valid_id = !harness.id.is_empty()
+            && harness.id.len() <= 64
+            && harness
+                .id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+        let valid_args = harness.launch_args.len() <= 64
+            && harness.resume_args.len() <= 64
+            && harness
+                .launch_args
+                .iter()
+                .chain(&harness.resume_args)
+                .all(|arg| {
+                    arg.len() <= 4_096
+                        && !arg.contains('\0')
+                        && has_only_supported_harness_placeholders(arg)
+                });
+        let launch_uses_session_id = harness
+            .launch_args
+            .iter()
+            .any(|arg| arg.contains("{sessionId}"));
+        let any_session_id_placeholder = launch_uses_session_id
+            || harness
+                .resume_args
+                .iter()
+                .any(|arg| arg.contains("{sessionId}"));
+        if !valid_id
+            || !ids.insert(harness.id.as_str())
+            || harness.name.trim().is_empty()
+            || harness.name.len() > 80
+            || harness.executable.trim().is_empty()
+            || harness.executable.len() > 1_024
+            || harness.executable.contains('\0')
+            || !valid_args
+            || !matches!(
+                harness.session_id_strategy.as_str(),
+                "none" | "preassigned" | "manual"
+            )
+            || (harness.session_id_strategy == "preassigned" && !launch_uses_session_id)
+            || (harness.session_id_strategy == "none" && any_session_id_placeholder)
+            || harness.working_directory != "project"
+            || (!harness.data_directory.trim().is_empty()
+                && !is_supported_backup_path(&harness.data_directory))
+            || !matches!(harness.kind.as_str(), "ai" | "terminal")
+        {
+            return Err("SETTINGS_INVALID: custom harness definition is invalid".into());
+        }
+    }
+    if settings
+        .session_harness_ids
+        .iter()
+        .any(|(session_id, harness_id)| {
+            uuid::Uuid::parse_str(session_id).is_err() || !ids.contains(harness_id.as_str())
+        })
+    {
+        return Err("SETTINGS_INVALID: sessionHarnessIds is invalid".into());
+    }
+    Ok(())
+}
+
+fn has_only_supported_harness_placeholders(argument: &str) -> bool {
+    let without_known = argument
+        .replace("{projectPath}", "")
+        .replace("{sessionId}", "")
+        .replace("{dataDirectory}", "");
+    !without_known.contains('{') && !without_known.contains('}')
+}
+
+fn is_hex_color(value: &str) -> bool {
+    value.len() == 7
+        && value.starts_with('#')
+        && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn validate_ordered_ids(ids: &[String], field: &str) -> Result<(), String> {
+    if ids.len() > 4_096
+        || ids.iter().any(|id| id.is_empty() || id.len() > 256)
+        || ids.iter().collect::<HashSet<_>>().len() != ids.len()
+    {
+        // Values are not echoed because imported identifiers can be private.
+        return Err(format!(
+            "SETTINGS_INVALID: {field} is not a valid ordered id list"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_empty_folder_times(
+    values: &std::collections::BTreeMap<String, u64>,
+) -> Result<(), String> {
+    const MAX_JS_DATE_MS: u64 = 8_640_000_000_000_000;
+    if values.len() > 4_096
+        || values
+            .iter()
+            .any(|(id, timestamp)| id.is_empty() || id.len() > 256 || *timestamp > MAX_JS_DATE_MS)
+    {
+        // Folder identifiers can be private, so validation errors name only the field.
+        return Err(
+            "SETTINGS_INVALID: emptyFolderSinceMs is not a valid folder timestamp map".into(),
+        );
     }
     Ok(())
 }
@@ -288,7 +542,7 @@ fn expand_tilde_with_home(path: &str, home: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::EnvVar;
+    use crate::models::{EnvVar, HarnessDefinition};
     use tempfile::tempdir;
 
     #[test]
@@ -302,9 +556,13 @@ mod tests {
         assert_eq!(loaded.backup_path, "~/.anchor/sessions");
         assert_eq!(loaded.retention_days, 30);
         assert_eq!(loaded.font_size, 13);
-        assert_eq!(loaded.accent, "#d6417a");
+        assert_eq!(loaded.accent, "#88a99d");
         assert!(loaded.stop_on_close);
         assert!(!loaded.notify_on_waiting);
+        assert_eq!(loaded.response_read_delay_ms, 1_000);
+        assert!(loaded.favorite_session_ids.is_empty());
+        assert!(loaded.folder_order.is_empty());
+        assert!(loaded.empty_folder_since_ms.is_empty());
     }
 
     #[test]
@@ -320,13 +578,154 @@ mod tests {
         }];
         expected.theme = "nebula".into();
         expected.density = "compact".into();
+        expected.response_read_delay_ms = 2_500;
+        expected.favorite_session_ids = vec!["synthetic-session".into()];
+        expected.folder_order = vec!["synthetic-folder-b".into(), "synthetic-folder-a".into()];
+        expected.tab_order = vec!["synthetic-tab-b".into(), "synthetic-tab-a".into()];
+        expected
+            .empty_folder_since_ms
+            .insert("synthetic-empty-folder".into(), 1_767_268_800_000);
 
         store.save(&expected).unwrap();
         let raw = std::fs::read_to_string(path).unwrap();
         let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
 
         assert_eq!(json["envVars"][0]["key"], "SYNTHETIC_TOKEN");
+        assert_eq!(json["responseReadDelayMs"], 2_500);
+        assert_eq!(json["favoriteSessionIds"][0], "synthetic-session");
+        assert_eq!(json["tabOrder"][0], "synthetic-tab-b");
+        assert_eq!(
+            json["emptyFolderSinceMs"]["synthetic-empty-folder"],
+            1_767_268_800_000_u64
+        );
         assert_eq!(store.load().unwrap(), expected);
+    }
+
+    #[test]
+    fn legacy_sidebar_state_migrates_into_the_default_workspace() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("config/settings.json");
+        let store = SettingsStore::new(&path);
+        let mut json = serde_json::to_value(Settings::default()).unwrap();
+        let object = json.as_object_mut().unwrap();
+        object.remove("workspaces");
+        object.remove("activeWorkspaceId");
+        object.insert("accent".into(), serde_json::json!("#d6417a"));
+        object.insert(
+            "favoriteSessionIds".into(),
+            serde_json::json!(["synthetic-session"]),
+        );
+        object.insert(
+            "folderOrder".into(),
+            serde_json::json!(["synthetic-folder"]),
+        );
+        object.insert("tabOrder".into(), serde_json::json!(["synthetic-tab"]));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+
+        let loaded = store.load().unwrap();
+        let default = loaded
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == DEFAULT_WORKSPACE_ID)
+            .unwrap();
+
+        assert_eq!(loaded.accent, "#88a99d");
+        assert_eq!(loaded.active_workspace_id, DEFAULT_WORKSPACE_ID);
+        assert_eq!(
+            default.favorite_session_ids,
+            vec!["synthetic-session".to_string()]
+        );
+        assert_eq!(default.folder_order, vec!["synthetic-folder".to_string()]);
+        assert_eq!(default.tab_order, vec!["synthetic-tab".to_string()]);
+    }
+
+    #[test]
+    fn validation_accepts_a_safe_custom_harness_definition() {
+        let mut settings = Settings::default();
+        settings.custom_harnesses.push(HarnessDefinition {
+            id: "synthetic-agent".into(),
+            name: "Synthetic agent".into(),
+            executable: "synthetic-agent".into(),
+            launch_args: vec!["--cwd".into(), "{projectPath}".into()],
+            resume_args: vec!["resume".into(), "{sessionId}".into()],
+            session_id_strategy: "manual".into(),
+            working_directory: "project".into(),
+            data_directory: "~/.anchor/harnesses/synthetic-agent".into(),
+            kind: "ai".into(),
+            enabled: true,
+        });
+
+        assert!(validate(&settings).is_ok());
+    }
+
+    #[test]
+    fn validation_rejects_invalid_terminal_colors_and_shell_like_harness_ids() {
+        let mut invalid_color = Settings::default();
+        invalid_color.terminal_theme.background = "black".into();
+        assert!(validate(&invalid_color).is_err());
+
+        let mut invalid_harness = Settings::default();
+        invalid_harness.custom_harnesses.push(HarnessDefinition {
+            id: "agent; command".into(),
+            name: "Synthetic agent".into(),
+            executable: "synthetic-agent".into(),
+            launch_args: Vec::new(),
+            resume_args: Vec::new(),
+            session_id_strategy: "none".into(),
+            working_directory: "project".into(),
+            data_directory: String::new(),
+            kind: "terminal".into(),
+            enabled: true,
+        });
+        assert!(validate(&invalid_harness).is_err());
+
+        let valid = HarnessDefinition {
+            id: "synthetic-agent".into(),
+            name: "Synthetic agent".into(),
+            executable: "synthetic-agent".into(),
+            launch_args: vec!["--cwd".into(), "{projectPath}".into()],
+            resume_args: vec!["resume".into(), "{sessionId}".into()],
+            session_id_strategy: "manual".into(),
+            working_directory: "project".into(),
+            data_directory: String::new(),
+            kind: "ai".into(),
+            enabled: true,
+        };
+
+        let mut invalid_preassigned = Settings::default();
+        invalid_preassigned
+            .custom_harnesses
+            .push(HarnessDefinition {
+                session_id_strategy: "preassigned".into(),
+                ..valid.clone()
+            });
+        assert!(validate(&invalid_preassigned).is_err());
+
+        let mut invalid_none = Settings::default();
+        invalid_none.custom_harnesses.push(HarnessDefinition {
+            session_id_strategy: "none".into(),
+            ..valid.clone()
+        });
+        assert!(validate(&invalid_none).is_err());
+
+        let mut invalid_placeholder = Settings::default();
+        invalid_placeholder
+            .custom_harnesses
+            .push(HarnessDefinition {
+                launch_args: vec!["{unknown}".into()],
+                ..valid.clone()
+            });
+        assert!(validate(&invalid_placeholder).is_err());
+
+        let mut invalid_data_directory = Settings::default();
+        invalid_data_directory
+            .custom_harnesses
+            .push(HarnessDefinition {
+                data_directory: "relative/data".into(),
+                ..valid
+            });
+        assert!(validate(&invalid_data_directory).is_err());
     }
 
     #[cfg(windows)]
@@ -528,6 +927,10 @@ mod tests {
             ("retention-high", Box::new(|s| s.retention_days = 91)),
             ("font-low", Box::new(|s| s.font_size = 10)),
             ("font-high", Box::new(|s| s.font_size = 19)),
+            (
+                "read-delay",
+                Box::new(|s| s.response_read_delay_ms = 10_000),
+            ),
             ("theme", Box::new(|s| s.theme = "light".into())),
             ("density", Box::new(|s| s.density = "spacious".into())),
             (
@@ -543,6 +946,23 @@ mod tests {
             mutate(&mut settings);
             assert!(validate(&settings).is_err(), "case {name} was accepted");
         }
+    }
+
+    #[test]
+    fn validation_rejects_duplicate_or_unbounded_sidebar_ids() {
+        let mut duplicate = Settings::default();
+        duplicate.favorite_session_ids = vec!["synthetic-id".into(), "synthetic-id".into()];
+        assert!(validate(&duplicate).is_err());
+
+        let mut too_long = Settings::default();
+        too_long.folder_order = vec!["x".repeat(257)];
+        assert!(validate(&too_long).is_err());
+
+        let mut invalid_empty_time = Settings::default();
+        invalid_empty_time
+            .empty_folder_since_ms
+            .insert("synthetic-folder".into(), 8_640_000_000_000_001);
+        assert!(validate(&invalid_empty_time).is_err());
     }
 
     #[test]
