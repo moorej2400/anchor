@@ -87,7 +87,7 @@ Root data directory: **`~/.anchor/`** by default (the "Backup location" setting,
 | `~/.anchor/sessions/registry.last-good.json` | Checksummed recovery envelope for the newest committed registry. |
 | `~/.anchor/sessions/backups/registry-v*-*.json` | Checksummed registry generations. The newest ten are retained; every schema migration preserves its exact source first. |
 | `~/.anchor/sessions/recovery/registry.corrupt-*.json` | Diagnostic copies of malformed or invalid primaries preserved before automatic recovery. |
-| `~/.anchor/sessions/scrollback/<session-uuid>.txt` | Raw terminal scrollback for `terminal`-type sessions (and optionally others). Pruned per the retention setting (days). |
+| `~/.anchor/sessions/scrollback/<session-uuid>.txt` | Raw terminal scrollback for `terminal`-type sessions (and optionally others). Kept to the configured newest-line limit and pruned per the retention setting (days). |
 | `settings.json` | User settings (schema §7), stored in the platform configuration directory outside the installed application. |
 | `settings.last-good.json` | Checksummed recovery envelope for settings, including the path that locates the session registry. |
 | `<platform-config>/anchor/internal/title-agents/state.json` | Private IDs for hidden title-generation sessions, one per harness and per selected Codex profile. These IDs never enter the visible session registry. |
@@ -301,6 +301,7 @@ export interface Settings {
   backupPath: string;                 // registry dir, default "~/.anchor/sessions"
   projectsDir: string;                // "Create a new project" target, default "~/Documents/Anchor/Projects"
   retentionDays: number;              // scrollback retention, 1–90, default 30
+  scrollbackLineLimit: number;        // saved generic-terminal history, 100–50,000 lines, default 10,000
   theme: "graphite" | "obsidian" | "nebula";
   density: "comfortable" | "compact";
   fontSize: number;                   // terminal px, 11–18, default 13
@@ -356,7 +357,7 @@ export interface PtyReplay { data: string; throughSequence: number; cols: number
 | `replay_output` | `{ sessionId: string }` | `PtyReplay` | Returns one authoritative live snapshot, the last live-output sequence included in it, the current PTY character grid, and whether saved unsequenced output is covered. With scrollback restore enabled, live generic terminals return their formatted persisted scrollback, set `coversUnsequenced`, and include its atomic persisted sequence boundary; other sessions return bounded recent PTY output. Zero dimensions identify a session with no live PTY. |
 | `get_scrollback` | `{ sessionId: string }` | `string` | Saved scrollback (empty string if none). |
 | `get_settings` | — | `Settings` | |
-| `set_settings` | `{ settings: Settings }` | `Settings` | Full-object write. Async + `spawn_blocking`; scrollback pruning runs only at startup or when its path/retention policy changes. |
+| `set_settings` | `{ settings: Settings }` | `Settings` | Full-object write. Async + `spawn_blocking`; scrollback pruning runs only at startup or when its path/retention policy changes. A changed line limit trims saved generic-terminal history to its newest configured lines. |
 | `detect_clis` | — | `CliInfo[]` | Async + `spawn_blocking` because executable probes may touch slow mapped-drive PATH entries. |
 | `export_sessions` | `{ toPath: string }` | `void` | Copies registry JSON (Settings › Export). |
 | `import_sessions` | `{ fromPath: string }` | `{ folders; sessions }` | Merge by id; returns new state. |
@@ -383,7 +384,7 @@ Errors: commands reject with a string error code + message, e.g. `"CLI_NOT_FOUND
 - **Notifications:** OS waiting notification and response-read delay (Instant / 1 second / 2.5 seconds / 5 seconds).
 - **Terminal:** font size plus the complete editable xterm ANSI palette with a live preview.
 - **Harnesses:** read-only built-ins plus create/edit/remove for custom typed executable definitions. Argument arrays support `{projectPath}`, `{sessionId}`, and `{dataDirectory}`; no shell command strings are accepted.
-- **Persistence & Backup:** persisted-session count callout; Backup location (path input + Browse); Save & restore terminal scrollback toggle; Scrollback retention slider (1–90 days); Export sessions… / Import… buttons.
+- **Persistence & Backup:** persisted-session count callout; Backup location (path input + Browse); Save & restore terminal scrollback toggle; Scrollback retention slider (1–90 days); saved terminal-history slider (100–50,000 lines); Export sessions… / Import… buttons.
 - **Keyboard Shortcuts:** read-only list: ⌘K command palette · ⌘, settings · ⌘W close tab · ⌃⇥ next/prev tab · ⌘↩ resume session under cursor · ⌘T new generic terminal · ⌘F focus filter. (Ctrl on Windows/Linux.)
 - **About:** packaged application version and runtime.
 

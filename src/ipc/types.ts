@@ -98,6 +98,8 @@ export interface Settings {
   /** Where "Create a new project" makes folders. */
   projectsDir: string;
   retentionDays: number;
+  /** Maximum saved lines for each generic terminal session. */
+  scrollbackLineLimit: number;
   theme: "graphite" | "obsidian" | "nebula";
   density: "comfortable" | "compact";
   fontSize: number;

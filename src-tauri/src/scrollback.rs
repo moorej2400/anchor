@@ -34,6 +34,23 @@ impl ScrollbackStore {
             .map_err(|_| "SCROLLBACK_WRITE_FAILED: could not append scrollback".to_string())
     }
 
+    /// Retain the newest logical lines after an append. This only rewrites a
+    /// file when it exceeds the configured cap, so normal terminal output
+    /// keeps the append-only hot path.
+    pub fn trim_to_line_limit(&self, session_id: &str, line_limit: u32) -> Result<Vec<u8>, String> {
+        if !(100..=50_000).contains(&line_limit) {
+            return Err(
+                "SCROLLBACK_LINE_LIMIT_INVALID: line limit must be between 100 and 50000".into(),
+            );
+        }
+        let contents = self.read_bytes(session_id)?;
+        let trimmed = retain_last_lines(&contents, usize::try_from(line_limit).unwrap_or(50_000));
+        if trimmed.len() != contents.len() {
+            self.replace(session_id, &trimmed)?;
+        }
+        Ok(trimmed)
+    }
+
     /// Atomically replace one transcript. Used when changing backupPath so a
     /// retry overwrites partial staging instead of duplicating scrollback.
     pub fn replace(&self, session_id: &str, data: &[u8]) -> Result<(), String> {
@@ -160,6 +177,30 @@ fn is_canonical_uuid(value: &str) -> bool {
     uuid::Uuid::parse_str(value)
         .map(|id| id.hyphenated().to_string() == value)
         .unwrap_or(false)
+}
+
+fn retain_last_lines(contents: &[u8], line_limit: usize) -> Vec<u8> {
+    if scrollback_line_count(contents) <= line_limit {
+        return contents.to_vec();
+    }
+
+    // A scrollback line is newline-delimited PTY output. Keep the final
+    // `line_limit` records at a line boundary so restoring it never starts in
+    // the middle of a command or escape sequence line.
+    let mut line_starts = vec![0];
+    for (index, byte) in contents.iter().enumerate() {
+        if *byte == b'\n' && index + 1 < contents.len() {
+            line_starts.push(index + 1);
+        }
+    }
+    contents[line_starts[line_starts.len() - line_limit]..].to_vec()
+}
+
+pub fn scrollback_line_count(contents: &[u8]) -> usize {
+    if contents.is_empty() {
+        return 0;
+    }
+    contents.iter().filter(|byte| **byte == b'\n').count() + usize::from(!contents.ends_with(b"\n"))
 }
 
 fn open_for_append(path: &Path) -> std::io::Result<fs::File> {
@@ -383,6 +424,26 @@ mod tests {
         assert_eq!(
             formatted,
             "first\nsecond\n── restored session · scrollback recovered (2 lines) ──\n"
+        );
+    }
+
+    #[test]
+    fn line_limit_keeps_complete_newest_lines() {
+        let root = tempdir().unwrap();
+        let store = ScrollbackStore::new(root.path());
+        let history = (1..=105)
+            .map(|line| format!("line-{line}\n"))
+            .collect::<String>();
+        store.append(SESSION_ONE, history.as_bytes()).unwrap();
+
+        let saved = store.trim_to_line_limit(SESSION_ONE, 100).unwrap();
+
+        assert_eq!(scrollback_line_count(&saved), 100);
+        assert_eq!(
+            String::from_utf8(saved).unwrap(),
+            (6..=105)
+                .map(|line| format!("line-{line}\n"))
+                .collect::<String>()
         );
     }
 }

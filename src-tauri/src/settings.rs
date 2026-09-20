@@ -261,6 +261,9 @@ pub fn validate(settings: &Settings) -> Result<(), String> {
     if !(1..=90).contains(&settings.retention_days) {
         return Err("SETTINGS_INVALID: retentionDays must be between 1 and 90".into());
     }
+    if !(100..=50_000).contains(&settings.scrollback_line_limit) {
+        return Err("SETTINGS_INVALID: scrollbackLineLimit must be between 100 and 50000".into());
+    }
     if !matches!(settings.theme.as_str(), "graphite" | "obsidian" | "nebula") {
         return Err("SETTINGS_INVALID: theme is not supported".into());
     }
@@ -555,6 +558,7 @@ mod tests {
         assert_eq!(loaded, Settings::default());
         assert_eq!(loaded.backup_path, "~/.anchor/sessions");
         assert_eq!(loaded.retention_days, 30);
+        assert_eq!(loaded.scrollback_line_limit, 10_000);
         assert_eq!(loaded.font_size, 13);
         assert_eq!(loaded.accent, "#88a99d");
         assert!(loaded.stop_on_close);
@@ -820,16 +824,19 @@ mod tests {
     #[test]
     fn validation_accepts_boundaries_and_spec_options() {
         for retention_days in [1, 90] {
-            for font_size in [11, 18] {
-                for theme in ["graphite", "obsidian", "nebula"] {
-                    for density in ["comfortable", "compact"] {
-                        let mut settings = Settings::default();
-                        settings.retention_days = retention_days;
-                        settings.font_size = font_size;
-                        settings.theme = theme.into();
-                        settings.density = density.into();
-                        settings.accent = "#A0b1C2".into();
-                        assert!(validate(&settings).is_ok());
+            for scrollback_line_limit in [100, 50_000] {
+                for font_size in [11, 18] {
+                    for theme in ["graphite", "obsidian", "nebula"] {
+                        for density in ["comfortable", "compact"] {
+                            let mut settings = Settings::default();
+                            settings.retention_days = retention_days;
+                            settings.scrollback_line_limit = scrollback_line_limit;
+                            settings.font_size = font_size;
+                            settings.theme = theme.into();
+                            settings.density = density.into();
+                            settings.accent = "#A0b1C2".into();
+                            assert!(validate(&settings).is_ok());
+                        }
                     }
                 }
             }
@@ -928,6 +935,11 @@ mod tests {
         let cases: Vec<(&str, Box<dyn Fn(&mut Settings)>)> = vec![
             ("retention-low", Box::new(|s| s.retention_days = 0)),
             ("retention-high", Box::new(|s| s.retention_days = 91)),
+            ("line-limit-low", Box::new(|s| s.scrollback_line_limit = 99)),
+            (
+                "line-limit-high",
+                Box::new(|s| s.scrollback_line_limit = 50_001),
+            ),
             ("font-low", Box::new(|s| s.font_size = 10)),
             ("font-high", Box::new(|s| s.font_size = 19)),
             (

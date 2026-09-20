@@ -72,6 +72,7 @@ const settings: Settings = {
   backupPath: "~/.anchor/sessions",
   projectsDir: "~/Documents/Anchor/Projects",
   retentionDays: 30,
+  scrollbackLineLimit: 10_000,
   theme: "graphite",
   density: "comfortable",
   fontSize: 13,

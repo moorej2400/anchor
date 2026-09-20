@@ -261,6 +261,9 @@ export function SettingsPage() {
           <SettingRow title="Scrollback retention" help="Expired scrollback is pruned without deleting session identities.">
             <div className="settings-range"><Slider min={1} max={90} value={settings.retentionDays} onChange={(retentionDays) => void actions.updateSettings({ retentionDays })} /><code>{settings.retentionDays} days</code></div>
           </SettingRow>
+          <SettingRow title="Saved terminal history" help="Keep this many newest lines for each generic terminal session.">
+            <div className="settings-range"><Slider min={100} max={50_000} step={100} value={settings.scrollbackLineLimit} onChange={(scrollbackLineLimit) => void actions.updateSettings({ scrollbackLineLimit })} /><code>{settings.scrollbackLineLimit.toLocaleString()} lines</code></div>
+          </SettingRow>
         </SettingsGroup>
         <div className="settings-button-row">
           <Button variant="subtle" onClick={() => { const path = window.prompt("Export sessions to path"); if (path) void ipc.exportSessions(path).then(() => actions.toast("Sessions exported")).catch((error) => actions.toast(String(error))); }}>Export sessions…</Button>

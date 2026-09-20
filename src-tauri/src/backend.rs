@@ -28,7 +28,7 @@ use crate::models::{
 };
 use crate::pty::{PtyEvent, PtyManager};
 use crate::registry::Registry;
-use crate::scrollback::{format_restored_scrollback, ScrollbackStore};
+use crate::scrollback::{format_restored_scrollback, scrollback_line_count, ScrollbackStore};
 use crate::settings::{expand_tilde, SettingsStore};
 use crate::title_agent::{self, TitleAgentStore};
 
@@ -144,6 +144,8 @@ struct TerminalReplayState {
     /// Once persistence fails, later bytes stay only in `fallback_output`, so
     /// replay can join the two sources without overlap or an epoch-local gap.
     persisted_bytes: usize,
+    persisted_lines: usize,
+    persisted_ends_with_newline: bool,
     fallback_output: Vec<u8>,
     fallback_truncated: bool,
 }
@@ -248,6 +250,8 @@ impl Default for TerminalReplayState {
             through_sequence: 0,
             reliable: true,
             persisted_bytes: 0,
+            persisted_lines: 0,
+            persisted_ends_with_newline: true,
             fallback_output: Vec::new(),
             fallback_truncated: false,
         }
@@ -268,6 +272,45 @@ fn append_terminal_fallback(state: &mut TerminalReplayState, data: &[u8]) {
     state.fallback_truncated = true;
 }
 
+fn appended_scrollback_line_count(
+    existing_lines: usize,
+    existing_ends_with_newline: bool,
+    appended: &[u8],
+) -> usize {
+    if appended.is_empty() {
+        return existing_lines;
+    }
+    let appended_lines = scrollback_line_count(appended);
+    if existing_lines == 0 {
+        appended_lines
+    } else if existing_ends_with_newline {
+        existing_lines.saturating_add(appended_lines)
+    } else {
+        // The first appended fragment completes the unterminated last line
+        // already counted in the saved file, so it must not add a second line.
+        existing_lines
+            .saturating_add(appended_lines)
+            .saturating_sub(1)
+    }
+}
+
+fn trim_terminal_scrollback(
+    registry: &Registry,
+    store: &ScrollbackStore,
+    line_limit: u32,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    registry
+        .sessions
+        .iter()
+        .filter(|session| session.tool == Tool::Terminal)
+        .map(|session| {
+            store
+                .trim_to_line_limit(&session.id, line_limit)
+                .map(|contents| (session.id.clone(), contents))
+        })
+        .collect()
+}
+
 impl Backend {
     /// Construct production state. The cyclic weak reference lets PTY threads
     /// report through Backend without either side owning the other forever.
@@ -279,7 +322,9 @@ impl Backend {
         if recover_missing_codex_ids(&mut registry, &codex::CodexAdapter::default()) {
             registry.save()?;
         }
-        ScrollbackStore::new(&backup_path).prune(settings.retention_days)?;
+        let scrollback = ScrollbackStore::new(&backup_path);
+        scrollback.prune(settings.retention_days)?;
+        trim_terminal_scrollback(&registry, &scrollback, settings.scrollback_line_limit)?;
 
         Ok(Arc::new_cyclic(move |weak: &Weak<Self>| {
             let weak = weak.clone();
@@ -726,7 +771,7 @@ impl Backend {
             }
         }
         if session.tool == Tool::Terminal {
-            self.reset_terminal_replay(&session.id, 0)?;
+            self.reset_terminal_replay(&session.id, &[])?;
         }
 
         // The CLI must see the measured xterm grid before its first output;
@@ -799,11 +844,11 @@ impl Backend {
                 } else {
                     format_restored_scrollback(&String::from_utf8_lossy(&saved))
                 };
-                (saved.len(), formatted)
+                (saved, formatted)
             } else {
-                (0, String::new())
+                (Vec::new(), String::new())
             };
-            self.reset_terminal_replay(session_id, restored_bytes)?;
+            self.reset_terminal_replay(session_id, &restored_bytes)?;
             if !restored_prefix.is_empty() {
                 self.events
                     .pty_output(session_id, &restored_prefix, 0, 0, cols, rows);
@@ -1219,6 +1264,8 @@ impl Backend {
         let old_path = expand_tilde(&old_settings.backup_path)?;
         let new_path = expand_tilde(&settings.backup_path)?;
         let retention_changed = old_settings.retention_days != settings.retention_days;
+        let line_limit_changed =
+            old_settings.scrollback_line_limit != settings.scrollback_line_limit;
         let backup_changed = old_path != new_path;
 
         if backup_changed {
@@ -1263,8 +1310,14 @@ impl Backend {
             replacement.sessions = registry.sessions.clone();
             replacement.save()?;
             new_scrollback.prune(settings.retention_days)?;
+            let trimmed = trim_terminal_scrollback(
+                &replacement,
+                &new_scrollback,
+                settings.scrollback_line_limit,
+            )?;
             self.settings_store.save(&settings)?;
             *registry = replacement;
+            self.sync_terminal_replay_scrollback(&trimmed)?;
         } else {
             self.settings_store.save(&settings)?;
         }
@@ -1274,11 +1327,32 @@ impl Backend {
         // command. Scanning the full scrollback directory for those frequent
         // writes can stall mapped drives; startup and the two retention-related
         // changes are the only times pruning is required.
-        if !backup_changed && retention_changed {
+        if !backup_changed && (retention_changed || line_limit_changed) {
             let active_scrollback = ScrollbackStore::new(&new_path);
             if active_scrollback.prune(settings.retention_days).is_err() {
                 self.events
                     .background_error("SCROLLBACK_PRUNE_FAILED: expired scrollback cleanup failed");
+            }
+            if line_limit_changed {
+                let registry = self.registry.lock().map_err(lock_error)?;
+                match trim_terminal_scrollback(
+                    &registry,
+                    &active_scrollback,
+                    settings.scrollback_line_limit,
+                ) {
+                    Ok(trimmed) => {
+                        if self.sync_terminal_replay_scrollback(&trimmed).is_err() {
+                            self.events.background_error(
+                                "BACKEND_STATE_FAILED: terminal replay state is unavailable",
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        self.events.background_error(
+                            "SCROLLBACK_WRITE_FAILED: terminal scrollback could not apply the line limit",
+                        );
+                    }
+                }
             }
         }
         Ok(settings)
@@ -1436,20 +1510,54 @@ impl Backend {
                     if self.session(&session_id).is_err() {
                         return;
                     }
+                    let line_limit = match self.get_settings() {
+                        Ok(settings) => settings.scrollback_line_limit,
+                        Err(_) => {
+                            self.events.background_error(
+                                "BACKEND_STATE_FAILED: settings are unavailable for scrollback persistence",
+                            );
+                            return;
+                        }
+                    };
                     let mut write_failed = false;
                     match self.terminal_replay.lock() {
                         Ok(mut states) => {
                             let state = states.entry(session_id.clone()).or_default();
                             let expected = sequence == state.through_sequence.saturating_add(1);
                             if state.reliable && expected {
+                                let next_line_count = appended_scrollback_line_count(
+                                    state.persisted_lines,
+                                    state.persisted_ends_with_newline,
+                                    data.as_bytes(),
+                                );
                                 if self
                                     .scrollback_store()
-                                    .and_then(|store| store.append(&session_id, data.as_bytes()))
-                                    .is_ok()
+                                    .and_then(|store| {
+                                        store.append(&session_id, data.as_bytes())?;
+                                        if next_line_count
+                                            > usize::try_from(line_limit).unwrap_or(50_000)
+                                        {
+                                            store.trim_to_line_limit(&session_id, line_limit)
+                                        } else {
+                                            Ok(Vec::new())
+                                        }
+                                    })
+                                    .map(|trimmed| {
+                                        if trimmed.is_empty() {
+                                            state.persisted_bytes =
+                                                state.persisted_bytes.saturating_add(data.len());
+                                            state.persisted_lines = next_line_count;
+                                            state.persisted_ends_with_newline =
+                                                data.ends_with('\n');
+                                        } else {
+                                            state.persisted_bytes = trimmed.len();
+                                            state.persisted_lines = scrollback_line_count(&trimmed);
+                                            state.persisted_ends_with_newline =
+                                                trimmed.ends_with(b"\n");
+                                        }
+                                    })
+                                    .is_err()
                                 {
-                                    state.persisted_bytes =
-                                        state.persisted_bytes.saturating_add(data.len());
-                                } else {
                                     write_failed = true;
                                     state.reliable = false;
                                     append_terminal_fallback(state, data.as_bytes());
@@ -1733,14 +1841,29 @@ impl Backend {
         Ok(ScrollbackStore::new(expand_tilde(&settings.backup_path)?))
     }
 
-    fn reset_terminal_replay(&self, session_id: &str, restored_bytes: usize) -> Result<(), String> {
+    fn reset_terminal_replay(&self, session_id: &str, restored: &[u8]) -> Result<(), String> {
         self.terminal_replay.lock().map_err(lock_error)?.insert(
             session_id.to_owned(),
             TerminalReplayState {
-                persisted_bytes: restored_bytes,
+                persisted_bytes: restored.len(),
+                persisted_lines: scrollback_line_count(restored),
+                persisted_ends_with_newline: restored.is_empty() || restored.ends_with(b"\n"),
                 ..TerminalReplayState::default()
             },
         );
+        Ok(())
+    }
+
+    fn sync_terminal_replay_scrollback(&self, trimmed: &[(String, Vec<u8>)]) -> Result<(), String> {
+        let mut states = self.terminal_replay.lock().map_err(lock_error)?;
+        for (session_id, contents) in trimmed {
+            if let Some(state) = states.get_mut(session_id) {
+                state.persisted_bytes = contents.len();
+                state.persisted_lines = scrollback_line_count(contents);
+                state.persisted_ends_with_newline =
+                    contents.is_empty() || contents.ends_with(b"\n");
+            }
+        }
         Ok(())
     }
 
@@ -3447,6 +3570,68 @@ mod tests {
         assert!(state.fallback_output.len() <= TERMINAL_FALLBACK_MAX_BYTES);
         assert!(state.fallback_truncated);
         assert!(state.fallback_output.starts_with(line));
+    }
+
+    #[test]
+    fn generic_terminal_history_respects_the_configured_line_limit() {
+        let (root, backend, _) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let mut settings = backend.get_settings().unwrap();
+        settings.scrollback_line_limit = 100;
+        backend.set_settings(settings).unwrap();
+        let session = backend
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
+            .unwrap();
+        let output = (1..=101)
+            .map(|line| format!("line-{line}\n"))
+            .collect::<String>();
+
+        backend.handle_pty_event(PtyEvent::Output {
+            session_id: session.id.clone(),
+            data: output,
+            sequence: 1,
+            grid_epoch: 1,
+            cols: 80,
+            rows: 24,
+        });
+
+        let saved = backend.get_scrollback(&session.id).unwrap();
+        assert_eq!(saved.lines().count(), 100);
+        assert!(saved.starts_with("line-2\n"));
+        assert!(saved.ends_with("line-101\n"));
+    }
+
+    #[test]
+    fn changing_line_limit_trims_existing_generic_terminal_history() {
+        let (root, backend, _) = harness();
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let session = backend
+            .launch_session(&folder.id, Tool::Terminal, None, None, 80, 24)
+            .unwrap();
+        let history = (1..=150)
+            .map(|line| format!("line-{line}\n"))
+            .collect::<String>();
+        backend
+            .scrollback_store()
+            .unwrap()
+            .append(&session.id, history.as_bytes())
+            .unwrap();
+        let mut settings = backend.get_settings().unwrap();
+        settings.scrollback_line_limit = 100;
+
+        backend.set_settings(settings).unwrap();
+
+        let saved = backend.get_scrollback(&session.id).unwrap();
+        assert_eq!(saved.lines().count(), 100);
+        assert!(saved.starts_with("line-51\n"));
     }
 
     #[test]

@@ -184,6 +184,11 @@ pub struct Settings {
     #[serde(default = "default_projects_dir")]
     pub projects_dir: String,
     pub retention_days: u32,
+    /// Maximum logical lines retained for each generic terminal scrollback.
+    /// Older settings files did not have this cap, so absent values use the
+    /// conservative default when they are loaded.
+    #[serde(default = "default_scrollback_line_limit")]
+    pub scrollback_line_limit: u32,
     pub theme: String,   // "graphite" | "obsidian" | "nebula"
     pub density: String, // "comfortable" | "compact"
     pub font_size: u32,
@@ -226,6 +231,10 @@ pub fn default_response_read_delay_ms() -> u32 {
     1_000
 }
 
+pub fn default_scrollback_line_limit() -> u32 {
+    10_000
+}
+
 pub fn default_workspaces() -> Vec<Workspace> {
     vec![Workspace::default()]
 }
@@ -246,6 +255,7 @@ impl Default for Settings {
             backup_path: "~/.anchor/sessions".into(),
             projects_dir: default_projects_dir(),
             retention_days: 30,
+            scrollback_line_limit: default_scrollback_line_limit(),
             theme: "graphite".into(),
             density: "comfortable".into(),
             font_size: 13,
