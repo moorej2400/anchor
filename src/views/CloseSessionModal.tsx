@@ -8,6 +8,7 @@
 import { Modal } from "../components/lib";
 import { useAnchor } from "../app/store";
 import { sessionById, sessionDisplayTitle } from "../app/selectors";
+import { Icon } from "../components/Icon";
 
 export function CloseSessionModal() {
   const { state, actions } = useAnchor();
@@ -18,7 +19,7 @@ export function CloseSessionModal() {
     <Modal onClose={() => actions.cancelCloseTab()} align="center" width={420}>
       <div className="remove-modal">
         <div className="remove-modal__head">
-          <div className="remove-modal__icon">⚠</div>
+          <div className="remove-modal__icon"><Icon name="warning" size={18} /></div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>
             Close “{sessionDisplayTitle(session, state.sessions)}”?
           </div>

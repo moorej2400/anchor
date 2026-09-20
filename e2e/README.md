@@ -38,10 +38,12 @@ unit test is faster and better.
 
 Terminal deck invariants across 50 alternating sidebar/tab selections (exactly
 one active slot, one visible slot, one focusable input surface), input-to-paint
-latency, main-thread long tasks, output buffered while a session is hidden, the
-close confirmation and its removal latency, that a reopened session keeps its
-exact saved provider ID, and that the tab strip's `+` stays pinned to the left
-and reachable with every session open and the strip scrolled to its end.
+latency, main-thread long tasks, output buffered while a session is hidden, an
+idle live tab's immediate close latency, that a reopened session keeps its
+exact saved provider ID, and that the tab strip's trailing `+` stays reachable
+with every session open and the strip scrolled to its end. It also verifies
+that the folder quick-launch menu is hit-testable and remains inside all four
+app-window edges.
 
 ## Notes for extending it
 

@@ -338,11 +338,11 @@ export interface PtyReplay { data: string; throughSequence: number; cols: number
 | `pick_folder` | — | `string \| null` | Opens the **OS folder picker** (Finder on macOS) via `tauri-plugin-dialog`; resolves to the chosen absolute path, or `null` if cancelled. Async + `spawn_blocking`: sync commands run on the main thread and the native dialog must be driven from there, so blocking on the main thread would deadlock. Errors: `DIALOG_FAILED`, `DIR_PATH_INVALID`. |
 | `rename_folder` | `{ folderId: string; name: string }` | `Folder` | |
 | `remove_folder` | `{ folderId: string }` | `void` | Stops + deletes all its sessions (UI shows the ack modal first). Async + `spawn_blocking`: it can wait on several PTY shutdowns. |
-| `launch_session` | `{ folderId: string; tool: Tool; cols: number; rows: number; title?: string; extraArgs?: string[]; codexProfile?: string }` | `Session` | Creates record (persisted before spawn), spawns the PTY at the measured xterm size, and starts discovery. Status `running`. `codexProfile` is valid only for Codex. |
-| `launch_custom_session` | `{ folderId: string; harnessId: string; cols: number; rows: number }` | `Session` | Creates a terminal-backed record, persists its harness mapping before spawn, expands only the supported argument placeholders, and launches the configured executable directly without a shell. |
-| `resume_session` | `{ sessionId: string; cols: number; rows: number }` | `Session` | Spawns the exact saved AI session by `cliSessionId`, or shell+scrollback for `terminal`, at the measured xterm size. Missing AI IDs return `SESSION_ID_UNAVAILABLE`; provider pickers are never opened. On Windows, Codex rollout sharing is checked before spawn and an existing writer returns `CODEX_ACTIVE_WRITER` without opening a fallback TUI. |
-| `repair_session_identity` | `{ sessionId: string; cols: number; rows: number }` | `Session` | For a stopped AI record with no `cliSessionId`, starts a new provider conversation in the same record, persists a pre-assigned ID before spawn or starts normal discovery, and returns the now-running record. It never creates a second Anchor session. |
-| `fork_codex_session` | `{ sessionId: string; cols: number; rows: number }` | `Session` | Creates and persists a new Anchor record, then runs `codex fork <sourceCliSessionId>` at the measured xterm size and discovers the fork's new ID. The source must be a stopped Codex record with a saved ID. No picker and no automatic resume fallback. |
+| `launch_session` | `{ folderId: string; tool: Tool; cols: number; rows: number; title?: string; extraArgs?: string[]; codexProfile?: string }` | `Session` | Creates record (persisted before spawn), spawns the PTY at the measured xterm size, and starts discovery. Status `running`. `codexProfile` is valid only for Codex. Async + `spawn_blocking` so executable lookup, persistence, and PTY spawn never block terminal event delivery. |
+| `launch_custom_session` | `{ folderId: string; harnessId: string; cols: number; rows: number }` | `Session` | Creates a terminal-backed record, persists its harness mapping before spawn, expands only the supported argument placeholders, and launches the configured executable directly without a shell. Async + `spawn_blocking`. |
+| `resume_session` | `{ sessionId: string; cols: number; rows: number }` | `Session` | Spawns the exact saved AI session by `cliSessionId`, or shell+scrollback for `terminal`, at the measured xterm size. Missing AI IDs return `SESSION_ID_UNAVAILABLE`; provider pickers are never opened. On Windows, Codex rollout sharing is checked before spawn and an existing writer returns `CODEX_ACTIVE_WRITER` without opening a fallback TUI. Async + `spawn_blocking`. |
+| `repair_session_identity` | `{ sessionId: string; cols: number; rows: number }` | `Session` | For a stopped AI record with no `cliSessionId`, starts a new provider conversation in the same record, persists a pre-assigned ID before spawn or starts normal discovery, and returns the now-running record. It never creates a second Anchor session. Async + `spawn_blocking`. |
+| `fork_codex_session` | `{ sessionId: string; cols: number; rows: number }` | `Session` | Creates and persists a new Anchor record, then runs `codex fork <sourceCliSessionId>` at the measured xterm size and discovers the fork's new ID. The source must be a stopped Codex record with a saved ID. No picker and no automatic resume fallback. Async + `spawn_blocking`. |
 | `get_codex_profiles` | — | `string[]` | Safe profile names only; immediate `$CODEX_HOME/*.config.toml` files. Never returns profile file contents or paths. |
 | `set_codex_profile` | `{ sessionId: string; codexProfile: string \| null }` | `Session` | Persists the selected profile for future Codex launch/resume; `null` selects base config. Requires a stopped Codex session. Errors: `CODEX_PROFILE_CHANGE_REQUIRES_STOPPED`, `CODEX_PROFILE_NOT_FOUND`, `CODEX_PROFILE_INVALID`, `CODEX_PROFILE_UNSUPPORTED`. |
 | `stop_session` | `{ sessionId: string }` | `void` | Graceful kill (SIGTERM → SIGKILL after 5 s; ConPTY close on Windows). Async + `spawn_blocking` so the graceful wait never blocks the native UI thread. |
@@ -351,13 +351,13 @@ export interface PtyReplay { data: string; throughSequence: number; cols: number
 | `set_session_id` | `{ sessionId: string; cliSessionId: string }` | `Session` | Replaces the provider ID on a stopped built-in AI record or custom-harness record after bounded command-safe validation. Plain generic terminals and live-session changes are rejected. |
 | `generate_session_title` | `{ sessionId: string; message: string }` | `Session` | Blocking-worker request to the harness's hidden reusable title session. Renames only a still-default visible title and emits `session:updated`; title-agent IDs stay outside the visible registry. |
 | `set_tab_open` | `{ sessionId: string; open: boolean }` | `void` | Frontend reports tab open/close so `wasOpenInTab` persists for auto-restore. The sole close lifecycle command: with `stopOnClose` it also stops the PTY, so the frontend must not additionally call `stop_session`. Async + `spawn_blocking`. |
-| `write_pty` | `{ sessionId: string; data: string }` | `void` | Keystrokes (UTF-8). |
-| `resize_pty` | `{ sessionId: string; cols: number; rows: number }` | `PtyResize` | Returns the old-grid output boundary and the accepted grid epoch so xterm changes grids without parsing in-flight output at the wrong width. |
+| `write_pty` | `{ sessionId: string; data: string }` | `void` | Keystrokes (UTF-8). Async + `spawn_blocking`; the frontend serializes writes per session and coalesces bytes queued behind one in-flight call. |
+| `resize_pty` | `{ sessionId: string; cols: number; rows: number }` | `PtyResize` | Returns the old-grid output boundary and the accepted grid epoch so xterm changes grids without parsing in-flight output at the wrong width. Async + `spawn_blocking`. |
 | `replay_output` | `{ sessionId: string }` | `PtyReplay` | Returns one authoritative live snapshot, the last live-output sequence included in it, the current PTY character grid, and whether saved unsequenced output is covered. With scrollback restore enabled, live generic terminals return their formatted persisted scrollback, set `coversUnsequenced`, and include its atomic persisted sequence boundary; other sessions return bounded recent PTY output. Zero dimensions identify a session with no live PTY. |
 | `get_scrollback` | `{ sessionId: string }` | `string` | Saved scrollback (empty string if none). |
 | `get_settings` | — | `Settings` | |
-| `set_settings` | `{ settings: Settings }` | `Settings` | Full-object write. |
-| `detect_clis` | — | `CliInfo[]` | |
+| `set_settings` | `{ settings: Settings }` | `Settings` | Full-object write. Async + `spawn_blocking`; scrollback pruning runs only at startup or when its path/retention policy changes. |
+| `detect_clis` | — | `CliInfo[]` | Async + `spawn_blocking` because executable probes may touch slow mapped-drive PATH entries. |
 | `export_sessions` | `{ toPath: string }` | `void` | Copies registry JSON (Settings › Export). |
 | `import_sessions` | `{ fromPath: string }` | `{ folders; sessions }` | Merge by id; returns new state. |
 
@@ -441,6 +441,9 @@ Frontend architecture requirements:
     `RadioGroup`, `Slider`, `TextInput`,
     `Menu`/`MenuItem` (the `⋯`/`+` popovers), `Modal`, `ConfirmPopover`,
     `Toast`, `Tab`, `SidebarRow`, `Tooltip`.
+  - Menus and confirmation popovers render outside clipping scroll containers,
+    align to their trigger, flip vertically when needed, and remain at least
+    8 px inside every app-window edge.
   - Styled exclusively via design tokens (`src/components/lib/tokens.ts` +
     CSS variables) extracted from the mock — accent, opaque surfaces, radii,
     typography, attention colors — so theme/accent/density

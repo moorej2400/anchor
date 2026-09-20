@@ -9,16 +9,17 @@ import type {
 import { useAnchor, type SettingsSection } from "../app/store";
 import { statusCounts } from "../app/selectors";
 import packageJson from "../../package.json";
+import { Icon, type IconName } from "../components/Icon";
 
-const NAV: { id: SettingsSection; icon: string; label: string }[] = [
-  { id: "general", icon: "⚙", label: "General" },
-  { id: "appearance", icon: "◐", label: "Appearance" },
-  { id: "notifications", icon: "◉", label: "Notifications" },
-  { id: "terminal", icon: "▣", label: "Terminal" },
-  { id: "harnesses", icon: "⌘", label: "Harnesses" },
-  { id: "persistence", icon: "▱", label: "Persistence & backup" },
-  { id: "shortcuts", icon: "⌨", label: "Keyboard shortcuts" },
-  { id: "about", icon: "◈", label: "About" },
+const NAV: { id: SettingsSection; icon: IconName; label: string }[] = [
+  { id: "general", icon: "settings", label: "General" },
+  { id: "appearance", icon: "palette", label: "Appearance" },
+  { id: "notifications", icon: "bell", label: "Notifications" },
+  { id: "terminal", icon: "terminal", label: "Terminal" },
+  { id: "harnesses", icon: "wrench", label: "Harnesses" },
+  { id: "persistence", icon: "archive", label: "Persistence & backup" },
+  { id: "shortcuts", icon: "keyboard", label: "Keyboard shortcuts" },
+  { id: "about", icon: "info", label: "About" },
 ];
 
 const SHORTCUTS = [
@@ -72,12 +73,12 @@ export function SettingsPage() {
             data-active={section === item.id || undefined}
             onClick={() => actions.setSettingsSection(item.id)}
           >
-            <span aria-hidden="true">{item.icon}</span>
+            <span aria-hidden="true"><Icon name={item.icon} size={15} /></span>
             <span>{item.label}</span>
           </button>
         ))}
         <div className="settings-nav__spacer" />
-        <button onClick={() => actions.closeSettings()}><span>←</span><span>Back to sessions</span></button>
+        <button onClick={() => actions.closeSettings()}><span><Icon name="arrow-left" size={15} /></span><span>Back to sessions</span></button>
         <div className="settings-nav__version">Anchor v{packageJson.version}</div>
       </nav>
       <div className="settings-main">
@@ -139,7 +140,7 @@ export function SettingsPage() {
               if (!key) return;
               const value = window.prompt(`Value for ${key}`) ?? "";
               void actions.updateSettings({ envVars: [...settings.envVars, { key, value }] });
-            }}>＋ Add variable</button>
+            }}><Icon name="plus" size={13} /> Add variable</button>
           </div>
         </SettingsGroup>
       </>
@@ -239,7 +240,7 @@ export function SettingsPage() {
             </div>
           ))}
           {settings.customHarnesses.length === 0 && <div className="settings-empty">No custom harnesses yet.</div>}
-          <button className="settings-inline-action" onClick={() => setHarnessDraft(newHarness())}>＋ Add custom harness</button>
+          <button className="settings-inline-action" onClick={() => setHarnessDraft(newHarness())}><Icon name="plus" size={13} /> Add custom harness</button>
         </SettingsGroup>
         <p className="settings-note">Arguments are stored as individual values and passed directly to the executable. Supported placeholders: <code>{"{projectPath}"}</code>, <code>{"{sessionId}"}</code>, and <code>{"{dataDirectory}"}</code>.</p>
       </>
@@ -331,7 +332,7 @@ function HarnessEditor(props: {
   return (
     <div className="settings-editor-scrim" onClick={onClose}>
       <div className="settings-editor" onClick={(event) => event.stopPropagation()}>
-        <header><div><h2>{harness.name || "Custom harness"}</h2><p>Define an executable and typed argument templates.</p></div><button onClick={onClose}>×</button></header>
+        <header><div><h2>{harness.name || "Custom harness"}</h2><p>Define an executable and typed argument templates.</p></div><button onClick={onClose} aria-label="Close"><Icon name="close" size={17} /></button></header>
         <div className="settings-editor__body">
           <label>Name<TextInput value={harness.name} onChange={(event) => update("name", event.target.value)} placeholder="Hermes" /></label>
           <label>Executable<TextInput variant="mono" value={harness.executable} onChange={(event) => update("executable", event.target.value)} placeholder="hermes" /></label>

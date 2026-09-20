@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import {
   AttentionDot,
   Badge,
-  Button,
+  ConfirmPopover,
   IconButton,
   Menu,
   MenuDivider,
@@ -32,6 +32,7 @@ import {
 import { LAUNCHABLE, toolName } from "../app/display";
 import { activeWorkspace, sessionsForWorkspace } from "../app/workspaces";
 import { SESSION_DRAG_TYPE } from "./WorkspaceRail";
+import { Icon } from "../components/Icon";
 
 interface SidebarProps {
   onRemoveFolder: (folder: Folder) => void;
@@ -171,16 +172,16 @@ export function Sidebar({ onRemoveFolder, onSetCodexProfile, onSetSessionId }: S
         aria-expanded={state.workspacePaneOpen}
         onClick={() => actions.toggleWorkspacePane()}
       >
-        <span className="current-workspace__icon" aria-hidden="true">▰</span>
+        <Icon name="folder" size={15} className="current-workspace__icon" />
         <span className="current-workspace__copy">
           <small>WORKSPACE · SWITCH</small>
           <strong>{workspace.name}</strong>
         </span>
-        <span className="current-workspace__chevron" aria-hidden="true">›</span>
+        <Icon name="chevron-right" size={14} className="current-workspace__chevron" />
       </button>
       <div className="sidebar__filter">
         <div className="filter-box">
-          <span className="filter-box__glyph">⌕</span>
+          <Icon name="search" size={14} className="filter-box__glyph" />
           <TextInput
             id="anchor-filter"
             variant="seamless"
@@ -228,7 +229,7 @@ export function Sidebar({ onRemoveFolder, onSetCodexProfile, onSetSessionId }: S
               aria-expanded={hiddenExpanded}
               onClick={() => setHiddenExpanded((expanded) => !expanded)}
             >
-              <span className="sidebar-hidden__chevron" aria-hidden="true">{hiddenExpanded ? "⌄" : "›"}</span>
+              <Icon name={hiddenExpanded ? "chevron-down" : "chevron-right"} size={13} className="sidebar-hidden__chevron" />
               <span>Hidden</span>
               <span className="sidebar-hidden__count">{folderVisibility.hidden.length}</span>
               <span className="sidebar-section__line" aria-hidden="true" />
@@ -243,8 +244,8 @@ export function Sidebar({ onRemoveFolder, onSetCodexProfile, onSetSessionId }: S
       </div>
 
       <div className="sidebar__footer">
-        <button className="sidebar__rail-toggle" onClick={() => actions.toggleWorkspacePane()} aria-label="Toggle workspaces">▥</button>
-        <button className="sidebar__settings" onClick={() => actions.openSettings()}><span>⚙</span>Settings</button>
+        <button className="sidebar__rail-toggle" onClick={() => actions.toggleWorkspacePane()} aria-label="Toggle workspaces"><Icon name="panel" size={15} /></button>
+        <button className="sidebar__settings" onClick={() => actions.openSettings()}><Icon name="settings" size={14} />Settings</button>
       </div>
     </aside>
   );
@@ -299,6 +300,8 @@ function FolderGroup(props: {
   const [hover, setHover] = useState(false);
   const [renameDraft, setRenameDraft] = useState(folder.name);
   const renameRef = useRef<HTMLInputElement>(null);
+  const moreAnchorRef = useRef<HTMLButtonElement>(null);
+  const launchAnchorRef = useRef<HTMLButtonElement>(null);
 
   const expanded = !collapsed && folder.sessions.length > 0;
   const renaming = ui.folderRename === folder.id;
@@ -359,44 +362,45 @@ function FolderGroup(props: {
             aria-controls={`folder-sessions-${folder.id}`}
             onClick={onToggle}
           >
-            <span className="folder__disclosure" aria-hidden="true">{expanded ? "⌄" : "›"}</span>
+            <span className="folder__disclosure" aria-hidden="true"><Icon name={expanded ? "chevron-down" : "chevron-right"} size={13} /></span>
             <span className="folder__label">{folder.name}</span>
           </button>
         )}
         {/* Both stay laid out (hidden, not unmounted) so revealing them on
             hover never reflows the header's name or count. */}
         <IconButton
+          ref={moreAnchorRef}
           aria-label="Folder options"
           size={20}
           tabIndex={showMore ? 0 : -1}
           style={{ fontSize: 15, visibility: showMore ? "visible" : "hidden" }}
           onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, folderMore: u.folderMore === folder.id ? null : folder.id, folderMenu: null, sessionMenu: null })); }}
         >
-          ⋯
+          <Icon name="more" size={15} />
         </IconButton>
         <IconButton
+          ref={launchAnchorRef}
           bordered
-          className="a-plus"
           aria-label="Quick launch"
           size={20}
           tabIndex={showAdd ? 0 : -1}
           style={{ fontSize: 14, visibility: showAdd ? "visible" : "hidden" }}
           onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, folderMenu: u.folderMenu === folder.id ? null : folder.id, folderMore: null, sessionMenu: null })); }}
         >
-          +
+          <Icon name="plus" size={14} />
         </IconButton>
 
         {ui.folderMore === folder.id && (
-          <Menu width={206} style={{ top: 30, right: 8 }}>
-            <MenuItem icon="✎" onClick={() => setUi((u) => ({ ...u, folderRename: folder.id, folderMore: null }))}>Rename group</MenuItem>
-            <MenuItem icon="⧉" onClick={() => { actions.copy(folder.path, "Folder path copied"); setUi((u) => ({ ...u, folderMore: null })); }}>Copy folder path</MenuItem>
+          <Menu anchorRef={moreAnchorRef} width={206}>
+            <MenuItem icon={<Icon name="edit" size={14} />} onClick={() => setUi((u) => ({ ...u, folderRename: folder.id, folderMore: null }))}>Rename group</MenuItem>
+            <MenuItem icon={<Icon name="copy" size={14} />} onClick={() => { actions.copy(folder.path, "Folder path copied"); setUi((u) => ({ ...u, folderMore: null })); }}>Copy folder path</MenuItem>
             <MenuDivider />
-            <MenuItem danger icon="✕" onClick={() => { setUi((u) => ({ ...u, folderMore: null })); onRemoveFolder(folder); }}>Remove group</MenuItem>
+            <MenuItem danger icon={<Icon name="trash" size={14} />} onClick={() => { setUi((u) => ({ ...u, folderMore: null })); onRemoveFolder(folder); }}>Remove group</MenuItem>
           </Menu>
         )}
 
         {ui.folderMenu === folder.id && (
-          <Menu width={236} style={{ top: 30, right: 6 }}>
+          <Menu anchorRef={launchAnchorRef} width={236}>
             <MenuLabel>Launch in {folder.name}</MenuLabel>
             {LAUNCHABLE.map((tool) => {
               if (tool === "codex" && state.codexProfiles.length > 1) {
@@ -429,7 +433,7 @@ function FolderGroup(props: {
                 {state.settings.customHarnesses.filter((harness) => harness.enabled).map((harness) => (
                   <MenuItem
                     key={harness.id}
-                    icon="⌘"
+                    icon={<Icon name="wrench" size={14} />}
                     onClick={() => {
                       setUi((u) => ({ ...u, folderMenu: null }));
                       void actions.launchCustomHarness(harness.id, folder.id);
@@ -479,6 +483,8 @@ function SessionRow(props: {
   const [hover, setHover] = useState(false);
   const [renameDraft, setRenameDraft] = useState(session.title);
   const renameRef = useRef<HTMLInputElement>(null);
+  const deleteAnchorRef = useRef<HTMLButtonElement>(null);
+  const menuAnchorRef = useRef<HTMLButtonElement>(null);
 
   const menuOpen = ui.sessionMenu === instanceKey;
   const renaming = ui.sessionRename === instanceKey;
@@ -506,6 +512,7 @@ function SessionRow(props: {
 
   return (
     <SidebarRow
+      data-session-id={session.id}
       active={active}
       draggable={!renaming}
       onDragStart={(event) => {
@@ -554,17 +561,18 @@ function SessionRow(props: {
           <>
             {openInTab ? (
               <IconButton
+                ref={deleteAnchorRef}
                 aria-label="Close tab from sidebar"
                 title="Close tab"
                 style={{ fontSize: 14 }}
                 onClick={(e) => { e.stopPropagation(); void actions.closeTabImmediately(session.id); }}
               >
-                ↓
+                <Icon name="chevron-down" size={14} />
               </IconButton>
             ) : (
-              <IconButton danger aria-label="Delete session" onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, confirmDelete: u.confirmDelete === instanceKey ? null : instanceKey, sessionMenu: null })); }}>✕</IconButton>
+              <IconButton ref={deleteAnchorRef} danger aria-label="Delete session" onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, confirmDelete: u.confirmDelete === instanceKey ? null : instanceKey, sessionMenu: null })); }}><Icon name="trash" size={13} /></IconButton>
             )}
-            <IconButton aria-label="More options" style={{ fontSize: 17 }} onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, sessionMenu: u.sessionMenu === instanceKey ? null : instanceKey, confirmDelete: null })); }}>⋯</IconButton>
+            <IconButton ref={menuAnchorRef} aria-label="More options" onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, sessionMenu: u.sessionMenu === instanceKey ? null : instanceKey, confirmDelete: null })); }}><Icon name="more" size={15} /></IconButton>
           </>
         ) : (
           showIndicator && indicator && <AttentionDot ready={indicator === "ready"} />
@@ -572,32 +580,31 @@ function SessionRow(props: {
       </div>
 
       {confirming && (
-        <div className="a-confirm" style={{ top: 33, right: 6 }} onClick={(e) => e.stopPropagation()}>
-          <div className="a-confirm__title">Delete this session?</div>
-          <div className="a-confirm__body">Its saved session ID will be removed.</div>
-          <div className="a-confirm__row">
-            <Button variant="subtle" block style={{ padding: "6px 0" }} onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, confirmDelete: null })); }}>Cancel</Button>
-            <Button variant="danger" block style={{ padding: "6px 0", fontWeight: 600 }} onClick={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, confirmDelete: null })); void actions.deleteSession(session.id); }}>Delete</Button>
-          </div>
-        </div>
+        <ConfirmPopover
+          anchorRef={deleteAnchorRef}
+          title="Delete this session?"
+          body="Its saved session ID will be removed."
+          onCancel={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, confirmDelete: null })); }}
+          onConfirm={(e) => { e.stopPropagation(); setUi((u) => ({ ...u, confirmDelete: null })); void actions.deleteSession(session.id); }}
+        />
       )}
 
       {menuOpen && (
-        <Menu width={220} style={{ top: 33, right: 6 }}>
-          <MenuItem icon="✎" onClick={() => setUi((u) => ({ ...u, sessionRename: instanceKey, sessionMenu: null }))}>Rename session</MenuItem>
-          <MenuItem icon={favorite ? "★" : "☆"} onClick={() => { setUi((u) => ({ ...u, sessionMenu: null })); void actions.toggleFavoriteSession(session.id); }}>
+        <Menu anchorRef={menuAnchorRef} width={220}>
+          <MenuItem icon={<Icon name="edit" size={14} />} onClick={() => setUi((u) => ({ ...u, sessionRename: instanceKey, sessionMenu: null }))}>Rename session</MenuItem>
+          <MenuItem icon={<Icon name="star" size={14} style={favorite ? { fill: "currentColor" } : undefined} />} onClick={() => { setUi((u) => ({ ...u, sessionMenu: null })); void actions.toggleFavoriteSession(session.id); }}>
             {favorite ? "Remove from favorites" : "Add to favorites"}
           </MenuItem>
           <MenuDivider />
-          <MenuItem icon="⧉" onClick={() => { if (session.cliSessionId) actions.copy(session.cliSessionId, "Session ID copied"); setUi((u) => ({ ...u, sessionMenu: null })); }}>Copy session ID</MenuItem>
+          <MenuItem icon={<Icon name="copy" size={14} />} onClick={() => { if (session.cliSessionId) actions.copy(session.cliSessionId, "Session ID copied"); setUi((u) => ({ ...u, sessionMenu: null })); }}>Copy session ID</MenuItem>
           {(session.tool !== "terminal" || Boolean(state.settings.sessionHarnessIds[session.id])) && session.status === "stopped" && (
-            <MenuItem icon="⌁" onClick={() => { setUi((u) => ({ ...u, sessionMenu: null })); onSetSessionId(session.id); }}>Set session ID</MenuItem>
+            <MenuItem icon={<Icon name="wrench" size={14} />} onClick={() => { setUi((u) => ({ ...u, sessionMenu: null })); onSetSessionId(session.id); }}>Set session ID</MenuItem>
           )}
           {session.tool === "codex" && session.status === "stopped" && (
             state.codexProfiles.length > 1
             || Boolean(session.codexProfile && !state.codexProfiles.includes(session.codexProfile))
           ) && (
-            <MenuItem icon="⚙" onClick={() => { setUi((u) => ({ ...u, sessionMenu: null })); onSetCodexProfile(session.id); }}>Set Codex profile</MenuItem>
+            <MenuItem icon={<Icon name="settings" size={14} />} onClick={() => { setUi((u) => ({ ...u, sessionMenu: null })); onSetCodexProfile(session.id); }}>Set Codex profile</MenuItem>
           )}
         </Menu>
       )}

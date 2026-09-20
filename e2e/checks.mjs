@@ -25,8 +25,10 @@ const TITLES = {
 const jsString = (value) => JSON.stringify(value);
 const rowFor = (title) =>
   `[...document.querySelectorAll('.a-row')].find(e => e.textContent.includes(${jsString(title)}))`;
-const tabFor = (title) =>
-  `[...document.querySelectorAll('.a-tab')].find(e => e.textContent.includes(${jsString(title)}))`;
+const rowForId = (id) =>
+  `[...document.querySelectorAll('.a-row')].find(e => e.dataset.sessionId === ${jsString(id)})`;
+const tabForId = (id) =>
+  `[...document.querySelectorAll('.a-tab')].find(e => e.dataset.sessionId === ${jsString(id)})`;
 
 /** Slot geometry plus WebGL context health, per open terminal. */
 const SLOT_PROBE = `[...document.querySelectorAll('.terminal-slot')].map(slot => {
@@ -63,7 +65,7 @@ async function resume(page, title) {
 }
 
 const select = (page, id) =>
-  page.eval(`(() => { const t = ${tabFor(TITLES[id])}; if (t) t.click(); return !!t; })()`);
+  page.eval(`(() => { const t = ${tabForId(id)}; if (t) t.click(); return !!t; })()`);
 
 export async function runChecks(page, { screenshotsDir, save }) {
   const results = [];
@@ -78,8 +80,52 @@ export async function runChecks(page, { screenshotsDir, save }) {
     await resume(page, title);
   }
 
-  const live = (await page.eval(SLOT_PROBE)).map((s) => s.id);
+  // The terminal deck also owns one hidden measurement slot without a session
+  // id. Only live session slots participate in selection and content checks.
+  const live = (await page.eval(SLOT_PROBE)).map((s) => s.id).filter(Boolean);
   record("live sessions own a terminal slot", live.length >= 3, { live });
+
+  // --- REGRESSION: sidebar menus stay inside the app window ---------------
+  // The launch menu is wider than the usable sidebar content. Keeping it as
+  // an absolute child made its left edge disappear beneath the window edge.
+  await page.eval(`(() => {
+    const folder = document.querySelector('.folder');
+    folder?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    return !!folder;
+  })()`);
+  await sleep(100);
+  const quickLaunchSpot = await page.clickElement(
+    `[...document.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === 'Quick launch')`,
+  );
+  await sleep(150);
+  const launchMenu = await page.eval(`(() => {
+    const menu = document.querySelector('.a-menu');
+    if (!menu) return { error: 'quick-launch menu missing' };
+    const box = menu.getBoundingClientRect();
+    const center = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return {
+      left: Math.round(box.left),
+      top: Math.round(box.top),
+      right: Math.round(box.right),
+      bottom: Math.round(box.bottom),
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      position: getComputedStyle(menu).position,
+      portaled: menu.parentElement === document.body,
+      hitTestable: !!center?.closest('.a-menu'),
+    };
+  })()`);
+  record("quick-launch menu is clickable and inside every window edge",
+    !!quickLaunchSpot && quickLaunchSpot.hitsTarget
+      && launchMenu.left >= 8
+      && launchMenu.top >= 8
+      && launchMenu.right <= launchMenu.viewportWidth - 8
+      && launchMenu.bottom <= launchMenu.viewportHeight - 8
+      && launchMenu.position === "fixed"
+      && launchMenu.portaled === true
+      && launchMenu.hitTestable === true,
+    { quickLaunchSpot, launchMenu });
+  await page.eval("document.body.click()");
 
   // --- distinct rendered content -------------------------------------------
   const frames = {};
@@ -127,7 +173,7 @@ export async function runChecks(page, { screenshotsDir, save }) {
     // index: the sidebar lists every session grouped by folder, so its order
     // does not match slot order.
     const viaRow = i % 2 === 0;
-    const spot = await page.clickElement(viaRow ? rowFor(TITLES[id]) : tabFor(TITLES[id]));
+    const spot = await page.clickElement(viaRow ? rowForId(id) : tabForId(id));
     if (!spot || !spot.hitsTarget) {
       switchFailures.push({ i, id, via: viaRow ? "row" : "tab", spot });
       continue;
@@ -168,79 +214,58 @@ export async function runChecks(page, { screenshotsDir, save }) {
   record("no main-thread long task over 50ms", longTasks.length === 0, { longTasks });
 
   // --- output buffered while a session is hidden ---------------------------
-  await resume(page, "expo build errors");
-  await page.eval(`(() => { const t = ${tabFor("refactor auth middleware")}; if (t) t.click(); return !!t; })()`);
+  await resume(page, "vite dev · :5173");
+  await page.eval(`(() => { const t = ${tabForId("w-claude")}; if (t) t.click(); return !!t; })()`);
   await sleep(1200); // the whole banner streams while that session is hidden
   const buffered = await page.eval(`(async () => {
-    const t = ${tabFor("expo build errors")}; if (t) t.click();
+    const t = ${tabForId("w-term")}; if (t) t.click();
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
     const slot = [...document.querySelectorAll('.terminal-slot')]
-      .find(s => s.dataset.terminalSessionId === 'm-copilot');
+      .find(s => s.dataset.terminalSessionId === 'w-term');
     const rows = slot && slot.querySelector('.xterm-rows');
     const text = rows ? rows.innerText.replace(/\\s+/g, ' ') : '';
-    return { first: text.includes('GitHub Copilot CLI'), last: text.includes('git reset --soft HEAD~3'),
+    return { first: text.includes('restored session'), last: text.includes('VITE ready'),
              text: text.slice(0, 120) };
   })()`);
   record("output produced while hidden is complete on selection",
     buffered.first && buffered.last, buffered);
 
   // --- close: confirmation, hit-testability, removal latency ---------------
-  const closeTarget = live[live.length - 1];
+  const closeTarget = "w-copilot";
   await select(page, closeTarget);
   await sleep(200);
   const tabsBefore = await page.eval("document.querySelectorAll('.a-tab').length");
   const closeSpot = await page.clickElement(
-    `(() => { const tab = ${tabFor(TITLES[closeTarget])};
-       return tab && [...tab.querySelectorAll('button')].find(b => b.textContent.includes('\\u00d7')); })()`,
+    `(() => { const tab = ${tabForId(closeTarget)};
+       return tab && tab.querySelector('button[aria-label="Close tab"]'); })()`,
   );
   record("tab close control is hit-testable", !!closeSpot && closeSpot.hitsTarget, { closeSpot });
-  await sleep(300);
+  await sleep(20);
 
   const dialog = await page.eval(`(() => {
     const d = document.querySelector('.a-confirm, .a-modal');
     return d ? { text: d.innerText.replace(/\\s+/g, ' ').slice(0, 120),
                  buttons: [...d.querySelectorAll('button')].map(b => b.textContent.trim()) } : null;
   })()`);
-  record("closing a live session asks first", !!dialog, { dialog });
+  record("closing an idle live session does not ask first", dialog === null, { dialog });
 
-  if (dialog) {
-    // REGRESSION: the first version of this prompt was a popover inside the tab
-    // strip. It laid out correctly and every unit test passed, but `.tabstrip`
-    // has overflow:auto so it was clipped, and elementFromPoint at the confirm
-    // button returned `.xterm-screen`. Assert reachability, not just presence.
-    const confirmSpot = await page.clickElement(
-      `[...document.querySelectorAll('.a-confirm button, .a-modal button')]
-         .find(b => !/cancel/i.test(b.textContent))`,
-    );
-    record("hit-testable close confirmation", !!confirmSpot && confirmSpot.hitsTarget, { confirmSpot });
-
-    const removal = await page.eval(`(async () => {
-      const deadline = performance.now() + 3000;
-      while (performance.now() < deadline) {
-        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-        const n = document.querySelectorAll('.a-tab').length;
-        if (n < ${tabsBefore}) return { ms: +(performance.now() - window.__clickAt).toFixed(1), tabs: n };
-      }
-      return { timedOut: true, tabs: document.querySelectorAll('.a-tab').length };
-    })()`);
-    record("tab is removed within 100ms of confirming",
-      !removal.timedOut && removal.ms < 100, removal);
-
-    // The window must stay usable while backend shutdown continues.
-    const settings = await page.eval(`(async () => {
-      const b = [...document.querySelectorAll('button')].find(x => x.textContent.includes('Settings'));
-      if (b) b.click();
+  const removal = await page.eval(`(async () => {
+    const deadline = performance.now() + 3000;
+    while (performance.now() < deadline) {
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-      return /General|Persistence|Appearance/.test(document.body.innerText);
-    })()`);
-    record("UI stays interactive while shutdown continues", settings === true, { settings });
-  }
+      const n = document.querySelectorAll('.a-tab').length;
+      if (n < ${tabsBefore}) return { ms: +(performance.now() - window.__clickAt).toFixed(1), tabs: n };
+    }
+    return { timedOut: true, tabs: document.querySelectorAll('.a-tab').length };
+  })()`);
+  record("idle tab is removed within 100ms",
+    !removal.timedOut && removal.ms < 100, removal);
 
   // --- reopening a closed session keeps its provider id --------------------
   await page.eval(`(() => { const t = document.querySelector('.a-tab'); if (t) t.click(); return !!t; })()`);
   await sleep(200);
   const reopened = await page.eval(`(async () => {
-    const r = ${rowFor(TITLES[closeTarget])}; if (!r) return { error: 'row missing' };
+    const r = ${rowForId(closeTarget)}; if (!r) return { error: 'row missing' };
     r.click();
     await new Promise(x => setTimeout(x, 400));
     const text = document.body.innerText.replace(/\\s+/g, ' ');
@@ -248,14 +273,9 @@ export async function runChecks(page, { screenshotsDir, save }) {
     return { resumable: /READY TO RESUME/i.test(text), providerId: match ? match[1] : null };
   })()`);
   record("reopened session keeps its exact provider id",
-    reopened.providerId === "e7f3-5540-2c19", { ...reopened, expected: "e7f3-5540-2c19" });
+    reopened.providerId === "b1d0-4487-9aa2", { ...reopened, expected: "b1d0-4487-9aa2" });
 
-  // --- the `+` leads the strip and only the tabs scroll ---------------------
-  // REGRESSION: the `+` used to trail the tabs, so it slid right with every new
-  // session. It is now outside the scrollport, which is also what keeps the
-  // scrollbar to the region the tabs occupy instead of the full strip width.
-  // Assert what is under the pixels, not just where the boxes sit: a button can
-  // be laid out perfectly and still be covered by a tab that eats its clicks.
+  // --- the trailing `+` remains reachable in the bounded tab scrollport ----
   await page.eval(`(() => {
     const rows = [...document.querySelectorAll('.a-row')];
     for (const r of rows) r.click();
@@ -263,32 +283,22 @@ export async function runChecks(page, { screenshotsDir, save }) {
   await sleep(400);
 
   const PLUS_PROBE = `(() => {
-    const strip = document.querySelector('.tabstrip');
     const scroll = document.querySelector('.tabstrip__scroll');
     const plus = document.querySelector('.tabstrip__new');
-    if (!strip || !scroll || !plus) return { error: 'tab strip, scrollport or + missing' };
+    const tabs = [...document.querySelectorAll('.a-tab')];
+    if (!scroll || !plus) return { error: 'tab scrollport or + missing' };
     const box = plus.getBoundingClientRect();
-    const stripBox = strip.getBoundingClientRect();
     const scrollBox = scroll.getBoundingClientRect();
-    const y = Math.round(box.top + box.height / 2);
-    // No tab may occupy any column from the strip's left edge through the
-    // button's right edge — that band belongs to the `+`, not the scrollport.
-    let bleed = 0;
-    for (let x = Math.round(stripBox.left) + 1; x < Math.round(box.right); x += 2) {
-      const el = document.elementFromPoint(x, y);
-      if (el && el.closest('.a-tab')) bleed++;
-    }
     return {
-      tabs: document.querySelectorAll('.a-tab').length,
+      tabs: tabs.length,
       left: Math.round(box.left),
+      right: Math.round(box.right),
+      scrollRight: Math.round(scrollBox.right),
+      viewportWidth: window.innerWidth,
       scrollable: Math.round(scroll.scrollWidth) > Math.round(scroll.clientWidth),
-      // Gap between the button and where the tabs begin scrolling.
-      gap: Math.round(scrollBox.left - box.right),
-      // How far the scrollport reaches left of the strip's right edge; it must
-      // start after the `+`, not span the whole strip.
-      scrollLeftEdge: Math.round(scrollBox.left),
-      stripLeftEdge: Math.round(stripBox.left),
-      bleed,
+      inScrollport: plus.parentElement === scroll,
+      afterTabs: tabs.length > 0 && tabs[tabs.length - 1].nextElementSibling === plus,
+      onScreen: box.left >= scrollBox.left && box.right <= scrollBox.right,
     };
   })()`;
 
@@ -300,20 +310,14 @@ export async function runChecks(page, { screenshotsDir, save }) {
     return ${PLUS_PROBE};
   })()`);
 
-  record("tab strip scrolls with every session open",
-    plusAtRest.scrollable === true, plusAtRest);
-  record("the + holds its place when the strip is scrolled",
-    plusAtRest.left === plusScrolled.left,
-    { atRest: plusAtRest.left, scrolled: plusScrolled.left });
-  record("no tab shows through beside the +",
-    plusAtRest.bleed === 0 && plusScrolled.bleed === 0,
-    { atRest: plusAtRest.bleed, scrolled: plusScrolled.bleed });
-  // The scrollport must begin after the button, so the scrollbar spans only
-  // where tabs can actually scroll rather than running under the `+`.
-  record("the tab scrollport starts after the +",
-    plusAtRest.scrollLeftEdge > plusAtRest.stripLeftEdge
-      && plusAtRest.gap >= 6,
-    plusAtRest);
+  record("tab strip stays inside the window with every session open",
+    plusAtRest.scrollRight <= plusAtRest.viewportWidth, plusAtRest);
+  record("the + follows the tabs in their scrollport",
+    plusScrolled.inScrollport === true && plusScrolled.afterTabs === true,
+    plusScrolled);
+  record("the + becomes fully visible at the end of the tab strip",
+    plusScrolled.onScreen === true,
+    { atRest: plusAtRest, scrolled: plusScrolled });
 
   const plusSpot = await page.clickElement("document.querySelector('.tabstrip__new')");
   record("the + is clickable over a scrolled strip",

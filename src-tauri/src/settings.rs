@@ -582,6 +582,9 @@ mod tests {
         expected.favorite_session_ids = vec!["synthetic-session".into()];
         expected.folder_order = vec!["synthetic-folder-b".into(), "synthetic-folder-a".into()];
         expected.tab_order = vec!["synthetic-tab-b".into(), "synthetic-tab-a".into()];
+        expected.workspaces[0].favorite_session_ids = expected.favorite_session_ids.clone();
+        expected.workspaces[0].folder_order = expected.folder_order.clone();
+        expected.workspaces[0].tab_order = expected.tab_order.clone();
         expected
             .empty_folder_since_ms
             .insert("synthetic-empty-folder".into(), 1_767_268_800_000);

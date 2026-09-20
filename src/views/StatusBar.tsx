@@ -4,6 +4,7 @@ import type { Session } from "../ipc/types";
 import { useAnchor } from "../app/store";
 import { sessionDisplayTitle } from "../app/selectors";
 import { displayModel, toolName } from "../app/display";
+import { Icon } from "../components/Icon";
 
 export function StatusBar({ active }: { active: Session | null }) {
   const { state, actions } = useAnchor();
@@ -31,7 +32,7 @@ export function StatusBar({ active }: { active: Session | null }) {
             <span style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-3)" }}>session</span>
             <span className="statusbar__mono">{active.cliSessionId ?? "—"}</span>
             {active.cliSessionId && (
-              <span style={{ color: "var(--text-3)", fontSize: 11, cursor: "pointer" }} onClick={() => actions.copy(active.cliSessionId!, "Session ID copied")}>⧉</span>
+              <button className="statusbar__copy" aria-label="Copy session ID" onClick={() => actions.copy(active.cliSessionId!, "Session ID copied")}><Icon name="copy" size={12} /></button>
             )}
           </div>
           <div className="statusbar__state">
@@ -42,7 +43,7 @@ export function StatusBar({ active }: { active: Session | null }) {
           </div>
           {showStop && (
             <Button variant="danger" onClick={() => void actions.stop(active.id)} style={{ padding: "4px 11px", fontSize: 11 }}>
-              ■ Stop
+              <Icon name="stop" size={11} /> Stop
             </Button>
           )}
         </div>

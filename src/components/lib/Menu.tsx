@@ -1,21 +1,39 @@
 /**
  * Floating popover menu (folder `⋯` and `+` menus, session `⋯` menu).
- * Positioning is the caller's job (pass `style` with top/right); the menu stops
- * click propagation so the document-level "close menus" handler doesn't fire.
+ * The shared floating layer keeps menus within the app window and outside
+ * clipping scroll containers.
  */
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, ReactNode, RefObject } from "react";
 import { cx } from "./cx";
+import { FloatingSurface } from "./FloatingSurface";
 
 interface MenuProps {
+  anchorRef?: RefObject<HTMLElement | null>;
   style?: CSSProperties;
   width?: number;
   children: ReactNode;
 }
 
-export function Menu({ style, width, children }: MenuProps) {
+export function Menu({ anchorRef, style, width, children }: MenuProps) {
+  if (anchorRef) {
+    return (
+      <FloatingSurface
+        anchorRef={anchorRef}
+        className="a-menu"
+        role="menu"
+        style={style}
+        width={width}
+        onClick={(event) => event.stopPropagation()}
+      >
+        {children}
+      </FloatingSurface>
+    );
+  }
+
   return (
     <div
       className="a-menu"
+      role="menu"
       style={{ width, ...style }}
       onClick={(e) => e.stopPropagation()}
     >

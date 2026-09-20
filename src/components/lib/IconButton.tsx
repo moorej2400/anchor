@@ -1,5 +1,5 @@
 /** Square icon-only button (row actions, chevrons, close, quick-launch `+`). */
-import type { ButtonHTMLAttributes } from "react";
+import { forwardRef, type ButtonHTMLAttributes } from "react";
 import { cx } from "./cx";
 
 interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -8,7 +8,7 @@ interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   size?: number;
 }
 
-export function IconButton({
+export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton({
   bordered,
   danger,
   size,
@@ -16,10 +16,11 @@ export function IconButton({
   style,
   type = "button",
   ...rest
-}: IconButtonProps) {
+}, ref) {
   return (
     <button
       type={type}
+      ref={ref}
       className={cx(
         "a-iconbtn",
         bordered && "a-iconbtn--bordered",
@@ -30,4 +31,4 @@ export function IconButton({
       {...rest}
     />
   );
-}
+});

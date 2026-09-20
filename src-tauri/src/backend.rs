@@ -1126,7 +1126,9 @@ impl Backend {
     }
 
     pub fn write_pty(&self, session_id: &str, data: String) -> Result<(), String> {
-        self.session(session_id)?;
+        // The runtime is authoritative for the hot input path. Looking up the
+        // persisted record first makes every keystroke wait behind registry
+        // saves even though a missing or stopped PTY already returns PTY_NOT_FOUND.
         self.runtime.write(session_id, data.as_bytes())
     }
 
@@ -1216,8 +1218,10 @@ impl Backend {
         let old_settings = settings_guard.clone();
         let old_path = expand_tilde(&old_settings.backup_path)?;
         let new_path = expand_tilde(&settings.backup_path)?;
+        let retention_changed = old_settings.retention_days != settings.retention_days;
+        let backup_changed = old_path != new_path;
 
-        if old_path != new_path {
+        if backup_changed {
             let mut registry = self.registry.lock().map_err(lock_error)?;
             let old_scrollback = ScrollbackStore::new(&old_path);
             let new_scrollback = ScrollbackStore::new(&new_path);
@@ -1266,10 +1270,16 @@ impl Backend {
         }
         *settings_guard = settings.clone();
         drop(settings_guard);
-        let active_scrollback = ScrollbackStore::new(&new_path);
-        if active_scrollback.prune(settings.retention_days).is_err() {
-            self.events
-                .background_error("SCROLLBACK_PRUNE_FAILED: expired scrollback cleanup failed");
+        // Workspace order, tab order, and appearance all share this settings
+        // command. Scanning the full scrollback directory for those frequent
+        // writes can stall mapped drives; startup and the two retention-related
+        // changes are the only times pruning is required.
+        if !backup_changed && retention_changed {
+            let active_scrollback = ScrollbackStore::new(&new_path);
+            if active_scrollback.prune(settings.retention_days).is_err() {
+                self.events
+                    .background_error("SCROLLBACK_PRUNE_FAILED: expired scrollback cleanup failed");
+            }
         }
         Ok(settings)
     }
@@ -1399,20 +1409,33 @@ impl Backend {
                 rows,
             } => {
                 let resume_failure = self.observe_resume_bootstrap(&session_id, &data);
-                let _transition = match self.mutation.lock() {
-                    Ok(transition) => transition,
-                    Err(_) => {
-                        self.events.background_error(
-                            "BACKEND_STATE_FAILED: scrollback transition lock failed",
-                        );
-                        return;
-                    }
+                let is_terminal = match self.registry.lock() {
+                    Ok(registry) => registry
+                        .sessions
+                        .iter()
+                        .find(|session| session.id == session_id)
+                        .map(|session| session.tool == Tool::Terminal),
+                    Err(_) => None,
                 };
-                let Ok(session) = self.session(&session_id) else {
+                let Some(is_terminal) = is_terminal else {
                     return;
                 };
-                let is_terminal = session.tool == Tool::Terminal;
                 if is_terminal {
+                    // Only generic terminals persist output. AI output must not
+                    // wait behind unrelated registry/settings disk mutations;
+                    // that lock coupling was visible as delayed keyboard echo.
+                    let _transition = match self.mutation.lock() {
+                        Ok(transition) => transition,
+                        Err(_) => {
+                            self.events.background_error(
+                                "BACKEND_STATE_FAILED: scrollback transition lock failed",
+                            );
+                            return;
+                        }
+                    };
+                    if self.session(&session_id).is_err() {
+                        return;
+                    }
                     let mut write_failed = false;
                     match self.terminal_replay.lock() {
                         Ok(mut states) => {
@@ -2432,6 +2455,7 @@ mod tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
     use std::sync::atomic::AtomicU64;
+    use std::sync::mpsc;
     use std::time::Instant;
     use tempfile::tempdir;
 
@@ -3265,6 +3289,58 @@ mod tests {
         assert_eq!(*runtime.replays.lock().unwrap(), vec![session.id.clone()]);
         assert!(backend.replay_output("missing").is_err());
         assert_eq!(runtime.replays.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn ai_input_and_output_do_not_wait_for_unrelated_persistence_locks() {
+        let events = Arc::new(TestEvents::default());
+        let (root, backend, _) = harness_with_events(events.clone());
+        let project = root.path().join("project");
+        fs::create_dir(&project).unwrap();
+        let folder = backend
+            .create_folder(project.to_string_lossy().into(), None)
+            .unwrap();
+        let session = backend
+            .launch_session(&folder.id, Tool::Codex, None, None, 80, 24)
+            .unwrap();
+
+        let mutation = backend.mutation.lock().unwrap();
+        let output_backend = Arc::clone(&backend);
+        let output_id = session.id.clone();
+        let (output_tx, output_rx) = mpsc::channel();
+        let output = thread::spawn(move || {
+            output_backend.handle_pty_event(PtyEvent::Output {
+                session_id: output_id,
+                data: "synthetic echo".into(),
+                sequence: 1,
+                grid_epoch: 1,
+                cols: 80,
+                rows: 24,
+            });
+            output_tx.send(()).unwrap();
+        });
+        output_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("AI output waited behind an unrelated persistence mutation");
+        drop(mutation);
+        output.join().unwrap();
+        assert_eq!(*events.outputs.lock().unwrap(), vec!["synthetic echo"]);
+
+        let registry = backend.registry.lock().unwrap();
+        let input_backend = Arc::clone(&backend);
+        let input_id = session.id.clone();
+        let (input_tx, input_rx) = mpsc::channel();
+        let input = thread::spawn(move || {
+            input_tx
+                .send(input_backend.write_pty(&input_id, "x".into()))
+                .unwrap();
+        });
+        input_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("PTY input waited behind a registry save")
+            .unwrap();
+        drop(registry);
+        input.join().unwrap();
     }
 
     #[test]

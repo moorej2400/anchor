@@ -1,6 +1,7 @@
-/** Small inline confirm popover (delete-session). Positioned by the caller. */
-import type { CSSProperties } from "react";
+/** Small confirmation surface anchored to its triggering control. */
+import type { CSSProperties, RefObject } from "react";
 import { Button } from "./Button";
+import { FloatingSurface } from "./FloatingSurface";
 
 interface ConfirmPopoverProps {
   title: string;
@@ -9,6 +10,7 @@ interface ConfirmPopoverProps {
   cancelLabel?: string;
   onConfirm: (e: React.MouseEvent) => void;
   onCancel: (e: React.MouseEvent) => void;
+  anchorRef?: RefObject<HTMLElement | null>;
   style?: CSSProperties;
 }
 
@@ -19,10 +21,11 @@ export function ConfirmPopover({
   cancelLabel = "Cancel",
   onConfirm,
   onCancel,
+  anchorRef,
   style,
 }: ConfirmPopoverProps) {
-  return (
-    <div className="a-confirm" style={style} onClick={(e) => e.stopPropagation()}>
+  const content = (
+    <>
       <div className="a-confirm__title">{title}</div>
       <div className="a-confirm__body">{body}</div>
       <div className="a-confirm__row">
@@ -33,6 +36,21 @@ export function ConfirmPopover({
           {confirmLabel}
         </Button>
       </div>
+    </>
+  );
+
+  return anchorRef ? (
+    <FloatingSurface
+      anchorRef={anchorRef}
+      className="a-confirm"
+      style={style}
+      onClick={(event) => event.stopPropagation()}
+    >
+      {content}
+    </FloatingSurface>
+  ) : (
+    <div className="a-confirm" style={style} onClick={(e) => e.stopPropagation()}>
+      {content}
     </div>
   );
 }

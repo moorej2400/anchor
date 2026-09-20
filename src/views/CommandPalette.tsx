@@ -4,6 +4,7 @@ import { AttentionDot, Badge, Modal, TextInput } from "../components/lib";
 import { useAnchor } from "../app/store";
 import { folderOf, toolName } from "../app/display";
 import { responseIndicator, sessionDisplayTitle } from "../app/selectors";
+import { Icon } from "../components/Icon";
 
 export function CommandPalette() {
   const { state, actions } = useAnchor();
@@ -32,7 +33,7 @@ export function CommandPalette() {
   return (
     <Modal onClose={() => actions.closePalette()} align="top" topOffset="12vh" width={560}>
       <div className="palette__head">
-        <span style={{ color: "var(--text-3)", fontSize: 16 }}>⌕</span>
+        <Icon name="search" size={16} style={{ color: "var(--text-3)" }} />
         <TextInput
           ref={inputRef}
           variant="seamless"

@@ -142,7 +142,8 @@ vi.mock("../ipc/events", () => ({
 import type { Folder, Session, Settings, TerminalSize } from "../ipc/types";
 import App from "../App";
 import { AnchorProvider } from "./store";
-import { DEFAULT_TERMINAL_THEME, DEFAULT_WORKSPACE } from "./workspaces";
+import { activeWorkspace, DEFAULT_TERMINAL_THEME, DEFAULT_WORKSPACE } from "./workspaces";
+import packageJson from "../../package.json";
 
 const SETTINGS: Settings = {
   shell: "/bin/zsh",
@@ -695,7 +696,7 @@ describe("closeTab", () => {
 
     // The window stays interactive while backend shutdown is still pending.
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
-    expect(screen.getByText("General", { selector: ".settings__h" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "General" })).toBeInTheDocument();
     close.resolve();
   });
 
@@ -750,7 +751,7 @@ describe("closeTab", () => {
 describe("tab ordering", () => {
   it("restores the persisted order", async () => {
     await renderRunningSessionApp(["session-a", "session-b", "session-c"], {
-      tabOrder: ["session-c", "session-a"],
+      workspaces: [{ ...DEFAULT_WORKSPACE, tabOrder: ["session-c", "session-a"] }],
     });
 
     const titles = Array.from(document.querySelectorAll(".a-tab__title"))
@@ -792,7 +793,7 @@ describe("tab ordering", () => {
       .map((element) => element.textContent);
     expect(titles).toEqual(["session-b", "session-c", "session-a"]);
     const [saved] = setSettingsMock.mock.calls[setSettingsMock.mock.calls.length - 1] as [Settings];
-    expect(saved.tabOrder).toEqual(["session-b", "session-c", "session-a"]);
+    expect(activeWorkspace(saved).tabOrder).toEqual(["session-b", "session-c", "session-a"]);
     expect(document.querySelector('[data-terminal-active="true"]')).toHaveAttribute(
       "data-terminal-session-id",
       "session-a",
@@ -999,7 +1000,7 @@ describe("sidebar folder groups", () => {
 
     await waitFor(() => expect(setSettingsMock).toHaveBeenCalled());
     const saved = setSettingsMock.mock.calls[setSettingsMock.mock.calls.length - 1][0] as Settings;
-    expect(saved.folderOrder).toEqual([secondFolder.id, FOLDER.id]);
+    expect(activeWorkspace(saved).folderOrder).toEqual([secondFolder.id, FOLDER.id]);
   });
 
   it("keeps a folder visible for 12 hours after it becomes empty", async () => {
@@ -1054,7 +1055,7 @@ describe("settings exposure", () => {
     await renderRunningSessionApp();
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
 
-    expect(screen.getByText("Anchor v0.2.0")).toBeInTheDocument();
+    expect(screen.getByText(`Anchor v${packageJson.version}`)).toBeInTheDocument();
   });
 
   it("lets the user turn on waiting notifications", async () => {
@@ -1062,6 +1063,7 @@ describe("settings exposure", () => {
     // a while nothing in Settings could change it, so it was stuck off forever.
     await renderRunningSessionApp();
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Notifications" }));
 
     const toggle = screen.getByRole("switch", { name: "Notify when a session needs attention" });
     expect(toggle).toHaveAttribute("aria-checked", "false");
@@ -1076,6 +1078,7 @@ describe("settings exposure", () => {
   it("lets the user set the response read delay", async () => {
     await renderRunningSessionApp();
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Notifications" }));
     fireEvent.click(screen.getByRole("radio", { name: "2.5 seconds" }));
 
     await waitFor(() => expect(setSettingsMock).toHaveBeenCalled());
@@ -1495,7 +1498,7 @@ describe("Codex profiles", () => {
       "beta",
     ));
 
-    const group = screen.getByText(FOLDER.name, { selector: ".folder__name" }).closest(".folder")!;
+    const group = screen.getByText(FOLDER.name, { selector: ".folder__label" }).closest(".folder")!;
     fireEvent.mouseEnter(group);
     fireEvent.click(screen.getByRole("button", { name: "Quick launch" }));
     expect(screen.getAllByText("Codex · alpha")).toHaveLength(1);

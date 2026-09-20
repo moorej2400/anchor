@@ -4,6 +4,7 @@ import { AttentionDot, Tab } from "../components/lib";
 import { useAnchor } from "../app/store";
 import { moveOrderedId, orderIds, sessionById, sessionDisplayTitle } from "../app/selectors";
 import { activeWorkspace, workspaceIdForSession } from "../app/workspaces";
+import { Icon } from "../components/Icon";
 
 export function TabStrip() {
   const { state, actions } = useAnchor();
@@ -37,6 +38,7 @@ export function TabStrip() {
         {tabs.map((s) => (
           <Tab
             key={s.id}
+            data-session-id={s.id}
             active={s.id === state.activeId}
             draggable
             title="Drag tab to reorder"
@@ -72,12 +74,12 @@ export function TabStrip() {
               aria-label="Close tab"
               onClick={(e) => { e.stopPropagation(); void actions.closeTab(s.id); }}
             >
-              ×
+              <Icon name="close" size={13} />
             </button>
           </Tab>
         ))}
-        <button className="tabstrip__new a-plus" aria-label="New session" onClick={() => actions.openNewSession()}>
-          +
+        <button className="tabstrip__new" aria-label="New session" onClick={() => actions.openNewSession()}>
+          <Icon name="plus" size={15} />
         </button>
       </div>
     </div>

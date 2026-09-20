@@ -8,11 +8,11 @@ use tauri_plugin_dialog::DialogExt;
 use crate::backend::Backend;
 use crate::models::*;
 
-/// Run a lifecycle operation that can wait on a PTY off the native UI thread.
+/// Run filesystem or PTY work off the native UI thread.
 ///
-/// Synchronous Tauri commands run on the main thread, and stopping a PTY
-/// deliberately waits out the graceful-termination window. Blocking there
-/// freezes the window; the wait itself is correct and stays unchanged.
+/// Synchronous Tauri commands run on the main thread. PTY spawn/write/resize,
+/// shutdown waits, and mapped-drive filesystem probes can all block there and
+/// starve terminal output delivery even when the webview remains responsive.
 async fn run_blocking<T, F>(operation: F) -> Result<T, String>
 where
     T: Send + 'static,
@@ -106,7 +106,7 @@ pub async fn remove_folder(
 }
 
 #[tauri::command]
-pub fn launch_session(
+pub async fn launch_session(
     backend: State<'_, Arc<Backend>>,
     folder_id: String,
     tool: Tool,
@@ -116,8 +116,9 @@ pub fn launch_session(
     cols: u16,
     rows: u16,
 ) -> Result<Session, String> {
-    match codex_profile {
-        Some(profile) => backend.inner().launch_session_with_profile(
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || match codex_profile {
+        Some(profile) => backend.launch_session_with_profile(
             &folder_id,
             tool,
             title,
@@ -126,23 +127,21 @@ pub fn launch_session(
             cols,
             rows,
         ),
-        None => backend
-            .inner()
-            .launch_session(&folder_id, tool, title, extra_args, cols, rows),
-    }
+        None => backend.launch_session(&folder_id, tool, title, extra_args, cols, rows),
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn launch_custom_session(
+pub async fn launch_custom_session(
     backend: State<'_, Arc<Backend>>,
     folder_id: String,
     harness_id: String,
     cols: u16,
     rows: u16,
 ) -> Result<Session, String> {
-    backend
-        .inner()
-        .launch_custom_session(&folder_id, &harness_id, cols, rows)
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || backend.launch_custom_session(&folder_id, &harness_id, cols, rows)).await
 }
 
 #[tauri::command]
@@ -160,35 +159,36 @@ pub fn set_codex_profile(
 }
 
 #[tauri::command]
-pub fn resume_session(
+pub async fn resume_session(
     backend: State<'_, Arc<Backend>>,
     session_id: String,
     cols: u16,
     rows: u16,
 ) -> Result<Session, String> {
-    backend.inner().resume_session(&session_id, cols, rows)
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || backend.resume_session(&session_id, cols, rows)).await
 }
 
 #[tauri::command]
-pub fn repair_session_identity(
+pub async fn repair_session_identity(
     backend: State<'_, Arc<Backend>>,
     session_id: String,
     cols: u16,
     rows: u16,
 ) -> Result<Session, String> {
-    backend
-        .inner()
-        .repair_session_identity(&session_id, cols, rows)
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || backend.repair_session_identity(&session_id, cols, rows)).await
 }
 
 #[tauri::command]
-pub fn fork_codex_session(
+pub async fn fork_codex_session(
     backend: State<'_, Arc<Backend>>,
     session_id: String,
     cols: u16,
     rows: u16,
 ) -> Result<Session, String> {
-    backend.inner().fork_codex_session(&session_id, cols, rows)
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || backend.fork_codex_session(&session_id, cols, rows)).await
 }
 
 #[tauri::command]
@@ -248,22 +248,24 @@ pub async fn set_tab_open(
 }
 
 #[tauri::command]
-pub fn write_pty(
+pub async fn write_pty(
     backend: State<'_, Arc<Backend>>,
     session_id: String,
     data: String,
 ) -> Result<(), String> {
-    backend.write_pty(&session_id, data)
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || backend.write_pty(&session_id, data)).await
 }
 
 #[tauri::command]
-pub fn resize_pty(
+pub async fn resize_pty(
     backend: State<'_, Arc<Backend>>,
     session_id: String,
     cols: u16,
     rows: u16,
 ) -> Result<crate::models::PtyResize, String> {
-    backend.resize_pty(&session_id, cols, rows)
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || backend.resize_pty(&session_id, cols, rows)).await
 }
 
 #[tauri::command]
@@ -288,16 +290,18 @@ pub fn get_settings(backend: State<'_, Arc<Backend>>) -> Result<Settings, String
 }
 
 #[tauri::command]
-pub fn set_settings(
+pub async fn set_settings(
     backend: State<'_, Arc<Backend>>,
     settings: Settings,
 ) -> Result<Settings, String> {
-    backend.set_settings(settings)
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || backend.set_settings(settings)).await
 }
 
 #[tauri::command]
-pub fn detect_clis(backend: State<'_, Arc<Backend>>) -> Result<Vec<CliInfo>, String> {
-    backend.detect_clis()
+pub async fn detect_clis(backend: State<'_, Arc<Backend>>) -> Result<Vec<CliInfo>, String> {
+    let backend = Arc::clone(backend.inner());
+    run_blocking(move || backend.detect_clis()).await
 }
 
 #[tauri::command]

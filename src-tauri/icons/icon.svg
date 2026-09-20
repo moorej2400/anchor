@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Source for generated native assets; keep the anchor geometry aligned with src/components/Icon.tsx. -->
+  <rect x="20" y="20" width="472" height="472" rx="106" fill="#181a19"/>
+  <g
+    transform="translate(64 64) scale(16)"
+    fill="none"
+    stroke="#dce0de"
+    stroke-width="1.9"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <circle cx="12" cy="5" r="2.5"/>
+    <path d="M12 7.5V20M6 12h12M6 12c0 4 2.2 7 6 8M18 12c0 4-2.2 7-6 8"/>
+  </g>
+</svg>

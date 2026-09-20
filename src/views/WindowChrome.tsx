@@ -2,6 +2,7 @@
 import { useAnchor } from "../app/store";
 import { activeWorkspace } from "../app/workspaces";
 import { sessionById } from "../app/selectors";
+import { Icon } from "../components/Icon";
 
 export function WindowChrome() {
   const { state, actions } = useAnchor();
@@ -17,10 +18,7 @@ export function WindowChrome() {
       data-settings={settings || undefined}
     >
       <div className="chrome__brand">
-        <svg className="chrome__mark" viewBox="0 0 24 24" aria-hidden="true">
-          <circle cx="12" cy="5" r="2.5" />
-          <path d="M12 7.5V20M6 12h12M6 12c0 4 2.2 7 6 8M18 12c0 4-2.2 7-6 8" />
-        </svg>
+        <Icon name="anchor" size={20} className="chrome__mark" />
         <span className="chrome__name">Anchor</span>
       </div>
       <div className="chrome__crumb">
@@ -30,11 +28,11 @@ export function WindowChrome() {
       </div>
       <div className="chrome__actions">
         {settings ? (
-          <button className="chrome__button" onClick={() => actions.closeSettings()}>× <span>Close settings</span></button>
+          <button className="chrome__button" onClick={() => actions.closeSettings()}><Icon name="close" size={13} /> <span>Close settings</span></button>
         ) : (
           <>
-            <button className="chrome__button" onClick={() => actions.openPalette()}>⌕ <span>Search</span><kbd>⌘ K</kbd></button>
-            <button className="chrome__button chrome__button--primary" onClick={() => actions.openNewSession()}>＋ <span>New session</span></button>
+            <button className="chrome__button" onClick={() => actions.openPalette()}><Icon name="search" size={13} /> <span>Search</span><kbd>⌘ K</kbd></button>
+            <button className="chrome__button chrome__button--primary" aria-label="New session from toolbar" onClick={() => actions.openNewSession()}><Icon name="plus" size={13} /> <span>New session</span></button>
           </>
         )}
       </div>

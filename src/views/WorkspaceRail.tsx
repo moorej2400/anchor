@@ -3,6 +3,7 @@ import { Button, Modal, TextInput } from "../components/lib";
 import { useAnchor } from "../app/store";
 import { sessionsForWorkspace } from "../app/workspaces";
 import { DEFAULT_WORKSPACE_ID, type Workspace } from "../ipc/types";
+import { Icon } from "../components/Icon";
 
 const SESSION_DRAG_TYPE = "application/x-anchor-session";
 
@@ -51,7 +52,7 @@ export function WorkspaceRail() {
         }}
         onDrop={onDrop}
       >
-        <span className="workspace-rail__folder" aria-hidden="true">▰</span>
+        <Icon name="folder" size={14} className="workspace-rail__folder" />
         <span className="workspace-rail__name">{workspace.name}</span>
         <span className="workspace-rail__count">{count}</span>
       </button>
@@ -63,10 +64,10 @@ export function WorkspaceRail() {
       <aside className="workspace-rail" aria-label="Workspaces">
         <div className="workspace-rail__head">
           <span>Workspaces</span>
-          <button className="flat-icon" aria-label="Manage workspaces" onClick={() => setManageOpen(true)}>•••</button>
+          <button className="flat-icon" aria-label="Manage workspaces" onClick={() => setManageOpen(true)}><Icon name="more" size={16} /></button>
         </div>
         <label className="rail-search">
-          <span aria-hidden="true">⌕</span>
+          <Icon name="search" size={14} />
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find workspace" />
         </label>
         <div className="workspace-rail__list">
@@ -75,8 +76,8 @@ export function WorkspaceRail() {
           {visible.length === 0 && <p className="workspace-rail__empty">No matching workspaces.</p>}
         </div>
         <div className="workspace-rail__actions">
-          <button onClick={() => setCreateOpen(true)}>＋ <span>New workspace</span></button>
-          <button onClick={() => setManageOpen(true)}>▱ <span>Manage workspaces</span></button>
+          <button onClick={() => setCreateOpen(true)}><Icon name="plus" size={14} /> <span>New workspace</span></button>
+          <button onClick={() => setManageOpen(true)}><Icon name="archive" size={14} /> <span>Manage workspaces</span></button>
         </div>
       </aside>
       {createOpen && <CreateWorkspace onClose={() => setCreateOpen(false)} />}
@@ -98,7 +99,7 @@ function CreateWorkspace({ onClose }: { onClose: () => void }) {
     <Modal onClose={onClose} width={430}>
       <div className="workspace-dialog__head">
         <div><h2>New workspace</h2><p>Keep a focused set of chats, tabs, and favorites.</p></div>
-        <button className="flat-icon" onClick={onClose} aria-label="Close">×</button>
+        <button className="flat-icon" onClick={onClose} aria-label="Close"><Icon name="close" size={16} /></button>
       </div>
       <div className="workspace-dialog__body">
         <label className="workspace-dialog__field">Workspace name
@@ -135,10 +136,10 @@ function WorkspaceManager({ onClose }: { onClose: () => void }) {
     <Modal onClose={onClose} align="top" topOffset="9vh" width={620}>
       <div className="workspace-dialog__head">
         <div><h2>Your workspaces</h2><p>Switch context, pin frequent work, or archive finished areas.</p></div>
-        <button className="flat-icon" onClick={onClose} aria-label="Close">×</button>
+        <button className="flat-icon" onClick={onClose} aria-label="Close"><Icon name="close" size={16} /></button>
       </div>
       <div className="workspace-manager__tools">
-        <label className="rail-search"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find workspace" /></label>
+        <label className="rail-search"><Icon name="search" size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find workspace" /></label>
       </div>
       <div className="workspace-manager__list">
         {workspaces.map((workspace) => {
@@ -148,7 +149,7 @@ function WorkspaceManager({ onClose }: { onClose: () => void }) {
               <button className="workspace-manager__select" onClick={() => {
                 if (!workspace.archived) void actions.selectWorkspace(workspace.id);
               }}>
-                <span className="workspace-manager__folder">▰</span>
+                <Icon name="folder" size={14} className="workspace-manager__folder" />
                 {editingId === workspace.id ? (
                   <input autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => {
                     if (event.key === "Enter") void commitRename(workspace);

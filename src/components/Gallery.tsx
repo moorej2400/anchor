@@ -26,6 +26,7 @@ import {
   Tooltip,
 } from "./lib";
 import type { Tool } from "../ipc/types";
+import { Icon } from "./Icon";
 
 const TOOLS: Tool[] = ["claude", "codex", "copilot", "opencode", "terminal"];
 
@@ -57,17 +58,17 @@ export function Gallery() {
         <Button>Default</Button>
         <Button variant="subtle">Subtle</Button>
         <Button variant="ghost">Ghost</Button>
-        <Button variant="primary">↻ Resume session</Button>
+        <Button variant="primary"><Icon name="refresh" size={15} /> Resume session</Button>
         <Button variant="danger">Remove group</Button>
         <Button disabled>Disabled</Button>
       </Section>
 
       <Section title="Icon buttons">
-        <IconButton aria-label="close">✕</IconButton>
-        <IconButton bordered aria-label="add">+</IconButton>
-        <IconButton danger aria-label="delete">✕</IconButton>
+        <IconButton aria-label="close"><Icon name="close" size={14} /></IconButton>
+        <IconButton bordered aria-label="add"><Icon name="plus" size={14} /></IconButton>
+        <IconButton danger aria-label="delete"><Icon name="trash" size={13} /></IconButton>
         <Tooltip label="Quick launch">
-          <IconButton bordered aria-label="launch">+</IconButton>
+          <IconButton bordered aria-label="launch"><Icon name="plus" size={14} /></IconButton>
         </Tooltip>
       </Section>
 
@@ -173,7 +174,7 @@ export function Gallery() {
               </MenuItem>
             ))}
             <MenuDivider />
-            <MenuItem danger icon="✕">
+            <MenuItem danger icon={<Icon name="trash" size={14} />}>
               Remove group
             </MenuItem>
           </Menu>
@@ -193,7 +194,7 @@ export function Gallery() {
         <div style={{ position: "relative", width: 220, height: 60 }}>
           <div style={{ position: "absolute", left: 0, bottom: 0, transform: "none" }}>
             <GlassPanel style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "9px 16px", borderRadius: 12, fontSize: 12.5 }}>
-              <span style={{ color: "var(--acc)" }}>✓</span> Session ID copied
+              <span style={{ color: "var(--acc)" }}><Icon name="check" size={13} /></span> Session ID copied
             </GlassPanel>
           </div>
         </div>

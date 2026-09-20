@@ -19,6 +19,7 @@ import { ipc } from "../ipc/commands";
 import type { Folder, Tool } from "../ipc/types";
 import { useAnchor } from "../app/store";
 import { LAUNCHABLE, toolName } from "../app/display";
+import { Icon } from "../components/Icon";
 
 type Step = "folder" | "create" | "tool";
 
@@ -112,7 +113,7 @@ export function NewSessionDialog() {
   return (
     <Modal onClose={close} align="top" width={500}>
       <div className="nt__head">
-        {showBack && <button className="nt__back" title="Back" onClick={back}>←</button>}
+        {showBack && <button className="nt__back" title="Back" onClick={back}><Icon name="arrow-left" size={15} /></button>}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="dialog__title">{title}</div>
           <div className="dialog__sub">{subtitle}</div>
@@ -124,7 +125,7 @@ export function NewSessionDialog() {
           <div className="nt__label">Add a folder</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             <button className="nt__row" onClick={() => void browse()} disabled={busy}>
-              <span className="nt__icon">⌕</span>
+              <span className="nt__icon"><Icon name="folder" size={15} /></span>
               <span style={{ flex: 1, minWidth: 0 }}>
                 <span className="nt__rowTitle" style={{ fontSize: 13.5 }}>Choose an existing folder…</span>
                 <span className="nt__rowSub">Browse your Mac and point Anchor at any directory</span>
@@ -132,7 +133,7 @@ export function NewSessionDialog() {
               <span className="nt__kbd">⌘O</span>
             </button>
             <button className="nt__row" onClick={goCreate}>
-              <span className="nt__icon nt__icon--grad">+</span>
+              <span className="nt__icon nt__icon--grad"><Icon name="plus" size={15} /></span>
               <span style={{ flex: 1, minWidth: 0 }}>
                 <span className="nt__rowTitle" style={{ fontSize: 13.5 }}>Create a new project</span>
                 <span className="nt__rowPath">Anchor makes the folder in {settings.projectsDir}</span>
@@ -248,7 +249,7 @@ export function NewSessionDialog() {
                 <div className="nt__label">Custom harnesses</div>
                 {settings.customHarnesses.filter((harness) => harness.enabled).map((harness) => (
                   <button key={harness.id} className="tool-item" onClick={() => launchCustom(harness.id)}>
-                    <span className="nt__icon" style={{ width: 26, height: 26 }}>⌘</span>
+                    <span className="nt__icon" style={{ width: 26, height: 26 }}><Icon name="wrench" size={14} /></span>
                     <span style={{ flex: 1 }}>{harness.name}</span>
                     <span className="tool-item__meta">{harness.kind}</span>
                   </button>

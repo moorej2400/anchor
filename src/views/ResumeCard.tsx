@@ -4,6 +4,7 @@ import type { Session } from "../ipc/types";
 import { useAnchor } from "../app/store";
 import { displayModel, folderPathOf, relativeTime } from "../app/display";
 import { sessionDisplayTitle } from "../app/selectors";
+import { Icon } from "../components/Icon";
 
 export function ResumeCard({ session }: { session: Session }) {
   const { state, actions } = useAnchor();
@@ -58,7 +59,7 @@ export function ResumeCard({ session }: { session: Session }) {
         )}
         {canResume ? (
           <Button variant="primary" block disabled={!state.bootReady} onClick={() => void actions.resume(session.id)} style={{ padding: 13, fontSize: 14 }}>
-            ↻ Resume session
+            <Icon name="refresh" size={16} /> Resume session
           </Button>
         ) : (
           <Button variant="primary" block disabled={!state.bootReady} onClick={() => void actions.repairIdentity(session.id)} style={{ padding: 13, fontSize: 14 }}>

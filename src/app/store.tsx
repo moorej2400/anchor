@@ -36,6 +36,7 @@ import { isOn, orderIds, reconcileEmptyFolderSinceMs } from "./selectors";
 import { applyTheme } from "./theme";
 import { TerminalManager } from "./terminals";
 import { SubmittedPromptCapture } from "./titleInput";
+import { OrderedPtyWriter } from "./ptyInput";
 import {
   DEFAULT_TERMINAL_THEME,
   DEFAULT_WORKSPACE,
@@ -525,6 +526,10 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
   stateRef.current = state;
   const deletedSessionIds = useRef(new Set<string>());
   const titleInput = useRef(new SubmittedPromptCapture()).current;
+  const ptyInput = useMemo(
+    () => new OrderedPtyWriter((sessionId, data) => ipc.writePty(sessionId, data)),
+    [],
+  );
   const activeHasReadableResponse = state.activeId !== null
     && state.autoSelectedId !== state.activeId
     && Boolean(state.unreadResponses[state.activeId]);
@@ -557,7 +562,7 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
       // never move a sidebar row.
       const manager = new TerminalManager((sessionId, data) => {
         const prompt = titleInput.observe(sessionId, data);
-        void ipc.writePty(sessionId, data).then(() => {
+        void ptyInput.write(sessionId, data).then(() => {
           if (!prompt || deletedSessionIds.current.has(sessionId)) return;
           const session = stateRef.current.sessions.find((candidate) => candidate.id === sessionId);
           if (!session) return;
@@ -583,7 +588,7 @@ export function AnchorProvider({ children }: { children: ReactNode }) {
       manager.beginReplayCapture();
       return manager;
     },
-    [showToast, titleInput],
+    [ptyInput, showToast, titleInput],
   );
 
   // Boot: subscribe to events, load state/settings/clis, restore tabs, then
@@ -1107,7 +1112,9 @@ function makeActions(
           : await ipc.launchSession(folderId, tool, terminalSize, undefined, undefined, codexProfile);
         const settings = currentSettings();
         const workspace = activeWorkspace(settings);
-        await persistWorkspaceUpdate(workspace.id, (item) => ({
+        // The PTY is already running. Publish its tab immediately while the
+        // durable workspace-order write completes in the background.
+        const workspaceWrite = persistWorkspaceUpdate(workspace.id, (item) => ({
           ...item,
           tabOrder: item.tabOrder.includes(session.id)
             ? item.tabOrder
@@ -1122,6 +1129,7 @@ function makeActions(
         dispatch({ type: "UPSERT_SESSION", session });
         dispatch({ type: "OPEN_TAB", id: session.id });
         persistTabOpen(session.id, true);
+        await workspaceWrite;
       } catch (e) {
         const baseError = operationError("launch", tool, e);
         const error: LaunchError = { ...baseError, operation: "launch", folderId };
@@ -1152,7 +1160,7 @@ function makeActions(
         applyTheme(refreshed);
         terminals.setTheme(refreshed.terminalTheme);
         const workspace = activeWorkspace(refreshed);
-        await persistWorkspaceUpdate(workspace.id, (item) => ({
+        const workspaceWrite = persistWorkspaceUpdate(workspace.id, (item) => ({
           ...item,
           tabOrder: item.tabOrder.includes(session.id)
             ? item.tabOrder
@@ -1166,6 +1174,7 @@ function makeActions(
         dispatch({ type: "UPSERT_SESSION", session });
         dispatch({ type: "OPEN_TAB", id: session.id });
         persistTabOpen(session.id, true);
+        await workspaceWrite;
       } catch (error) {
         const baseError = operationError("launch", "terminal", error);
         const launchError: LaunchError = { ...baseError, operation: "launch", folderId };

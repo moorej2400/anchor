@@ -9,6 +9,15 @@ body {
   background: var(--bg);
   overflow: hidden;
 }
+.app-icon {
+  display: block;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.1);
@@ -160,24 +169,10 @@ body {
 /* The floor keeps the strip a tab-row tall even with no tabs open, so the `+`
    doesn't collapse onto the pane below — and doesn't jump when the first tab
    opens. Border-box, so the top padding counts toward it. */
-.tabstrip { flex: none; display: flex; align-items: stretch; min-height: calc(var(--sp-2) + var(--tab-h)); padding: var(--sp-2) var(--gutter) 0; }
-/* The `+` leads the strip rather than trailing the tabs, so its position never
-   depends on how many are open. It sits outside the scrollport entirely, which
-   is what keeps it still — no sticky positioning, no z-index contest with the
-   tabs, and no mask to stop them showing through beneath it.
-
-   Height is pinned to --tab-h rather than left to stretch: the scrollport beside
-   it is taller than its own tab row by the height of the horizontal scrollbar,
-   so a stretched lead would centre the button against that larger box and sit
-   visibly below the tab centres. */
-.tabstrip__lead {
-  flex: none; align-self: flex-start; height: var(--tab-h);
-  display: flex; align-items: center; padding-right: var(--sp-2);
-}
-/* Only the tabs scroll. Scoping the scrollport to them means the scrollbar
-   spans the region the tabs actually occupy instead of the whole strip, and
-   tabs clip at the `+` instead of running under it. min-width:0 lets this flex
-   item shrink below its content width, without which it would never scroll. */
+.tabstrip { flex: none; display: flex; align-items: stretch; width: 100%; min-width: 0; min-height: calc(var(--sp-2) + var(--tab-h)); padding: var(--sp-2) var(--gutter) 0; }
+/* Tabs and their trailing `+` share one bounded scrollport. min-width:0 on
+   both flex levels prevents the tab row's intrinsic width from expanding the
+   app beyond the window instead of scrolling. */
 .tabstrip__scroll {
   flex: 1; min-width: 0; display: flex; align-items: stretch; overflow-x: auto;
 }
@@ -200,6 +195,7 @@ body {
 .tabstrip .a-tab[data-drop="after"]::after { right: 2px; }
 .tabstrip__new {
   flex: none; width: 28px; height: 28px;
+  margin-left: 4px;
   display: grid; place-items: center; border-radius: 8px;
   border: 1px solid var(--hairline); background: rgba(255, 255, 255, 0.03);
   color: var(--text-2); font-size: 16px; cursor: pointer;
@@ -264,6 +260,8 @@ body {
 .statusbar { flex: none; display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) var(--gutter); border-top: 1px solid var(--hairline-soft); background: rgba(255, 255, 255, 0.02); }
 .statusbar__id, .statusbar__state { display: flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--hairline); }
 .statusbar__mono { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-mono); }
+.statusbar__copy { display: grid; width: 20px; height: 20px; place-items: center; border: 0; border-radius: 3px; background: transparent; color: var(--text-3); cursor: pointer; }
+.statusbar__copy:hover { background: var(--surface-hover); color: var(--text-1); }
 .statusbar__spacer { flex: 1; }
 .statusbar__meta { display: flex; align-items: center; gap: 14px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-3); }
 
@@ -666,7 +664,7 @@ body {
 .harness-row code { overflow: hidden; color: #848d88; font: 10px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .harness-pill { padding: 3px 6px; border: 1px solid #343835; border-radius: 3px; color: #747c78; font-size: 9px; }
 .harness-row__actions { display: flex; gap: 4px; }
-.harness-row__actions button,.settings-inline-action { height: 28px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent; color: #89918d; cursor: pointer; font-size: 10px; }
+.harness-row__actions button,.settings-inline-action { display: inline-flex; height: 28px; align-items: center; gap: 6px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent; color: #89918d; cursor: pointer; font-size: 10px; }
 .harness-row__actions button:hover,.settings-inline-action:hover { background: #252825; color: #d1d5d3; }
 .settings-empty { padding: 16px 14px; color: #747c78; font-size: 11px; }
 .settings-note { color: #6f7773; font-size: 10px; line-height: 1.5; }
