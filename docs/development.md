@@ -4,7 +4,7 @@
 
 ## Run from source
 
-Use Node.js 22.12 or newer, stable Rust, and the
+Use Node.js 24 or newer, stable Rust, and the
 [Tauri v2 operating-system prerequisites](https://tauri.app/start/prerequisites/).
 
 ```sh
