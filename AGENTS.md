@@ -12,8 +12,9 @@
 
 1. Read **[`docs/SPEC.md`](docs/SPEC.md)** — the single source of truth. It is
    written to be implementable with zero conversation context.
-2. Open **[`docs/Anchor.dc.html`](docs/Anchor.dc.html)** in a browser — the
-   authoritative UI mock. The app must be built to this mock.
+2. Open **[`docs/Anchor-Implementation-Mock.html`](docs/Anchor-Implementation-Mock.html)**
+   in a browser. It is generated from the real frontend with `npm run
+   mock:build`; edit `src/`, never the generated HTML.
 3. Find your phase in SPEC.md §10 (1 Scaffold ✅ · 2 Backend/Rust · 3 Frontend)
    and stay inside its file boundaries.
 

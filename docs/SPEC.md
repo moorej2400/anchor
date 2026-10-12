@@ -1,7 +1,7 @@
 # Anchor — Product & Technical Specification
 
 **Status:** Approved. This document is the single source of truth for the project.
-**UI mock (authoritative frontend spec):** [`docs/Anchor-Implementation-Mock.html`](./Anchor-Implementation-Mock.html) — open it in a browser. **The application must be built to this mock.**
+**UI mock (generated from the real frontend):** [`docs/Anchor-Implementation-Mock.html`](./Anchor-Implementation-Mock.html) — open it directly in a browser. Run `npm run mock:build` after UI changes; the file bundles the production React components, styles, icons, and browser-only mock IPC into one standalone preview.
 **Audience:** This spec is written so an AI or human with *zero* prior context can implement any phase of the project from this document alone.
 
 > ⚠️ **This is a PUBLIC repository. Never commit personal information** — no real API keys, tokens, usernames, machine-specific absolute paths, or private data of any kind. Example/fixture data must be synthetic.
@@ -49,7 +49,7 @@ anchor/
 ├── docs/
 │   ├── SPEC.md              ← this file
 │   ├── Anchor.dc.html       ← legacy baseline mock
-│   └── Anchor-Implementation-Mock.html ← authoritative workspace UI mock
+│   └── Anchor-Implementation-Mock.html ← generated standalone preview of the real frontend
 ├── src/                     ← frontend (React + TS)
 │   ├── main.tsx
 │   ├── App.tsx
@@ -397,7 +397,7 @@ Errors: commands reject with a string error code + message, e.g. `"CLI_NOT_FOUND
 
 ## 8. Frontend spec
 
-**The mock `docs/Anchor-Implementation-Mock.html` is the authoritative UI spec** — layout, spacing, colors, typography, interactions, empty states, menus, modals, and copy must match it. Key inventory:
+**The mock `docs/Anchor-Implementation-Mock.html` is generated from the real UI** — it uses `src/main.tsx`, the same components, styles, icons, and interactions as the desktop build, with `src/ipc/mock.ts` in place of the Rust core. Do not hand-edit the generated HTML. Run `npm run mock:build` after UI changes, and use `npm run mock:check` to detect drift. Key inventory:
 
 - **Window toolbar** (45 px): app mark + "Anchor", workspace/project breadcrumb (folder paths are hidden), Search, and New session.
 - **Workspace rail** (188 px, collapsed by default): pinned and other workspaces, search, create/manage actions, archive/restore, and session drop targets. Selecting a workspace collapses the rail unless `workspacePaneKeepOpen` is enabled. Projects remain shared; workspaces own visible sessions, favorites, tabs, folder order/collapse state, and search text. A session can move between workspaces without changing its Anchor ID or provider ID.

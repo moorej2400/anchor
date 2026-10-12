@@ -1,7 +1,8 @@
 /**
  * Anchor app shell — composes the window chrome, sidebar, main pane (terminal
- * view or settings), overlays, and global keyboard shortcuts. Built to the mock
- * at docs/Anchor.dc.html; all data flows through the store (src/app/store).
+ * view or settings), overlays, and global keyboard shortcuts. The standalone
+ * browser preview is generated from this same entry point; all data flows
+ * through the store (src/app/store).
  */
 import { useCallback, useEffect, useState } from "react";
 import { Toast } from "./components/lib";

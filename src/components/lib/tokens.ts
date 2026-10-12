@@ -1,5 +1,5 @@
 /**
- * Design tokens — extracted from the authoritative mock (docs/Anchor.dc.html).
+ * Design tokens shared by the desktop app and generated browser preview.
  * These are the TypeScript mirror of tokens.css, for the few places that need
  * token values in dynamic inline styles (tool badges, attention dots, xterm
  * color palette). UI styling flows through the CSS variables in tokens.css so
@@ -42,8 +42,8 @@ export const ACCENT_SWATCHES = [
 ] as const;
 
 /**
- * Terminal color palette (matches the mock's TC map). Consumed by the xterm
- * theme so real CLI output uses the same accents as the rest of the app.
+ * Terminal color palette consumed by xterm so real CLI output uses the same
+ * accents as the rest of the app.
  */
 export const TERMINAL_THEME = {
   background: "rgba(0,0,0,0)",

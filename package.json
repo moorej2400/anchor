@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "npm run mock:build && tsc && vite build",
+    "mock:build": "node build/scripts/build-implementation-mock.mjs",
+    "mock:check": "node build/scripts/build-implementation-mock.mjs --check",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run && npm run mock:check",
     "test:release": "node --test build/scripts/release-tools.test.mjs",
+    "test:mock": "node --test build/scripts/build-implementation-mock.test.mjs && npm run mock:check",
     "test:watch": "vitest",
     "tauri": "tauri",
     "e2e": "node e2e/run.mjs"

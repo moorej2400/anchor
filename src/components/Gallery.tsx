@@ -51,7 +51,7 @@ export function Gallery() {
     <div style={{ minHeight: "100%", padding: "40px 48px", maxWidth: 900, margin: "0 auto" }}>
       <h1 style={{ fontSize: 22, marginBottom: 4 }}>Anchor component library</h1>
       <p style={{ color: "var(--text-3)", fontSize: 13, marginBottom: 34 }}>
-        Every primitive, every variant — built to docs/Anchor.dc.html.
+        Every primitive and variant used by the real app and browser preview.
       </p>
 
       <Section title="Buttons">

@@ -179,6 +179,15 @@ function setWaitingCount(): void {
 
 const outputSequences = new Map<string, number>();
 const terminalGrids = new Map<string, { cols: number; rows: number; epoch: number }>();
+// Seed saved output through replay, as the desktop backend does on restore.
+// Sending it during get_state would race the terminal's event subscription.
+const outputHistory = new Map(sessions
+  .filter((session) => session.status !== "stopped")
+  .map((session) => [session.id, demoBanner(session).join("\r\n") + "\r\n"]));
+
+function appendOutput(id: string, data: string): void {
+  outputHistory.set(id, (outputHistory.get(id) ?? "") + data);
+}
 
 function terminalGrid(id: string) {
   let grid = terminalGrids.get(id);
@@ -200,9 +209,11 @@ function emitOutput(id: string, lines: string[]): void {
   const tick = () => {
     if (i >= lines.length) return;
     const grid = terminalGrid(id);
+    const data = lines[i] + "\r\n";
+    appendOutput(id, data);
     mockEmit(EVENT.ptyOutput, {
       sessionId: id,
-      data: lines[i] + "\r\n",
+      data,
       sequence: nextOutputSequence(id),
       gridEpoch: grid.epoch,
       cols: grid.cols,
@@ -430,6 +441,7 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
       // Local echo so typing is visible in the demo.
       const id = a.sessionId as string;
       const grid = terminalGrid(id);
+      appendOutput(id, a.data as string);
       mockEmit(EVENT.ptyOutput, {
         sessionId: id,
         data: a.data as string,
@@ -459,7 +471,7 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
       const id = a.sessionId as string;
       const grid = terminalGrid(id);
       return Promise.resolve({
-        data: "",
+        data: outputHistory.get(id) ?? "",
         throughSequence: outputSequences.get(id) ?? 0,
         cols: grid.cols,
         rows: grid.rows,
@@ -468,7 +480,7 @@ export function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
       } as T);
     }
     case "get_scrollback":
-      return Promise.resolve("" as T);
+      return Promise.resolve((outputHistory.get(a.sessionId as string) ?? "") as T);
     case "export_sessions":
       return Promise.resolve(undefined as T);
     case "import_sessions":
