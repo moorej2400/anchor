@@ -1530,6 +1530,48 @@ describe("Codex profiles", () => {
     await waitFor(() => expect(terminalWrites).toContain("new launch output"));
   });
 
+  it.each(["wizard", "quick launch"])("launches the sole named profile from %s without a base choice", async (entry) => {
+    const session = { ...stoppedAiSession("codex-session", "synthetic-session-id"), codexProfile: null };
+    getCodexProfilesMock.mockResolvedValue(["proxy"]);
+    getStateMock.mockResolvedValue({ folders: [FOLDER], sessions: [session] });
+    getSettingsMock.mockResolvedValue({ ...SETTINGS, confirmClose: false });
+    launchSessionMock.mockResolvedValue({ ...session, id: "new-codex-session", status: "running", codexProfile: "proxy" });
+    render(<AnchorProvider><App /></AnchorProvider>);
+    await screen.findByRole("button", { name: /resume session/i });
+
+    if (entry === "wizard") {
+      fireEvent.click(screen.getByRole("button", { name: "New session" }));
+      fireEvent.click(within(document.querySelector(".a-modal")!).getByRole("button", { name: /synthetic/i }));
+    } else {
+      const group = screen.getByText(FOLDER.name, { selector: ".folder__label" }).closest(".folder")!;
+      fireEvent.mouseEnter(group);
+      fireEvent.click(screen.getByRole("button", { name: "Quick launch" }));
+    }
+    expect(screen.queryByRole("button", { name: /^Codex$/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Codex · proxy/ }));
+    await waitFor(() => expect(launchSessionMock).toHaveBeenLastCalledWith(
+      FOLDER.id, "codex", { cols: 132, rows: 41 }, undefined, undefined, "proxy",
+    ));
+  });
+
+  it("lets a stopped base session select the sole named profile without a default option", async () => {
+    const session = { ...stoppedAiSession("codex-session", "synthetic-session-id"), codexProfile: null };
+    getCodexProfilesMock.mockResolvedValue(["proxy"]);
+    getStateMock.mockResolvedValue({ folders: [FOLDER], sessions: [session] });
+    getSettingsMock.mockResolvedValue({ ...SETTINGS, confirmClose: false });
+    setCodexProfileMock.mockResolvedValue({ ...session, codexProfile: "proxy" });
+    render(<AnchorProvider><App /></AnchorProvider>);
+    await screen.findByRole("button", { name: /resume session/i });
+    const row = screen.getByText("codex-session", { selector: ".a-row__title" }).closest(".a-row")!;
+    fireEvent.mouseEnter(row);
+    fireEvent.click(screen.getByRole("button", { name: "More options" }));
+    fireEvent.click(screen.getByRole("button", { name: /Set Codex profile/ }));
+    expect(screen.getByRole("combobox", { name: "Codex profile" })).toHaveValue("proxy");
+    expect(screen.queryByRole("option", { name: "Default profile" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await waitFor(() => expect(setCodexProfileMock).toHaveBeenCalledWith("codex-session", "proxy"));
+  });
+
   it("sets the next-resume profile from a stopped Codex session menu", async () => {
     await renderStoppedCodexProfileSession();
 

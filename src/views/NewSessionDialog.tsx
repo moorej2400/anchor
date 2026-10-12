@@ -1,5 +1,5 @@
 /**
- * New-session wizard, built to docs/Anchor.dc.html.
+ * New-session wizard shared by the desktop app and standalone browser preview.
  *
  * Three steps:
  *   folder — pick a folder Anchor already knows, or add one
@@ -222,9 +222,9 @@ export function NewSessionDialog() {
           </div>
           <div className="dialog__body">
             {LAUNCHABLE.map((tool) => {
-              if (tool === "codex" && codexProfiles.length > 1) {
-                // Separate choices avoid relying on an invisible default when
-                // the machine has more than one named Codex configuration.
+              if (tool === "codex" && codexProfiles.length > 0) {
+                // Even one named profile must be passed explicitly; a bare
+                // Codex launch would use the base configuration instead.
                 return codexProfiles.map((profile) => (
                   <button key={`${tool}-${profile}`} className="tool-item" onClick={() => launch(tool, profile)}>
                     <Badge tool={tool} style={{ width: 26, height: 26, borderRadius: 7, fontSize: 11 }} />

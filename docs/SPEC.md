@@ -221,7 +221,12 @@ Discovery rules (codex/opencode):
 `$CODEX_HOME` (or `~/.codex` when unset), returning names only. It never reads or
 exports profile TOML values because profiles can contain provider credentials.
 Selected names use Codex's `--profile <name>` option and persist as
-`codexProfile` on the Anchor session. A profile can change only while a Codex
+`codexProfile` on the Anchor session. When named profiles are available, the
+launch menus and profile chooser show only those names, including when there
+is exactly one. Each named choice passes its profile explicitly. The base
+configuration is offered only when no named profiles exist. Existing base
+sessions can select an available named profile while stopped.
+A profile can change only while a Codex
 session is stopped, so the current process never changes accounts mid-session.
 Before launch or resume, the selected profile must still be present; otherwise
 return `CODEX_PROFILE_NOT_FOUND` and do not fall back to the base config.

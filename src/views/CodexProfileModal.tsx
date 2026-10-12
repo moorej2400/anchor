@@ -11,14 +11,16 @@ interface CodexProfileModalProps {
 
 export function CodexProfileModal({ session, onClose }: CodexProfileModalProps) {
   const { state, actions } = useAnchor();
-  const [profile, setProfile] = useState(session.codexProfile ?? "");
+  const initialProfile = session.codexProfile ?? state.codexProfiles[0] ?? "";
+  const [profile, setProfile] = useState(initialProfile);
   const available = state.codexProfiles.includes(session.codexProfile ?? "");
   const unavailable = Boolean(session.codexProfile) && !available;
-  const canSave = profile === "" || state.codexProfiles.includes(profile);
+  const canSave = state.codexProfiles.includes(profile)
+    || (profile === "" && state.codexProfiles.length === 0);
 
   useEffect(() => {
-    setProfile(session.codexProfile ?? "");
-  }, [session.id, session.codexProfile]);
+    setProfile(initialProfile);
+  }, [session.id, initialProfile]);
 
   const save = async () => {
     if (!canSave) return;
@@ -46,7 +48,7 @@ export function CodexProfileModal({ session, onClose }: CodexProfileModalProps) 
                 {session.codexProfile} (unavailable)
               </option>
             )}
-            <option value="">Default profile</option>
+            {state.codexProfiles.length === 0 && <option value="">Default profile</option>}
             {state.codexProfiles.map((name) => <option key={name} value={name}>{name}</option>)}
           </select>
           {unavailable && (

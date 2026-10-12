@@ -2,7 +2,6 @@
  * Left sidebar: filter, folder groups (collapse, rename, quick-launch, remove),
  * session rows (select, close tab, rename, delete, copy id), and the status legend footer.
  * Ephemeral popover/hover/rename state is local; domain mutations go to the store.
- * Built to docs/Anchor.dc.html.
  */
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import {
@@ -403,7 +402,7 @@ function FolderGroup(props: {
           <Menu anchorRef={launchAnchorRef} width={236}>
             <MenuLabel>Launch in {folder.name}</MenuLabel>
             {LAUNCHABLE.map((tool) => {
-              if (tool === "codex" && state.codexProfiles.length > 1) {
+              if (tool === "codex" && state.codexProfiles.length > 0) {
                 return state.codexProfiles.map((profile) => (
                   <MenuItem
                     key={`${tool}-${profile}`}
@@ -602,6 +601,7 @@ function SessionRow(props: {
           )}
           {session.tool === "codex" && session.status === "stopped" && (
             state.codexProfiles.length > 1
+            || (!session.codexProfile && state.codexProfiles.length > 0)
             || Boolean(session.codexProfile && !state.codexProfiles.includes(session.codexProfile))
           ) && (
             <MenuItem icon={<Icon name="settings" size={14} />} onClick={() => { setUi((u) => ({ ...u, sessionMenu: null })); onSetCodexProfile(session.id); }}>Set Codex profile</MenuItem>
