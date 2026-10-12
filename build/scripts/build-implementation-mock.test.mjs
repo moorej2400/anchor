@@ -47,5 +47,13 @@ test("the full standalone preview has valid scripts without Node environment che
     assert.doesNotThrow(() => new Function(script.textContent));
   }
   assert.doesNotMatch(html, /process\.env\.NODE_ENV/);
+  assert.doesNotMatch(html, /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/);
   dom.window.close();
+});
+
+test("escaping control characters preserves their JavaScript string values", () => {
+  const html = renderStandaloneHtml("", "return '\u0001\u001b\u007f';");
+  const applicationScript = new JSDOM(html).window.document.scripts[1].textContent;
+
+  assert.equal(new Function(applicationScript)(), "\u0001\u001b\u007f");
 });

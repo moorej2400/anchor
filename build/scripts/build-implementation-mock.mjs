@@ -29,7 +29,11 @@ function escapeInlineJavascript(source) {
     // string enters the parser's double-escaped state. The real closing tag is
     // then ignored, so the bundle never executes and the boot message remains.
     .replace(/<script/gi, (match) => `\\x3C${match.slice(1)}`)
-    .replace(/<!--/g, "\\x3C!--");
+    .replace(/<!--/g, "\\x3C!--")
+    // xterm includes literal control characters in strings. Escape them so
+    // the generated HTML remains valid for parsers as well as browsers.
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g,
+      (character) => `\\x${character.charCodeAt(0).toString(16).padStart(2, "0")}`);
 }
 
 export function renderStandaloneHtml(css, javascript) {
